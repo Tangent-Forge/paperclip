@@ -135,6 +135,8 @@ export const queryKeys = {
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
+    usage: (secretId: string) => ["secrets", "usage", secretId] as const,
+    accessEvents: (secretId: string) => ["secrets", "access-events", secretId] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>

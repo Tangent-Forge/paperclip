@@ -1,25 +1,76 @@
-import type { CompanySecret, SecretProviderDescriptor, SecretProvider } from "@paperclipai/shared";
+import type {
+  CompanySecret,
+  CompanySecretBinding,
+  SecretAccessEvent,
+  SecretManagedMode,
+  SecretProvider,
+  SecretProviderDescriptor,
+  SecretStatus,
+} from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface SecretUsageResponse {
+  secretId: string;
+  bindings: CompanySecretBinding[];
+}
+
+export interface CreateSecretInput {
+  name: string;
+  key?: string;
+  provider?: SecretProvider;
+  managedMode?: SecretManagedMode;
+  value?: string | null;
+  description?: string | null;
+  externalRef?: string | null;
+  providerVersionRef?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface SecretProviderHealthResponse {
+  providers: Array<{
+    provider: SecretProvider;
+    status: "ok" | "warn" | "error";
+    message: string;
+    warnings?: string[];
+    backupGuidance?: string[];
+    details?: Record<string, unknown>;
+  }>;
+}
+
+export interface UpdateSecretInput {
+  name?: string;
+  key?: string;
+  status?: SecretStatus;
+  description?: string | null;
+  externalRef?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface RotateSecretInput {
+  value?: string | null;
+  externalRef?: string | null;
+  providerVersionRef?: string | null;
+}
 
 export const secretsApi = {
   list: (companyId: string) => api.get<CompanySecret[]>(`/companies/${companyId}/secrets`),
   providers: (companyId: string) =>
     api.get<SecretProviderDescriptor[]>(`/companies/${companyId}/secret-providers`),
-  create: (
-    companyId: string,
-    data: {
-      name: string;
-      value: string;
-      provider?: SecretProvider;
-      description?: string | null;
-      externalRef?: string | null;
-    },
-  ) => api.post<CompanySecret>(`/companies/${companyId}/secrets`, data),
-  rotate: (id: string, data: { value: string; externalRef?: string | null }) =>
+  providerHealth: (companyId: string) =>
+    api.get<SecretProviderHealthResponse>(`/companies/${companyId}/secret-providers/health`),
+  create: (companyId: string, data: CreateSecretInput) =>
+    api.post<CompanySecret>(`/companies/${companyId}/secrets`, data),
+  update: (id: string, data: UpdateSecretInput) =>
+    api.patch<CompanySecret>(`/secrets/${id}`, data),
+  rotate: (id: string, data: RotateSecretInput) =>
     api.post<CompanySecret>(`/secrets/${id}/rotate`, data),
-  update: (
-    id: string,
-    data: { name?: string; description?: string | null; externalRef?: string | null },
-  ) => api.patch<CompanySecret>(`/secrets/${id}`, data),
+  disable: (id: string) =>
+    api.patch<CompanySecret>(`/secrets/${id}`, { status: "disabled" satisfies SecretStatus }),
+  enable: (id: string) =>
+    api.patch<CompanySecret>(`/secrets/${id}`, { status: "active" satisfies SecretStatus }),
+  archive: (id: string) =>
+    api.patch<CompanySecret>(`/secrets/${id}`, { status: "archived" satisfies SecretStatus }),
   remove: (id: string) => api.delete<{ ok: true }>(`/secrets/${id}`),
+  usage: (id: string) => api.get<SecretUsageResponse>(`/secrets/${id}/usage`),
+  accessEvents: (id: string) => api.get<SecretAccessEvent[]>(`/secrets/${id}/access-events`),
 };
