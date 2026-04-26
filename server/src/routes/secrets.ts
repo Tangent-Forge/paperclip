@@ -45,10 +45,13 @@ export function secretRoutes(db: Db) {
       companyId,
       {
         name: req.body.name,
+        key: req.body.key,
         provider: req.body.provider ?? defaultProvider,
+        managedMode: req.body.managedMode,
         value: req.body.value,
         description: req.body.description,
         externalRef: req.body.externalRef,
+        providerMetadata: req.body.providerMetadata,
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
@@ -110,8 +113,11 @@ export function secretRoutes(db: Db) {
 
     const updated = await svc.update(id, {
       name: req.body.name,
+      key: req.body.key,
+      status: req.body.status,
       description: req.body.description,
       externalRef: req.body.externalRef,
+      providerMetadata: req.body.providerMetadata,
     });
 
     if (!updated) {
@@ -130,6 +136,32 @@ export function secretRoutes(db: Db) {
     });
 
     res.json(updated);
+  });
+
+  router.get("/secrets/:id/usage", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Secret not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const bindings = await svc.listBindings(existing.companyId, existing.id);
+    res.json({ secretId: existing.id, bindings });
+  });
+
+  router.get("/secrets/:id/access-events", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Secret not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const events = await svc.listAccessEvents(existing.companyId, existing.id);
+    res.json(events);
   });
 
   router.delete("/secrets/:id", async (req, res) => {

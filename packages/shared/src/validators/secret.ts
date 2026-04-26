@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { SECRET_PROVIDERS } from "../constants.js";
+import {
+  SECRET_BINDING_TARGET_TYPES,
+  SECRET_MANAGED_MODES,
+  SECRET_PROVIDERS,
+  SECRET_STATUSES,
+} from "../constants.js";
 
 export const envBindingPlainSchema = z.object({
   type: z.literal("plain"),
@@ -23,10 +28,13 @@ export const envConfigSchema = z.record(envBindingSchema);
 
 export const createSecretSchema = z.object({
   name: z.string().min(1),
+  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
+  managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
   value: z.string().min(1),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
+  providerMetadata: z.record(z.unknown()).optional().nullable(),
 });
 
 export type CreateSecret = z.infer<typeof createSecretSchema>;
@@ -34,14 +42,33 @@ export type CreateSecret = z.infer<typeof createSecretSchema>;
 export const rotateSecretSchema = z.object({
   value: z.string().min(1),
   externalRef: z.string().optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
 });
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
 export const updateSecretSchema = z.object({
   name: z.string().min(1).optional(),
+  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
+  status: z.enum(SECRET_STATUSES).optional(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
+  providerMetadata: z.record(z.unknown()).optional().nullable(),
 });
 
 export type UpdateSecret = z.infer<typeof updateSecretSchema>;
+
+export const secretBindingTargetSchema = z.object({
+  targetType: z.enum(SECRET_BINDING_TARGET_TYPES),
+  targetId: z.string().min(1),
+  configPath: z.string().min(1),
+});
+
+export const createSecretBindingSchema = secretBindingTargetSchema.extend({
+  secretId: z.string().uuid(),
+  versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
+  required: z.boolean().default(true),
+  label: z.string().optional().nullable(),
+});
+
+export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;

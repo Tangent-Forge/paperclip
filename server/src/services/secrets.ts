@@ -1,7 +1,18 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, companySecretVersions } from "@paperclipai/db";
-import type { AgentEnvConfig, EnvBinding, SecretProvider } from "@paperclipai/shared";
+import {
+  companySecretBindings,
+  companySecrets,
+  companySecretVersions,
+  secretAccessEvents,
+} from "@paperclipai/db";
+import type {
+  AgentEnvConfig,
+  EnvBinding,
+  SecretBindingTargetType,
+  SecretProvider,
+  SecretVersionSelector,
+} from "@paperclipai/shared";
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
@@ -15,6 +26,17 @@ type CanonicalEnvBinding =
   | { type: "plain"; value: string }
   | { type: "secret_ref"; secretId: string; version: number | "latest" };
 
+type SecretConsumerContext = {
+  consumerType: SecretBindingTargetType;
+  consumerId: string;
+  configPath?: string | null;
+  actorType?: "agent" | "user" | "system" | "plugin";
+  actorId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
+  pluginId?: string | null;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -22,6 +44,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function isSensitiveEnvKey(key: string) {
   return SENSITIVE_ENV_KEY_RE.test(key);
+}
+
+function normalizeSecretKey(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
 }
 
 function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
@@ -73,6 +104,79 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getBinding(input: {
+    companyId: string;
+    secretId: string;
+    consumerType: SecretBindingTargetType;
+    consumerId: string;
+    configPath: string;
+  }) {
+    return db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.companyId, input.companyId),
+          eq(companySecretBindings.secretId, input.secretId),
+          eq(companySecretBindings.targetType, input.consumerType),
+          eq(companySecretBindings.targetId, input.consumerId),
+          eq(companySecretBindings.configPath, input.configPath),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertBindingContext(
+    companyId: string,
+    secretId: string,
+    context: SecretConsumerContext | undefined,
+  ) {
+    if (!context) return;
+    if (!context.configPath) {
+      throw unprocessable("Secret resolution requires a binding config path");
+    }
+    const binding = await getBinding({
+      companyId,
+      secretId,
+      consumerType: context.consumerType,
+      consumerId: context.consumerId,
+      configPath: context.configPath,
+    });
+    if (!binding) {
+      throw unprocessable(
+        `Secret is not bound to ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
+      );
+    }
+  }
+
+  async function recordAccessEvent(input: {
+    companyId: string;
+    secretId: string;
+    version: number | null;
+    provider: SecretProvider;
+    context: SecretConsumerContext | undefined;
+    outcome: "success" | "failure";
+    errorCode?: string | null;
+  }) {
+    if (!input.context) return;
+    await db.insert(secretAccessEvents).values({
+      companyId: input.companyId,
+      secretId: input.secretId,
+      version: input.version,
+      provider: input.provider,
+      actorType: input.context.actorType ?? "system",
+      actorId: input.context.actorId ?? null,
+      consumerType: input.context.consumerType,
+      consumerId: input.context.consumerId,
+      configPath: input.context.configPath ?? null,
+      issueId: input.context.issueId ?? null,
+      heartbeatRunId: input.context.heartbeatRunId ?? null,
+      pluginId: input.context.pluginId ?? null,
+      outcome: input.outcome,
+      errorCode: input.errorCode ?? null,
+    });
+  }
+
   async function assertSecretInCompany(companyId: string, secretId: string) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
@@ -84,16 +188,53 @@ export function secretService(db: Db) {
     companyId: string,
     secretId: string,
     version: number | "latest",
+    context?: SecretConsumerContext,
   ): Promise<string> {
     const secret = await assertSecretInCompany(companyId, secretId);
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
-    const versionRow = await getSecretVersion(secret.id, resolvedVersion);
-    if (!versionRow) throw notFound("Secret version not found");
-    const provider = getSecretProvider(secret.provider as SecretProvider);
-    return provider.resolveVersion({
-      material: versionRow.material as Record<string, unknown>,
-      externalRef: secret.externalRef,
-    });
+    const providerId = secret.provider as SecretProvider;
+    try {
+      if (secret.status !== "active") {
+        throw unprocessable("Secret is not active");
+      }
+      await assertBindingContext(companyId, secret.id, context);
+      const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+      if (!versionRow) throw notFound("Secret version not found");
+      if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
+        throw unprocessable("Secret version is not active");
+      }
+      const provider = getSecretProvider(providerId);
+      const value = await provider.resolveVersion({
+        material: versionRow.material as Record<string, unknown>,
+        externalRef: secret.externalRef,
+      });
+      await Promise.all([
+        db
+          .update(companySecrets)
+          .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
+          .where(eq(companySecrets.id, secret.id)),
+        recordAccessEvent({
+          companyId,
+          secretId: secret.id,
+          version: resolvedVersion,
+          provider: providerId,
+          context,
+          outcome: "success",
+        }),
+      ]);
+      return value;
+    } catch (err) {
+      await recordAccessEvent({
+        companyId,
+        secretId: secret.id,
+        version: resolvedVersion,
+        provider: providerId,
+        context,
+        outcome: "failure",
+        errorCode: err instanceof Error ? err.message.slice(0, 120) : "resolution_failed",
+      });
+      throw err;
+    }
   }
 
   async function normalizeEnvConfig(
@@ -162,6 +303,24 @@ export function secretService(db: Db) {
         .where(eq(companySecrets.companyId, companyId))
         .orderBy(desc(companySecrets.createdAt)),
 
+    listBindings: (companyId: string, secretId?: string) =>
+      db
+        .select()
+        .from(companySecretBindings)
+        .where(
+          secretId
+            ? and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.secretId, secretId))
+            : eq(companySecretBindings.companyId, companyId),
+        )
+        .orderBy(desc(companySecretBindings.createdAt)),
+
+    listAccessEvents: (companyId: string, secretId: string) =>
+      db
+        .select()
+        .from(secretAccessEvents)
+        .where(and(eq(secretAccessEvents.companyId, companyId), eq(secretAccessEvents.secretId, secretId)))
+        .orderBy(desc(secretAccessEvents.createdAt)),
+
     getById,
     getByName,
     resolveSecretValue,
@@ -172,13 +331,24 @@ export function secretService(db: Db) {
         name: string;
         provider: SecretProvider;
         value: string;
+        key?: string | null;
+        managedMode?: "paperclip_managed" | "external_reference";
         description?: string | null;
         externalRef?: string | null;
+        providerMetadata?: Record<string, unknown> | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const existing = await getByName(companyId, input.name);
       if (existing) throw conflict(`Secret already exists: ${input.name}`);
+      const key = normalizeSecretKey(input.key ?? input.name);
+      if (!key) throw unprocessable("Secret key is required");
+      const duplicateKey = await db
+        .select()
+        .from(companySecrets)
+        .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.key, key)))
+        .then((rows) => rows[0] ?? null);
+      if (duplicateKey) throw conflict(`Secret key already exists: ${key}`);
 
       const provider = getSecretProvider(input.provider);
       const prepared = await provider.createVersion({
@@ -191,11 +361,16 @@ export function secretService(db: Db) {
           .insert(companySecrets)
           .values({
             companyId,
+            key,
             name: input.name,
             provider: input.provider,
+            status: "active",
+            managedMode: input.managedMode ?? "paperclip_managed",
             externalRef: prepared.externalRef,
+            providerMetadata: input.providerMetadata ?? null,
             latestVersion: 1,
             description: input.description ?? null,
+            lastRotatedAt: new Date(),
             createdByAgentId: actor?.agentId ?? null,
             createdByUserId: actor?.userId ?? null,
           })
@@ -207,6 +382,8 @@ export function secretService(db: Db) {
           version: 1,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
+          fingerprintSha256: prepared.valueSha256,
+          status: "current",
           createdByAgentId: actor?.agentId ?? null,
           createdByUserId: actor?.userId ?? null,
         });
@@ -230,11 +407,17 @@ export function secretService(db: Db) {
       });
 
       return db.transaction(async (tx) => {
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "previous" })
+          .where(eq(companySecretVersions.secretId, secret.id));
         await tx.insert(companySecretVersions).values({
           secretId: secret.id,
           version: nextVersion,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
+          fingerprintSha256: prepared.valueSha256,
+          status: "current",
           createdByAgentId: actor?.agentId ?? null,
           createdByUserId: actor?.userId ?? null,
         });
@@ -244,6 +427,7 @@ export function secretService(db: Db) {
           .set({
             latestVersion: nextVersion,
             externalRef: prepared.externalRef,
+            lastRotatedAt: new Date(),
             updatedAt: new Date(),
           })
           .where(eq(companySecrets.id, secret.id))
@@ -257,7 +441,14 @@ export function secretService(db: Db) {
 
     update: async (
       secretId: string,
-      patch: { name?: string; description?: string | null; externalRef?: string | null },
+      patch: {
+        name?: string;
+        key?: string;
+        status?: "active" | "disabled" | "archived" | "deleted";
+        description?: string | null;
+        externalRef?: string | null;
+        providerMetadata?: Record<string, unknown> | null;
+      },
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
@@ -268,20 +459,129 @@ export function secretService(db: Db) {
           throw conflict(`Secret already exists: ${patch.name}`);
         }
       }
+      const nextKey = patch.key ? normalizeSecretKey(patch.key) : secret.key;
+      if (!nextKey) throw unprocessable("Secret key is required");
+      if (nextKey !== secret.key) {
+        const duplicateKey = await db
+          .select()
+          .from(companySecrets)
+          .where(and(eq(companySecrets.companyId, secret.companyId), eq(companySecrets.key, nextKey)))
+          .then((rows) => rows[0] ?? null);
+        if (duplicateKey && duplicateKey.id !== secret.id) {
+          throw conflict(`Secret key already exists: ${nextKey}`);
+        }
+      }
+      const deleting = patch.status === "deleted";
 
       return db
         .update(companySecrets)
         .set({
+          key: nextKey,
           name: patch.name ?? secret.name,
+          status: patch.status ?? secret.status,
           description:
             patch.description === undefined ? secret.description : patch.description,
           externalRef:
             patch.externalRef === undefined ? secret.externalRef : patch.externalRef,
+          providerMetadata:
+            patch.providerMetadata === undefined ? secret.providerMetadata : patch.providerMetadata,
+          deletedAt: deleting ? new Date() : secret.deletedAt,
           updatedAt: new Date(),
         })
         .where(eq(companySecrets.id, secret.id))
         .returning()
         .then((rows) => rows[0] ?? null);
+    },
+
+    createBinding: async (input: {
+      companyId: string;
+      secretId: string;
+      targetType: SecretBindingTargetType;
+      targetId: string;
+      configPath: string;
+      versionSelector?: SecretVersionSelector;
+      required?: boolean;
+      label?: string | null;
+    }) => {
+      await assertSecretInCompany(input.companyId, input.secretId);
+      const existing = await db
+        .select()
+        .from(companySecretBindings)
+        .where(
+          and(
+            eq(companySecretBindings.companyId, input.companyId),
+            eq(companySecretBindings.targetType, input.targetType),
+            eq(companySecretBindings.targetId, input.targetId),
+            eq(companySecretBindings.configPath, input.configPath),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
+      return db
+        .insert(companySecretBindings)
+        .values({
+          companyId: input.companyId,
+          secretId: input.secretId,
+          targetType: input.targetType,
+          targetId: input.targetId,
+          configPath: input.configPath,
+          versionSelector: String(input.versionSelector ?? "latest"),
+          required: input.required ?? true,
+          label: input.label ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    syncEnvBindingsForTarget: async (
+      companyId: string,
+      target: { targetType: SecretBindingTargetType; targetId: string; pathPrefix?: string },
+      envValue: unknown,
+    ) => {
+      const record = asRecord(envValue) ?? {};
+      const refs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector: SecretVersionSelector;
+      }> = [];
+      const pathPrefix = target.pathPrefix ?? "env";
+      for (const [key, rawBinding] of Object.entries(record)) {
+        const parsed = envBindingSchema.safeParse(rawBinding);
+        if (!parsed.success) continue;
+        const binding = canonicalizeBinding(parsed.data as EnvBinding);
+        if (binding.type !== "secret_ref") continue;
+        await assertSecretInCompany(companyId, binding.secretId);
+        refs.push({
+          secretId: binding.secretId,
+          configPath: `${pathPrefix}.${key}`,
+          versionSelector: binding.version,
+        });
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, companyId),
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+            ),
+          );
+        if (refs.length === 0) return;
+        await tx.insert(companySecretBindings).values(
+          refs.map((ref) => ({
+            companyId,
+            secretId: ref.secretId,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            configPath: ref.configPath,
+            versionSelector: String(ref.versionSelector),
+            required: true,
+          })),
+        );
+      });
+      return refs;
     },
 
     remove: async (secretId: string) => {
@@ -320,7 +620,11 @@ export function secretService(db: Db) {
       return normalized;
     },
 
-    resolveEnvBindings: async (companyId: string, envValue: unknown): Promise<{ env: Record<string, string>; secretKeys: Set<string> }> => {
+    resolveEnvBindings: async (
+      companyId: string,
+      envValue: unknown,
+      context?: Omit<SecretConsumerContext, "configPath">,
+    ): Promise<{ env: Record<string, string>; secretKeys: Set<string> }> => {
       const record = asRecord(envValue);
       if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>() };
       const resolved: Record<string, string> = {};
@@ -338,14 +642,23 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           resolved[key] = binding.value;
         } else {
-          resolved[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
+          resolved[key] = await resolveSecretValue(
+            companyId,
+            binding.secretId,
+            binding.version,
+            context ? { ...context, configPath: `env.${key}` } : undefined,
+          );
           secretKeys.add(key);
         }
       }
       return { env: resolved, secretKeys };
     },
 
-    resolveAdapterConfigForRuntime: async (companyId: string, adapterConfig: Record<string, unknown>): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
+    resolveAdapterConfigForRuntime: async (
+      companyId: string,
+      adapterConfig: Record<string, unknown>,
+      context?: Omit<SecretConsumerContext, "configPath">,
+    ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
       if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
@@ -369,7 +682,12 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           env[key] = binding.value;
         } else {
-          env[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
+          env[key] = await resolveSecretValue(
+            companyId,
+            binding.secretId,
+            binding.version,
+            context ? { ...context, configPath: `env.${key}` } : undefined,
+          );
           secretKeys.add(key);
         }
       }

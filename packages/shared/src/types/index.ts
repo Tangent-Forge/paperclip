@@ -244,7 +244,15 @@ export type {
   EnvBinding,
   AgentEnvConfig,
   CompanySecret,
+  CompanySecretBinding,
+  CompanySecretVersion,
+  SecretAccessEvent,
+  SecretAccessOutcome,
+  SecretBindingTargetType,
+  SecretManagedMode,
   SecretProviderDescriptor,
+  SecretStatus,
+  SecretVersionStatus,
 } from "./secrets.js";
 export type {
   Routine,

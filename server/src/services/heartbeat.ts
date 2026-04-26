@@ -327,6 +327,10 @@ type RuntimeConfigSecretResolver = Pick<
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
+  agentId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
+  projectId?: string | null;
   executionRunConfig: Record<string, unknown>;
   projectEnv: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
@@ -334,9 +338,32 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     input.executionRunConfig,
+    input.agentId
+      ? {
+          consumerType: "agent",
+          consumerId: input.agentId,
+          actorType: "agent",
+          actorId: input.agentId,
+          issueId: input.issueId ?? null,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+        }
+      : undefined,
   );
   const projectEnvResolution = input.projectEnv
-    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        input.projectEnv,
+        input.projectId
+          ? {
+              consumerType: "project",
+              consumerId: input.projectId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+            }
+          : undefined,
+      )
     : { env: {}, secretKeys: new Set<string>() };
   if (Object.keys(projectEnvResolution.env).length > 0) {
     resolvedConfig.env = {
@@ -6790,6 +6817,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const projectContext = executionProjectId
       ? await db
           .select({
+            id: projects.id,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
           })
@@ -6997,6 +7025,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
+      agentId: agent.id,
+      issueId,
+      heartbeatRunId: run.id,
+      projectId: projectContext?.id ?? null,
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
       secretsSvc,
