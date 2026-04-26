@@ -5,6 +5,28 @@ summary: Master key, encryption, and strict mode
 
 Paperclip encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
 
+## Custody Boundaries
+
+Paperclip protects secret values up to the moment they are handed to an agent
+or workload:
+
+- Storage: values are encrypted at rest by the active provider. The local
+  provider keeps them encrypted with a key that never leaves the host.
+- Transport: values are decrypted server-side and injected into the agent
+  process environment, SSH command env, sandbox driver, or HTTP request
+  immediately before the call. Paperclip does not return decrypted values to
+  the board UI.
+- Audit: each resolution records a non-sensitive event (secret id, version,
+  provider id, consumer, outcome) without the value or provider credentials.
+
+Once a value reaches the consuming process, Paperclip can no longer guarantee
+secrecy. The agent (or sandbox, or remote host) can read the value, write it to
+its own logs or transcript, or pass it to downstream tools. Treat any secret
+you bind to an agent as exposed to that agent. Limit blast radius with bindings
+(only bind what each agent needs), short-lived provider credentials where the
+provider supports them, and rotation when an agent transcript or downstream
+system might have captured a value.
+
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:
@@ -77,6 +99,10 @@ The built-in AWS, GCP, and Vault provider IDs currently accept external
 reference metadata, but runtime resolution requires provider configuration in the
 deployment. Their provider health check reports this as a warning until
 configured.
+
+For hosted Paperclip Cloud on AWS, see the AWS Secrets Manager operational
+contract — required env vars, IAM/KMS scoping, naming and tag conventions, and
+backup/rotation/incident runbooks — in `doc/SECRETS-AWS-PROVIDER.md`.
 
 ## Migrating Inline Secrets
 

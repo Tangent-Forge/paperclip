@@ -57,7 +57,7 @@ The equivalent CLI check is:
 pnpm paperclipai secrets doctor --company-id {companyId}
 ```
 
-## Update Secret
+## Rotate Secret
 
 ```
 POST /api/secrets/{secretId}/rotate
@@ -66,7 +66,9 @@ POST /api/secrets/{secretId}/rotate
 }
 ```
 
-Creates a new version of the secret. Agents referencing `"version": "latest"` automatically get the new value on next heartbeat.
+Creates a new version of the secret. Agents referencing `"version": "latest"`
+automatically get the new value on next heartbeat. Pin to a specific version
+when a bad `latest` rollout would affect many agents at once.
 
 ## Using Secrets in Agent Config
 
@@ -84,7 +86,11 @@ Reference secrets in agent adapter config instead of inline values:
 }
 ```
 
-The server resolves and decrypts secret references at runtime, injecting the real value into the agent process environment.
+The server resolves and decrypts secret references at runtime, injecting the
+real value into the agent process environment. Paperclip's custody guarantees
+end at injection: the agent process can read, log, or forward the value, so
+treat any secret bound to an agent as exposed to that agent. See the custody
+boundaries note in the [secrets deploy guide](/deploy/secrets#custody-boundaries).
 
 ## Portability
 
