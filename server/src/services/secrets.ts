@@ -41,6 +41,22 @@ type SecretConsumerContext = {
   pluginId?: string | null;
 };
 
+export type RuntimeSecretManifestEntry = {
+  configPath: string;
+  envKey: string | null;
+  secretId: string;
+  secretKey: string;
+  version: number;
+  provider: SecretProvider;
+  outcome: "success" | "failure";
+  errorCode?: string | null;
+};
+
+type RuntimeSecretResolution = {
+  value: string;
+  manifestEntry: RuntimeSecretManifestEntry;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -188,15 +204,16 @@ export function secretService(db: Db) {
     return secret;
   }
 
-  async function resolveSecretValue(
+  async function resolveSecretValueInternal(
     companyId: string,
     secretId: string,
     version: number | "latest",
     context?: SecretConsumerContext,
-  ): Promise<string> {
+  ): Promise<RuntimeSecretResolution> {
     const secret = await assertSecretInCompany(companyId, secretId);
     const resolvedVersion = version === "latest" ? secret.latestVersion : version;
     const providerId = secret.provider as SecretProvider;
+    const configPath = context?.configPath ?? null;
     try {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active");
@@ -233,8 +250,20 @@ export function secretService(db: Db) {
           outcome: "success",
         }),
       ]);
-      return value;
+      return {
+        value,
+        manifestEntry: {
+          configPath: configPath ?? "",
+          envKey: configPath?.startsWith("env.") ? configPath.slice("env.".length) : null,
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+          provider: providerId,
+          outcome: "success",
+        },
+      };
     } catch (err) {
+      const errorCode = err instanceof Error ? err.message.slice(0, 120) : "resolution_failed";
       await recordAccessEvent({
         companyId,
         secretId: secret.id,
@@ -242,10 +271,19 @@ export function secretService(db: Db) {
         provider: providerId,
         context,
         outcome: "failure",
-        errorCode: err instanceof Error ? err.message.slice(0, 120) : "resolution_failed",
+        errorCode,
       });
       throw err;
     }
+  }
+
+  async function resolveSecretValue(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context?: SecretConsumerContext,
+  ): Promise<string> {
+    return (await resolveSecretValueInternal(companyId, secretId, version, context)).value;
   }
 
   async function normalizeEnvConfig(
@@ -607,6 +645,62 @@ export function secretService(db: Db) {
         .then((rows) => rows[0]);
     },
 
+    syncSecretRefsForTarget: async (
+      companyId: string,
+      target: { targetType: SecretBindingTargetType; targetId: string },
+      refs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector?: SecretVersionSelector;
+        required?: boolean;
+        label?: string | null;
+      }>,
+    ) => {
+      const normalizedRefs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector: SecretVersionSelector;
+        required: boolean;
+        label: string | null;
+      }> = [];
+      for (const ref of refs) {
+        await assertSecretInCompany(companyId, ref.secretId);
+        normalizedRefs.push({
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+          versionSelector: ref.versionSelector ?? "latest",
+          required: ref.required ?? true,
+          label: ref.label ?? null,
+        });
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, companyId),
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+            ),
+          );
+        if (normalizedRefs.length === 0) return;
+        await tx.insert(companySecretBindings).values(
+          normalizedRefs.map((ref) => ({
+            companyId,
+            secretId: ref.secretId,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            configPath: ref.configPath,
+            versionSelector: String(ref.versionSelector),
+            required: ref.required,
+            label: ref.label,
+          })),
+        );
+      });
+      return normalizedRefs;
+    },
+
     syncEnvBindingsForTarget: async (
       companyId: string,
       target: { targetType: SecretBindingTargetType; targetId: string; pathPrefix?: string },
@@ -711,11 +805,12 @@ export function secretService(db: Db) {
       companyId: string,
       envValue: unknown,
       context?: Omit<SecretConsumerContext, "configPath">,
-    ): Promise<{ env: Record<string, string>; secretKeys: Set<string> }> => {
+    ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const record = asRecord(envValue);
-      if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>() };
+      if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>(), manifest: [] };
       const resolved: Record<string, string> = {};
       const secretKeys = new Set<string>();
+      const manifest: RuntimeSecretManifestEntry[] = [];
 
       for (const [key, rawBinding] of Object.entries(record)) {
         if (!ENV_KEY_RE.test(key)) {
@@ -729,32 +824,35 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           resolved[key] = binding.value;
         } else {
-          resolved[key] = await resolveSecretValue(
+          const secretResolution = await resolveSecretValueInternal(
             companyId,
             binding.secretId,
             binding.version,
             context ? { ...context, configPath: `env.${key}` } : undefined,
           );
+          resolved[key] = secretResolution.value;
+          manifest.push(secretResolution.manifestEntry);
           secretKeys.add(key);
         }
       }
-      return { env: resolved, secretKeys };
+      return { env: resolved, secretKeys, manifest };
     },
 
     resolveAdapterConfigForRuntime: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,
       context?: Omit<SecretConsumerContext, "configPath">,
-    ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string> }> => {
+    ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
+      const manifest: RuntimeSecretManifestEntry[] = [];
       if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-        return { config: resolved, secretKeys };
+        return { config: resolved, secretKeys, manifest };
       }
       const record = asRecord(adapterConfig.env);
       if (!record) {
         resolved.env = {};
-        return { config: resolved, secretKeys };
+        return { config: resolved, secretKeys, manifest };
       }
       const env: Record<string, string> = {};
       for (const [key, rawBinding] of Object.entries(record)) {
@@ -769,17 +867,19 @@ export function secretService(db: Db) {
         if (binding.type === "plain") {
           env[key] = binding.value;
         } else {
-          env[key] = await resolveSecretValue(
+          const secretResolution = await resolveSecretValueInternal(
             companyId,
             binding.secretId,
             binding.version,
             context ? { ...context, configPath: `env.${key}` } : undefined,
           );
+          env[key] = secretResolution.value;
+          manifest.push(secretResolution.manifestEntry);
           secretKeys.add(key);
         }
       }
       resolved.env = env;
-      return { config: resolved, secretKeys };
+      return { config: resolved, secretKeys, manifest };
     },
   };
 }
