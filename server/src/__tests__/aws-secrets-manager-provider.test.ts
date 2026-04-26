@@ -140,7 +140,7 @@ describe("awsSecretsManagerProvider", () => {
     expect(prepared.providerVersionRef).toBe("aws-version-2");
   });
 
-  it("ignores out-of-namespace refs for managed AWS secret version writes", async () => {
+  it("rejects out-of-namespace refs for managed AWS secret version writes", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
       config: {
@@ -170,26 +170,20 @@ describe("awsSecretsManagerProvider", () => {
       },
     });
 
-    await provider.createVersion({
-      value: "rotated-secret-value",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
-      context: {
-        companyId: "company-1",
-        secretKey: "openai-api-key",
-        secretName: "OpenAI API Key",
-        version: 2,
-      },
-    });
-
-    expect(calls).toEqual([
-      {
-        op: "putSecretValue",
-        input: {
-          SecretId: "paperclip/prod-use1/company-1/openai-api-key",
-          SecretString: "rotated-secret-value",
+    await expect(
+      provider.createVersion({
+        value: "rotated-secret-value",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
+        context: {
+          companyId: "company-1",
+          secretKey: "openai-api-key",
+          secretName: "OpenAI API Key",
+          version: 2,
         },
-      },
-    ]);
+      }),
+    ).rejects.toThrow(/drifted outside the derived deployment\/company scope/i);
+
+    expect(calls).toEqual([]);
   });
 
   it("stores linked external references as metadata-only provider material", async () => {
@@ -269,6 +263,56 @@ describe("awsSecretsManagerProvider", () => {
     ]);
   });
 
+  it("rejects managed resolve attempts when stored refs drift outside the derived scope", async () => {
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+      gateway: {
+        async createSecret() {
+          throw new Error("not used");
+        },
+        async putSecretValue() {
+          throw new Error("not used");
+        },
+        async getSecretValue() {
+          throw new Error("should not be called");
+        },
+        async deleteSecret() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    await expect(
+      provider.resolveVersion({
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId:
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+          versionId: "aws-version-2",
+          source: "managed",
+        },
+        externalRef:
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+        providerVersionRef: "aws-version-2",
+        context: {
+          companyId: "company-1",
+          secretId: "secret-1",
+          secretKey: "openai-api-key",
+          version: 2,
+        },
+      }),
+    ).rejects.toThrow(/drifted outside the derived deployment\/company scope/i);
+  });
+
   it("warns when AWS provider configuration is incomplete and blocks managed writes", async () => {
     delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
     delete process.env.AWS_REGION;
@@ -325,10 +369,12 @@ describe("awsSecretsManagerProvider", () => {
 
     await provider.deleteOrArchive({
       mode: "delete",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
+      externalRef:
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
       material: {
         scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
+        secretId:
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
         versionId: null,
         source: "managed",
       },
@@ -339,6 +385,24 @@ describe("awsSecretsManagerProvider", () => {
         version: 2,
       },
     });
+    await expect(
+      provider.deleteOrArchive({
+        mode: "delete",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/attacker",
+          versionId: null,
+          source: "managed",
+        },
+        context: {
+          companyId: "company-1",
+          secretKey: "openai-api-key",
+          secretName: "OpenAI API Key",
+          version: 2,
+        },
+      }),
+    ).rejects.toThrow(/drifted outside the derived deployment\/company scope/i);
     await provider.deleteOrArchive({
       mode: "delete",
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
@@ -360,7 +424,8 @@ describe("awsSecretsManagerProvider", () => {
       {
         op: "deleteSecret",
         input: {
-          SecretId: "paperclip/prod-use1/company-1/openai-api-key",
+          SecretId:
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
           RecoveryWindowInDays: 30,
         },
       },

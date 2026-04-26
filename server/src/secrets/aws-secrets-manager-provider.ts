@@ -216,10 +216,19 @@ function resolveManagedSecretRef(input: {
   context: ManagedSecretNamespaceContext | undefined;
   externalRefs: Array<string | null | undefined>;
 }) {
+  let sawNonEmptyExternalRef = false;
   for (const externalRef of input.externalRefs) {
+    if (externalRef?.trim()) {
+      sawNonEmptyExternalRef = true;
+    }
     if (externalRef?.trim() && isManagedSecretRefForContext(input.config, input.context, externalRef)) {
       return externalRef.trim();
     }
+  }
+  if (sawNonEmptyExternalRef) {
+    throw unprocessable(
+      "AWS Secrets Manager managed secret ref drifted outside the derived deployment/company scope",
+    );
   }
   return buildManagedSecretId(input.config, input.context);
 }

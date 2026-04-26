@@ -7,6 +7,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 const mockSecretService = vi.hoisted(() => ({
   listProviders: vi.fn(),
   checkProviders: vi.fn(),
+  create: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -37,6 +38,7 @@ describe("secret routes", () => {
   beforeEach(() => {
     mockSecretService.listProviders.mockReset();
     mockSecretService.checkProviders.mockReset();
+    mockSecretService.create.mockReset();
     mockLogActivity.mockReset();
   });
 
@@ -63,5 +65,18 @@ describe("secret routes", () => {
         },
       ],
     });
+  });
+
+  it("rejects managed secret creation when externalRef is supplied", async () => {
+    const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
+      name: "OpenAI API Key",
+      managedMode: "paperclip_managed",
+      value: "secret-value",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 });

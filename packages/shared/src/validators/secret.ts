@@ -47,6 +47,13 @@ export const createSecretSchema = z.object({
     }
     return;
   }
+  if (value.externalRef?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["externalRef"],
+      message: "Managed secrets cannot set externalRef",
+    });
+  }
   if (!value.value?.trim()) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

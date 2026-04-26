@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   companies,
@@ -13,6 +13,7 @@ import {
   secretAccessEvents,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -39,6 +40,7 @@ describeEmbeddedPostgres("secretService", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
@@ -187,5 +189,114 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.EXTERNAL_SECRET",
       }),
     ).rejects.toThrow(/not bound/i);
+  });
+
+  it("rejects externalRef overrides on managed secrets", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `managed-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(
+      svc.update(secret.id, {
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-b/openai-api-key",
+      }),
+    ).rejects.toThrow(/Managed secrets cannot override externalRef/i);
+
+    await expect(
+      svc.rotate(secret.id, {
+        value: "rotated-runtime-secret",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-b/openai-api-key",
+      }),
+    ).rejects.toThrow(/Managed secrets cannot override externalRef/i);
+  });
+
+  it("passes managed AWS secret context into provider delete during removal", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key";
+
+    const secret = await db
+      .insert(companySecrets)
+      .values({
+        companyId,
+        key: "openai-api-key",
+        name: "OpenAI API Key",
+        provider: "aws_secrets_manager",
+        managedMode: "paperclip_managed",
+        externalRef,
+        latestVersion: 1,
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    await db.insert(companySecretVersions).values({
+      secretId: secret.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      providerVersionRef: "aws-version-1",
+      status: "current",
+    });
+
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+
+    const removed = await svc.remove(secret.id);
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.id, secret.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(removed?.id).toBe(secret.id);
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      externalRef,
+      context: {
+        companyId,
+        secretKey: "openai-api-key",
+        secretName: "OpenAI API Key",
+        version: 1,
+      },
+      mode: "delete",
+    });
+    expect(persisted).toBeNull();
+  });
+
+  it("refuses to resolve secrets once they are disabled or archived", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `managed-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await svc.update(secret.id, { status: "disabled" });
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest")).rejects.toThrow(
+      /not active/i,
+    );
+
+    await svc.update(secret.id, { status: "archived" });
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest")).rejects.toThrow(
+      /not active/i,
+    );
   });
 });

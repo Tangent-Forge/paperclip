@@ -369,6 +369,9 @@ export function secretService(db: Db) {
       if (managedMode === "external_reference" && !input.externalRef?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
+      if (managedMode === "paperclip_managed" && input.externalRef?.trim()) {
+        throw unprocessable("Managed secrets cannot override externalRef");
+      }
       if (managedMode === "paperclip_managed" && !input.value?.trim()) {
         throw unprocessable("Managed secrets require value");
       }
@@ -443,6 +446,9 @@ export function secretService(db: Db) {
       const nextVersion = secret.latestVersion + 1;
       if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
+      }
+      if (secret.managedMode !== "external_reference" && input.externalRef?.trim()) {
+        throw unprocessable("Managed secrets cannot override externalRef");
       }
       if (secret.managedMode !== "external_reference" && !input.value?.trim()) {
         throw unprocessable("Managed secrets require value");
@@ -537,6 +543,9 @@ export function secretService(db: Db) {
         }
       }
       const deleting = patch.status === "deleted";
+      if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
+        throw unprocessable("Managed secrets cannot override externalRef");
+      }
 
       return db
         .update(companySecrets)
