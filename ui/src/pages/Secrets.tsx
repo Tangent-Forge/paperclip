@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AlertTriangle,
   ArchiveRestore,
   Archive,
   Ban,
@@ -801,6 +802,7 @@ function ProviderHealthBar({
         {providers.map((provider) => {
           const entry = healthMap.get(provider.id);
           const status = entry?.status ?? "ok";
+          const warningCount = entry?.warnings?.length ?? 0;
           return (
             <span
               key={provider.id}
@@ -809,9 +811,10 @@ function ProviderHealthBar({
             >
               <span className={cn("h-1.5 w-1.5 rounded-full", dot(status))} />
               {provider.label}
-              {entry?.warnings && entry.warnings.length > 0 ? (
-                <span className="text-amber-600 dark:text-amber-400">
-                  ({entry.warnings.length})
+              {warningCount > 0 ? (
+                <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  {warningCount} warning{warningCount === 1 ? "" : "s"}
                 </span>
               ) : null}
             </span>

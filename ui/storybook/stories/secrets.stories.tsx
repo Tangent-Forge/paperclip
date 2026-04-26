@@ -14,8 +14,14 @@ import { storybookCompanies, storybookSecrets } from "../fixtures/paperclipData"
 
 const COMPANY_ID = "company-storybook";
 
+// Seed localStorage before CompanyContext mounts so its `useState` initializer reads the right id.
+if (typeof window !== "undefined") {
+  window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+}
+
 function StorybookSecretsFixtures({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
+  // Seed query caches synchronously so children hydrate from cache on first render.
   queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
   queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecrets);
 
@@ -25,6 +31,12 @@ function StorybookSecretsFixtures({ children }: { children: ReactNode }) {
       setSelectedCompanyId(COMPANY_ID);
     }
   }, [selectedCompanyId, setSelectedCompanyId]);
+
+  // Block render until the company id is the storybook fixture so the BindingPicker's
+  // useQuery never sees the production-like null state.
+  if (selectedCompanyId !== COMPANY_ID) {
+    return null;
+  }
 
   return <>{children}</>;
 }
@@ -154,7 +166,7 @@ export const EnvEditorWithSecrets: Story = {
           }}
         />
         <EditorDemo
-          label="Bindings with attention required"
+          label="Mixed bindings (some need attention)"
           initial={{
             OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai", version: 2 },
             GITHUB_APP_PEM: { type: "secret_ref", secretId: "secret-github", version: "latest" },
