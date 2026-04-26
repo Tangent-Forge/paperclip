@@ -143,6 +143,21 @@ pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
 pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
 ```
 
+## Secrets Commands
+
+```sh
+pnpm paperclipai secrets list --company-id <company-id>
+pnpm paperclipai secrets declarations --company-id <company-id> [--include agents,projects] [--kind secret]
+pnpm paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
+pnpm paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
+pnpm paperclipai secrets doctor --company-id <company-id>
+pnpm paperclipai secrets migrate-inline-env --company-id <company-id> [--apply]
+```
+
+Secret listing and declarations never print secret values. `create` accepts
+`--value-env` so shell history does not capture the value. `link` records
+provider-owned references without copying the secret value into Paperclip.
+
 ## Approval Commands
 
 ```sh

@@ -42,6 +42,7 @@ Validate secrets config:
 
 ```sh
 pnpm paperclipai doctor
+pnpm paperclipai secrets doctor --company-id <company-id>
 ```
 
 ### Environment Overrides
@@ -82,9 +83,32 @@ configured.
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
 
 ```sh
+pnpm paperclipai secrets migrate-inline-env --company-id <company-id>
+pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+
+# low-level script for direct database maintenance
 pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
+
+Use the CLI command for normal operations because it goes through the Paperclip
+API, creates or rotates secret records, and updates agent env bindings with
+audit logging.
+
+## Portable Declarations
+
+Company exports include only environment declarations. They do not include
+secret IDs, provider references, encrypted material, or plaintext values.
+
+```sh
+pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
+```
+
+Before importing a package into another instance, use those declarations to
+create local values or link hosted provider references in the target deployment.
+For hosted providers such as AWS Secrets Manager, the hosted provider remains
+the value custodian; Paperclip stores metadata and provider version references,
+not provider credentials or plaintext secret values.
 
 ## Secret References in Agent Config
 

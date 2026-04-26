@@ -51,6 +51,12 @@ GET /api/companies/{companyId}/secret-providers/health
 Returns provider setup diagnostics, warnings, and local backup guidance. Health
 responses must not include secret values or provider credentials.
 
+The equivalent CLI check is:
+
+```sh
+pnpm paperclipai secrets doctor --company-id {companyId}
+```
+
 ## Update Secret
 
 ```
@@ -79,3 +85,15 @@ Reference secrets in agent adapter config instead of inline values:
 ```
 
 The server resolves and decrypts secret references at runtime, injecting the real value into the agent process environment.
+
+## Portability
+
+Company export/import APIs represent agent and project environment requirements
+as declarations in the package manifest. Exports omit secret values, secret IDs,
+provider references, and encrypted provider material. Use:
+
+```sh
+pnpm paperclipai secrets declarations --company-id {companyId}
+```
+
+to inspect the declarations that an export would emit before moving a package.
