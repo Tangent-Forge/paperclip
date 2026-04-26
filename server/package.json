@@ -44,7 +44,11 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/credential-provider-node": "^3.972.10",
     "@paperclipai/adapter-acpx-local": "workspace:*",
+    "@smithy/hash-node": "^4.2.8",
+    "@smithy/protocol-http": "^5.3.8",
+    "@smithy/signature-v4": "^5.3.8",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",

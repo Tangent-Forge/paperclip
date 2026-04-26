@@ -39,7 +39,7 @@ describe("secret provider registry", () => {
         }),
         expect.objectContaining({
           id: "aws_secrets_manager",
-          supportsManagedValues: false,
+          supportsManagedValues: true,
           supportsExternalReferences: true,
           configured: false,
         }),

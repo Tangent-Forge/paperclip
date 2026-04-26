@@ -79,6 +79,7 @@ export interface SecretProviderModule {
   deleteOrArchive(input: {
     material?: StoredSecretVersionMaterial | null;
     externalRef: string | null;
+    context?: SecretProviderWriteContext;
     mode: "archive" | "delete";
   }): Promise<void>;
   healthCheck(input?: {

@@ -377,10 +377,22 @@ export function secretService(db: Db) {
           ? await provider.linkExternalSecret({
               externalRef: input.externalRef ?? "",
               providerVersionRef: input.providerVersionRef ?? null,
+              context: {
+                companyId,
+                secretKey: key,
+                secretName: input.name,
+                version: 1,
+              },
             })
           : await provider.createSecret({
               value: input.value ?? "",
-              externalRef: input.externalRef ?? null,
+              externalRef: null,
+              context: {
+                companyId,
+                secretKey: key,
+                secretName: input.name,
+                version: 1,
+              },
             });
 
       return db.transaction(async (tx) => {
@@ -440,10 +452,22 @@ export function secretService(db: Db) {
           ? await provider.linkExternalSecret({
               externalRef: input.externalRef ?? secret.externalRef ?? "",
               providerVersionRef: input.providerVersionRef ?? null,
+              context: {
+                companyId: secret.companyId,
+                secretKey: secret.key,
+                secretName: secret.name,
+                version: nextVersion,
+              },
             })
           : await provider.createVersion({
               value: input.value ?? "",
-              externalRef: input.externalRef ?? secret.externalRef ?? null,
+              externalRef: secret.externalRef ?? null,
+              context: {
+                companyId: secret.companyId,
+                secretKey: secret.key,
+                secretName: secret.name,
+                version: nextVersion,
+              },
             });
 
       return db.transaction(async (tx) => {
@@ -633,6 +657,12 @@ export function secretService(db: Db) {
       await provider.deleteOrArchive({
         material: versionRow?.material as Record<string, unknown> | undefined,
         externalRef: secret.externalRef,
+        context: {
+          companyId: secret.companyId,
+          secretKey: secret.key,
+          secretName: secret.name,
+          version: secret.latestVersion,
+        },
         mode: "delete",
       });
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
