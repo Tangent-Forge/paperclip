@@ -288,7 +288,7 @@ export function Secrets() {
     },
   });
 
-  if (!selectedCompany) {
+  if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
     );
