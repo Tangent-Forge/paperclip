@@ -31,16 +31,35 @@ export const createSecretSchema = z.object({
   key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
-  value: z.string().min(1),
+  value: z.string().min(1).optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
+}).superRefine((value, ctx) => {
+  if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
+    if (!value.externalRef?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["externalRef"],
+        message: "External reference secrets require externalRef",
+      });
+    }
+    return;
+  }
+  if (!value.value?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "Managed secrets require value",
+    });
+  }
 });
 
 export type CreateSecret = z.infer<typeof createSecretSchema>;
 
 export const rotateSecretSchema = z.object({
-  value: z.string().min(1),
+  value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
 });

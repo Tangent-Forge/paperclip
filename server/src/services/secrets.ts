@@ -15,7 +15,11 @@ import type {
 } from "@paperclipai/shared";
 import { envBindingSchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import {
+  checkSecretProviders,
+  getSecretProvider,
+  listSecretProviders,
+} from "../secrets/provider-registry.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -207,6 +211,13 @@ export function secretService(db: Db) {
       const value = await provider.resolveVersion({
         material: versionRow.material as Record<string, unknown>,
         externalRef: secret.externalRef,
+        providerVersionRef: versionRow.providerVersionRef,
+        context: {
+          companyId,
+          secretId: secret.id,
+          secretKey: secret.key,
+          version: resolvedVersion,
+        },
       });
       await Promise.all([
         db
@@ -296,6 +307,8 @@ export function secretService(db: Db) {
   return {
     listProviders: () => listSecretProviders(),
 
+    checkProviders: () => checkSecretProviders(),
+
     list: (companyId: string) =>
       db
         .select()
@@ -330,11 +343,12 @@ export function secretService(db: Db) {
       input: {
         name: string;
         provider: SecretProvider;
-        value: string;
+        value?: string | null;
         key?: string | null;
         managedMode?: "paperclip_managed" | "external_reference";
         description?: string | null;
         externalRef?: string | null;
+        providerVersionRef?: string | null;
         providerMetadata?: Record<string, unknown> | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
@@ -350,11 +364,24 @@ export function secretService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (duplicateKey) throw conflict(`Secret key already exists: ${key}`);
 
+      const managedMode = input.managedMode ?? "paperclip_managed";
       const provider = getSecretProvider(input.provider);
-      const prepared = await provider.createVersion({
-        value: input.value,
-        externalRef: input.externalRef ?? null,
-      });
+      if (managedMode === "external_reference" && !input.externalRef?.trim()) {
+        throw unprocessable("External reference secrets require externalRef");
+      }
+      if (managedMode === "paperclip_managed" && !input.value?.trim()) {
+        throw unprocessable("Managed secrets require value");
+      }
+      const prepared =
+        managedMode === "external_reference"
+          ? await provider.linkExternalSecret({
+              externalRef: input.externalRef ?? "",
+              providerVersionRef: input.providerVersionRef ?? null,
+            })
+          : await provider.createSecret({
+              value: input.value ?? "",
+              externalRef: input.externalRef ?? null,
+            });
 
       return db.transaction(async (tx) => {
         const secret = await tx
@@ -365,7 +392,7 @@ export function secretService(db: Db) {
             name: input.name,
             provider: input.provider,
             status: "active",
-            managedMode: input.managedMode ?? "paperclip_managed",
+            managedMode,
             externalRef: prepared.externalRef,
             providerMetadata: input.providerMetadata ?? null,
             latestVersion: 1,
@@ -382,7 +409,8 @@ export function secretService(db: Db) {
           version: 1,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
-          fingerprintSha256: prepared.valueSha256,
+          fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+          providerVersionRef: prepared.providerVersionRef ?? null,
           status: "current",
           createdByAgentId: actor?.agentId ?? null,
           createdByUserId: actor?.userId ?? null,
@@ -394,17 +422,29 @@ export function secretService(db: Db) {
 
     rotate: async (
       secretId: string,
-      input: { value: string; externalRef?: string | null },
+      input: { value?: string | null; externalRef?: string | null; providerVersionRef?: string | null },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const nextVersion = secret.latestVersion + 1;
-      const prepared = await provider.createVersion({
-        value: input.value,
-        externalRef: input.externalRef ?? secret.externalRef ?? null,
-      });
+      if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
+        throw unprocessable("External reference secrets require externalRef");
+      }
+      if (secret.managedMode !== "external_reference" && !input.value?.trim()) {
+        throw unprocessable("Managed secrets require value");
+      }
+      const prepared =
+        secret.managedMode === "external_reference"
+          ? await provider.linkExternalSecret({
+              externalRef: input.externalRef ?? secret.externalRef ?? "",
+              providerVersionRef: input.providerVersionRef ?? null,
+            })
+          : await provider.createVersion({
+              value: input.value ?? "",
+              externalRef: input.externalRef ?? secret.externalRef ?? null,
+            });
 
       return db.transaction(async (tx) => {
         await tx
@@ -416,7 +456,8 @@ export function secretService(db: Db) {
           version: nextVersion,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
-          fingerprintSha256: prepared.valueSha256,
+          fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+          providerVersionRef: prepared.providerVersionRef ?? null,
           status: "current",
           createdByAgentId: actor?.agentId ?? null,
           createdByUserId: actor?.userId ?? null,
@@ -587,6 +628,13 @@ export function secretService(db: Db) {
     remove: async (secretId: string) => {
       const secret = await getById(secretId);
       if (!secret) return null;
+      const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
+      const provider = getSecretProvider(secret.provider as SecretProvider);
+      await provider.deleteOrArchive({
+        material: versionRow?.material as Record<string, unknown> | undefined,
+        externalRef: secret.externalRef,
+        mode: "delete",
+      });
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
       return secret;
     },

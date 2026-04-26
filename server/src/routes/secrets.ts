@@ -28,6 +28,14 @@ export function secretRoutes(db: Db) {
     res.json(svc.listProviders());
   });
 
+  router.get("/companies/:companyId/secret-providers/health", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const checks = await svc.checkProviders();
+    res.json({ providers: checks });
+  });
+
   router.get("/companies/:companyId/secrets", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
@@ -51,6 +59,7 @@ export function secretRoutes(db: Db) {
         value: req.body.value,
         description: req.body.description,
         externalRef: req.body.externalRef,
+        providerVersionRef: req.body.providerVersionRef,
         providerMetadata: req.body.providerMetadata,
       },
       { userId: req.actor.userId ?? "board", agentId: null },
@@ -84,6 +93,7 @@ export function secretRoutes(db: Db) {
       {
         value: req.body.value,
         externalRef: req.body.externalRef,
+        providerVersionRef: req.body.providerVersionRef,
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );

@@ -25,10 +25,36 @@ POST /api/companies/{companyId}/secrets
 
 The value is encrypted at rest. Only the secret ID and metadata are returned.
 
+To link a provider-owned secret without copying the value into Paperclip, create
+an external-reference secret:
+
+```json
+{
+  "name": "prod-stripe-key",
+  "provider": "aws_secrets_manager",
+  "managedMode": "external_reference",
+  "externalRef": "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/stripe",
+  "providerVersionRef": "version-id-or-label"
+}
+```
+
+Paperclip stores the provider reference and a non-sensitive fingerprint only.
+The value is resolved, when the provider is configured, through the server
+runtime path that enforces binding context and records access events.
+
+## Provider Health
+
+```
+GET /api/companies/{companyId}/secret-providers/health
+```
+
+Returns provider setup diagnostics, warnings, and local backup guidance. Health
+responses must not include secret values or provider credentials.
+
 ## Update Secret
 
 ```
-PATCH /api/secrets/{secretId}
+POST /api/secrets/{secretId}/rotate
 {
   "value": "sk-ant-new-value..."
 }

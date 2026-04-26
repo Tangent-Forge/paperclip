@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   companies,
   companySecretBindings,
@@ -23,8 +27,12 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("secretService", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
+  const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const secretsTmpDir = path.join(os.tmpdir(), `paperclip-secrets-service-${randomUUID()}`);
 
   beforeAll(async () => {
+    mkdirSync(secretsTmpDir, { recursive: true });
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
     const started = await startEmbeddedPostgresTestDatabase("secrets-service");
     stopDb = started.stop;
     db = createDb(started.connectionString);
@@ -40,6 +48,12 @@ describeEmbeddedPostgres("secretService", () => {
 
   afterAll(async () => {
     await stopDb?.();
+    if (previousKeyFile === undefined) {
+      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    } else {
+      process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
+    }
+    rmSync(secretsTmpDir, { recursive: true, force: true });
   });
 
   async function seedCompany(name = "Acme") {
@@ -140,5 +154,38 @@ describeEmbeddedPostgres("secretService", () => {
     expect(events).toHaveLength(2);
     expect(events.map((event) => event.outcome).sort()).toEqual(["failure", "success"]);
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("stores external references without requiring or persisting secret values", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/test",
+      providerVersionRef: "version-1",
+    });
+
+    expect(secret.managedMode).toBe("external_reference");
+    expect(secret.externalRef).toBe("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/test");
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.providerVersionRef).toBe("version-1");
+    expect(JSON.stringify(versions[0])).not.toContain("runtime-secret");
+    expect(JSON.stringify(versions[0])).not.toContain("sk-");
+
+    await expect(
+      svc.resolveSecretValue(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "system",
+        configPath: "env.EXTERNAL_SECRET",
+      }),
+    ).rejects.toThrow(/not bound/i);
   });
 });

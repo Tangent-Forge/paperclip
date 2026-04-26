@@ -14,6 +14,13 @@ Secrets are encrypted with a local master key stored at:
 ```
 
 This key is auto-created during onboarding. The key never leaves your machine.
+Paperclip best-effort enforces `0600` permissions when it creates or loads the
+key file. `paperclipai doctor` and the provider health API warn when the file is
+readable by group or other users.
+
+Back up the key file together with database backups. A database backup without
+the key cannot decrypt local secrets, and a key backup without the database
+metadata is not enough to restore named secret versions.
 
 ## Configuration
 
@@ -54,6 +61,21 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 ```
 
 Recommended for any deployment beyond local trusted.
+
+Authenticated deployments default strict mode on unless explicitly overridden by
+configuration or `PAPERCLIP_SECRETS_STRICT_MODE=false`.
+
+## External References
+
+Provider-owned secrets can be linked without copying values into Paperclip by
+using `managedMode: "external_reference"` plus a provider `externalRef`.
+Paperclip stores metadata and a non-sensitive fingerprint, never the value.
+Runtime resolution remains server-side and binding-enforced.
+
+The built-in AWS, GCP, and Vault provider IDs currently accept external
+reference metadata, but runtime resolution requires provider configuration in the
+deployment. Their provider health check reports this as a warning until
+configured.
 
 ## Migrating Inline Secrets
 

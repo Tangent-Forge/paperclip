@@ -53,6 +53,9 @@ export interface SecretProviderDescriptor {
   id: SecretProvider;
   label: string;
   requiresExternalRef: boolean;
+  supportsManagedValues?: boolean;
+  supportsExternalReferences?: boolean;
+  configured?: boolean;
 }
 
 export interface CompanySecretVersion {
