@@ -1,8 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
-  SECRET_PROVIDERS,
-  type SecretProvider,
   createSecretSchema,
   rotateSecretSchema,
   updateSecretSchema,
@@ -10,16 +8,12 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
-  const configuredDefaultProvider = process.env.PAPERCLIP_SECRETS_PROVIDER;
-  const defaultProvider = (
-    configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
-      ? configuredDefaultProvider
-      : "local_encrypted"
-  ) as SecretProvider;
+  const defaultProvider = getConfiguredSecretProvider();
 
   router.get("/companies/:companyId/secret-providers", (req, res) => {
     assertBoard(req);

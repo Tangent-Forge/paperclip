@@ -50,6 +50,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -951,9 +952,10 @@ export function routineService(
     executor?: Db,
   ) {
     const secretValue = crypto.randomBytes(24).toString("hex");
+    const providerId = getConfiguredSecretProvider();
     const input = {
       name: `routine-${routineId}-${crypto.randomBytes(6).toString("hex")}`,
-      provider: "local_encrypted" as const,
+      provider: providerId,
       value: secretValue,
       description: `Webhook auth for routine ${routineId}`,
     };

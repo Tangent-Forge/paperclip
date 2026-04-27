@@ -33,30 +33,19 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecrets, pluginConfig } from "@paperclipai/db";
-import { pluginRegistryService } from "./plugin-registry.js";
-import { secretService } from "./secrets.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 
+export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
+  "Plugin secret references are disabled until company-scoped plugin config lands";
+
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Create a sanitised error that never leaks secret material.
- * Only the ref identifier is included; never the resolved value.
- */
-function secretNotFound(secretRef: string): Error {
-  const err = new Error(`Secret not found: ${secretRef}`);
-  err.name = "SecretNotFoundError";
-  return err;
-}
 
 function invalidSecretRef(secretRef: string): Error {
   const err = new Error(`Invalid secret reference: ${secretRef}`);
@@ -210,16 +199,10 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { db, pluginId } = options;
-  const registry = pluginRegistryService(db);
-  const secrets = secretService(db);
+  const { pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
-
-  let cachedAllowedRefs: Map<string, Set<string>> | null = null;
-  let cachedAllowedRefsExpiry = 0;
-  const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds, matches event bus TTL
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
@@ -247,53 +230,9 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // ---------------------------------------------------------------
-      // 1b. Scope check — only allow secrets referenced in this plugin's config
-      // ---------------------------------------------------------------
-      const now = Date.now();
-      if (!cachedAllowedRefs || now > cachedAllowedRefsExpiry) {
-        const [configRow, plugin] = await Promise.all([
-          db
-            .select()
-            .from(pluginConfig)
-            .where(eq(pluginConfig.pluginId, pluginId))
-            .then((rows) => rows[0] ?? null),
-          registry.getById(pluginId),
-        ]);
-
-        const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
-          ?.instanceConfigSchema as Record<string, unknown> | undefined;
-        cachedAllowedRefs = extractSecretRefPathsFromConfig(configRow?.configJson, schema);
-        cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
-      }
-
-      const allowedPaths = cachedAllowedRefs.get(trimmedRef);
-      if (!allowedPaths) {
-        // Return "not found" to avoid leaking whether the secret exists
-        throw secretNotFound(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 2. Look up the secret record by UUID
-      // ---------------------------------------------------------------
-      const secret = await db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.id, trimmedRef))
-        .then((rows) => rows[0] ?? null);
-
-      if (!secret) {
-        throw secretNotFound(trimmedRef);
-      }
-
-      return await secrets.resolveSecretValue(secret.companyId, secret.id, "latest", {
-        consumerType: "plugin",
-        consumerId: pluginId,
-        actorType: "plugin",
-        actorId: pluginId,
-        pluginId,
-        configPath: [...allowedPaths][0] ?? "$",
-      });
+      // Fail closed until plugin config and worker runtime both carry an
+      // explicit company scope for secret bindings and resolution.
+      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
     },
   };
 }

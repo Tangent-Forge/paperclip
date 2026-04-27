@@ -9,6 +9,7 @@ import type {
   PluginEnvironmentConfig,
   PluginSandboxEnvironmentConfig,
   SandboxEnvironmentConfig,
+  SecretProvider,
   SecretVersionSelector,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
@@ -166,6 +167,7 @@ async function createEnvironmentSecret(input: {
   environmentName: string;
   driver: EnvironmentDriver;
   field: string;
+  provider: SecretProvider;
   value: string;
   actor?: { userId?: string | null; agentId?: string | null };
 }) {
@@ -173,7 +175,7 @@ async function createEnvironmentSecret(input: {
     input.companyId,
     {
       name: secretName(input),
-      provider: "local_encrypted",
+      provider: input.provider,
       value: input.value,
       description: `Secret for ${input.environmentName} ${input.field}.`,
     },
@@ -191,6 +193,7 @@ async function persistConfigSecretRefs(input: {
   companyId: string;
   environmentName: string;
   driver: EnvironmentDriver;
+  secretProvider: SecretProvider;
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
   actor?: { userId?: string | null; agentId?: string | null };
@@ -214,6 +217,7 @@ async function persistConfigSecretRefs(input: {
       environmentName: input.environmentName,
       driver: input.driver,
       field: path.replace(/[^a-z0-9]+/gi, "-").toLowerCase(),
+      provider: input.secretProvider,
       value: trimmed,
       actor: input.actor,
     });
@@ -383,6 +387,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   companyId: string;
   environmentName: string;
   driver: EnvironmentDriver;
+  secretProvider: SecretProvider;
   config: Record<string, unknown> | null | undefined;
   actor?: { userId?: string | null; agentId?: string | null };
   pluginWorkerManager?: PluginWorkerManager;
@@ -404,6 +409,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
         environmentName: input.environmentName,
         driver: input.driver,
         field: "private-key",
+        provider: input.secretProvider,
         value: privateKey,
         actor: input.actor,
       });
@@ -447,6 +453,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       companyId: input.companyId,
       environmentName: input.environmentName,
       driver: input.driver,
+      secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
         ...validated.normalizedConfig,

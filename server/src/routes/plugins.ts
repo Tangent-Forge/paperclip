@@ -73,8 +73,10 @@ import {
   requireLocalFolderDeclaration,
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
-import { extractSecretRefPathsFromConfig } from "../services/plugin-secrets-handler.js";
-import { secretService } from "../services/secrets.js";
+import {
+  extractSecretRefPathsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -1943,32 +1945,15 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      if (secretRefsByPath.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      const secrets = secretService(db);
-      const refsByCompany = new Map<string, Array<{ secretId: string; configPath: string; versionSelector: "latest" }>>();
-      for (const secretRef of secretRefsByPath.keys()) {
-        const secret = await secrets.getById(secretRef);
-        if (!secret) continue;
-        const refs = refsByCompany.get(secret.companyId) ?? [];
-        for (const configPath of secretRefsByPath.get(secretRef) ?? []) {
-          refs.push({
-            secretId: secretRef,
-            configPath,
-            versionSelector: "latest",
-          });
-        }
-        refsByCompany.set(secret.companyId, refs);
-      }
-      for (const [companyId, refs] of refsByCompany) {
-        await secrets.syncSecretRefsForTarget(
-          companyId,
-          { targetType: "plugin", targetId: plugin.id },
-          refs,
-        );
-      }
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,

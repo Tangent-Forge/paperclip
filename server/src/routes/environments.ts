@@ -27,6 +27,7 @@ import {
 import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
+import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
@@ -203,6 +204,7 @@ export function environmentRoutes(
         companyId,
         environmentName: req.body.name,
         driver: req.body.driver,
+        secretProvider: getConfiguredSecretProvider(),
         config: req.body.config,
         actor: {
           agentId: actor.agentId,
@@ -311,6 +313,7 @@ export function environmentRoutes(
               companyId: existing.companyId,
               environmentName: nextName,
               driver: nextDriver,
+              secretProvider: getConfiguredSecretProvider(),
               config: configSource,
               actor: {
                 agentId: actor.agentId,
