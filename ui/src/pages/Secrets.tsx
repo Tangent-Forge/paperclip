@@ -93,9 +93,93 @@ function providerLabel(providers: SecretProviderDescriptor[] | undefined, id: Se
   return providers?.find((p) => p.id === id)?.label ?? id.replaceAll("_", " ");
 }
 
+function normalizeSecretKeyForPreview(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+}
+
+function modeBadgeTone(managedMode: SecretManagedMode) {
+  return managedMode === "paperclip_managed"
+    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+    : "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+}
+
+function modeLabel(managedMode: SecretManagedMode) {
+  return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
+}
+
+function modeDescription(managedMode: SecretManagedMode) {
+  return managedMode === "paperclip_managed"
+    ? "Paperclip owns create and rotation writes for this provider secret."
+    : "Paperclip resolves this provider reference but does not rotate the provider value.";
+}
+
+function healthEntryForProvider(
+  health: SecretProviderHealthResponse | null,
+  providerId: SecretProvider,
+) {
+  return health?.providers.find((entry) => entry.provider === providerId) ?? null;
+}
+
+export function getCreateProviderBlockReason(
+  provider: SecretProviderDescriptor | null | undefined,
+  mode: CreateMode,
+  health: SecretProviderHealthResponse | null,
+) {
+  if (!provider) return "Select a provider.";
+  if (mode === "managed" && provider.supportsManagedValues === false) {
+    return `${provider.label} does not support Paperclip-managed secret values.`;
+  }
+  if (mode === "external" && provider.supportsExternalReferences === false) {
+    return `${provider.label} does not support linked external references.`;
+  }
+  if (provider.configured === false) {
+    return `${provider.label} is not configured in this deployment.`;
+  }
+  const healthEntry = healthEntryForProvider(health, provider.id);
+  if (healthEntry?.status === "error") {
+    return `${provider.label} health check failed: ${healthEntry.message}`;
+  }
+  return null;
+}
+
+function providerHealthText(
+  provider: SecretProviderDescriptor | null | undefined,
+  health: SecretProviderHealthResponse | null,
+) {
+  if (!provider) return null;
+  const entry = healthEntryForProvider(health, provider.id);
+  if (!entry) return null;
+  const warnings = entry.warnings?.join(" ");
+  return [entry.message, warnings].filter(Boolean).join(" ");
+}
+
+function detailString(details: Record<string, unknown> | undefined, key: string) {
+  const value = details?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function getAwsManagedPathPreview(input: {
+  provider: SecretProviderDescriptor | null | undefined;
+  health: SecretProviderHealthResponse | null;
+  companyId: string;
+  secretKeySource: string;
+}) {
+  if (input.provider?.id !== "aws_secrets_manager") return null;
+  const healthEntry = healthEntryForProvider(input.health, "aws_secrets_manager");
+  const prefix = detailString(healthEntry?.details, "prefix") ?? "paperclip";
+  const deploymentId = detailString(healthEntry?.details, "deploymentId") ?? "{deploymentId}";
+  const secretKey = normalizeSecretKeyForPreview(input.secretKeySource) || "{secretKey}";
+  return `${prefix}/${deploymentId}/${input.companyId}/${secretKey}`;
+}
+
 export function Secrets() {
   const queryClient = useQueryClient();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [search, setSearch] = useState("");
@@ -156,6 +240,25 @@ export function Secrets() {
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? null,
     [secrets, selectedSecretId],
   );
+  const selectedCreateProvider = useMemo(
+    () => providers.find((provider) => provider.id === createForm.provider) ?? null,
+    [providers, createForm.provider],
+  );
+  const createProviderBlockReason = getCreateProviderBlockReason(
+    selectedCreateProvider,
+    createMode,
+    providerHealthQuery.data ?? null,
+  );
+  const createProviderHealthText = providerHealthText(
+    selectedCreateProvider,
+    providerHealthQuery.data ?? null,
+  );
+  const awsManagedPathPreview = getAwsManagedPathPreview({
+    provider: selectedCreateProvider,
+    health: providerHealthQuery.data ?? null,
+    companyId: selectedCompanyId ?? "{companyId}",
+    secretKeySource: createForm.key.trim() || createForm.name,
+  });
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -289,6 +392,23 @@ export function Secrets() {
     },
   });
 
+  useEffect(() => {
+    if (!createOpen || providers.length === 0) return;
+    const currentBlockReason = getCreateProviderBlockReason(
+      providers.find((provider) => provider.id === createForm.provider) ?? null,
+      createMode,
+      providerHealthQuery.data ?? null,
+    );
+    if (!currentBlockReason) return;
+    const replacement = providers.find(
+      (provider) =>
+        !getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
+    );
+    if (replacement && replacement.id !== createForm.provider) {
+      setCreateForm((current) => ({ ...current, provider: replacement.id }));
+    }
+  }, [createForm.provider, createMode, createOpen, providerHealthQuery.data, providers]);
+
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
@@ -376,6 +496,7 @@ export function Secrets() {
             <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-6 py-2 text-left font-medium">Name</th>
+                <th className="px-2 py-2 text-left font-medium">Mode</th>
                 <th className="px-2 py-2 text-left font-medium">Provider</th>
                 <th className="px-2 py-2 text-left font-medium">Status</th>
                 <th className="px-2 py-2 text-left font-medium">Version</th>
@@ -399,6 +520,11 @@ export function Secrets() {
                     <div className="font-medium text-foreground">{secret.name}</div>
                     <div className="text-[11px] text-muted-foreground font-mono">{secret.key}</div>
                   </td>
+                  <td className="px-2 py-2.5">
+                    <Badge variant="outline" className={cn("font-medium", modeBadgeTone(secret.managedMode))}>
+                      {modeLabel(secret.managedMode)}
+                    </Badge>
+                  </td>
                   <td className="px-2 py-2.5 text-xs">{providerLabel(providers, secret.provider)}</td>
                   <td className="px-2 py-2.5">
                     <Badge variant="outline" className={cn("font-medium", statusBadgeTone(secret.status))}>
@@ -419,7 +545,7 @@ export function Secrets() {
                         {secret.externalRef ?? "—"}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">Managed</span>
+                      <span className="text-muted-foreground">Owned by Paperclip</span>
                     )}
                   </td>
                   <td className="px-6 py-2.5 text-right">
@@ -452,6 +578,9 @@ export function Secrets() {
                   <Badge variant="outline" className={cn("ml-2", statusBadgeTone(selectedSecret.status))}>
                     {selectedSecret.status}
                   </Badge>
+                  <Badge variant="outline" className={cn(modeBadgeTone(selectedSecret.managedMode))}>
+                    {modeLabel(selectedSecret.managedMode)}
+                  </Badge>
                 </SheetTitle>
                 <SheetDescription>
                   {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} ·{" "}
@@ -469,7 +598,8 @@ export function Secrets() {
                     setRotateError(null);
                   }}
                 >
-                  <RefreshCw className="h-3.5 w-3.5 mr-1" /> Rotate
+                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Rotate"}
                 </Button>
                 {selectedSecret.status === "active" ? (
                   <Button
@@ -548,8 +678,8 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Create secret</DialogTitle>
             <DialogDescription>
-              Managed secrets store an encrypted value with the provider; external references link a value
-              that already lives in the provider.
+              Choose whether Paperclip should own future provider writes, or only resolve an existing
+              provider reference at runtime.
             </DialogDescription>
           </DialogHeader>
           <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)}>
@@ -597,27 +727,59 @@ export function Secrets() {
                 }
               >
                 {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
+                  <option
+                    key={provider.id}
+                    value={provider.id}
+                    disabled={Boolean(
+                      getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
+                    )}
+                  >
                     {provider.label}
-                    {provider.requiresExternalRef ? " (external only)" : ""}
+                    {provider.configured === false
+                      ? " (not configured)"
+                      : provider.requiresExternalRef
+                        ? " (external only)"
+                        : ""}
                   </option>
                 ))}
               </select>
+              {createProviderBlockReason ? (
+                <p className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                  <AlertCircle className="h-3 w-3" />
+                  {createProviderBlockReason}
+                </p>
+              ) : createProviderHealthText ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">{createProviderHealthText}</p>
+              ) : null}
             </div>
             {createMode === "managed" ? (
-              <div>
-                <label className="text-xs font-medium" htmlFor="new-secret-value">Value</label>
-                <Textarea
-                  id="new-secret-value"
-                  value={createForm.value}
-                  onChange={(event) =>
-                    setCreateForm((current) => ({ ...current, value: event.target.value }))
-                  }
-                  rows={3}
-                  className="font-mono text-xs"
-                  placeholder="Stored once, never re-displayed"
-                />
-              </div>
+              <>
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                  Paperclip-managed secrets are created in the selected provider and future rotations
+                  write a new provider version through Paperclip.
+                  {awsManagedPathPreview ? (
+                    <div className="mt-1">
+                      AWS managed path:{" "}
+                      <code className="break-all rounded bg-background/70 px-1 py-0.5">
+                        {awsManagedPathPreview}
+                      </code>
+                    </div>
+                  ) : null}
+                </div>
+                <div>
+                  <label className="text-xs font-medium" htmlFor="new-secret-value">Value</label>
+                  <Textarea
+                    id="new-secret-value"
+                    value={createForm.value}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({ ...current, value: event.target.value }))
+                    }
+                    rows={3}
+                    className="font-mono text-xs"
+                    placeholder="Stored once, never re-displayed"
+                  />
+                </div>
+              </>
             ) : (
               <div>
                 <label className="text-xs font-medium" htmlFor="new-secret-ref">External reference</label>
@@ -631,7 +793,8 @@ export function Secrets() {
                   className="font-mono text-xs"
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  The provider keeps custody of the value. Paperclip stores only the reference.
+                  Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,
+                  then update this reference only if the path, ARN, or version changes.
                 </p>
               </div>
             )}
@@ -661,6 +824,7 @@ export function Secrets() {
               }}
               disabled={
                 createMutation.isPending ||
+                Boolean(createProviderBlockReason) ||
                 !createForm.name.trim() ||
                 (createMode === "managed" ? !createForm.value : !createForm.externalRef.trim())
               }
@@ -675,9 +839,13 @@ export function Secrets() {
       <Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Rotate secret</DialogTitle>
+            <DialogTitle>
+              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Rotate secret"}
+            </DialogTitle>
             <DialogDescription>
-              Creates a new version. Consumers pinned to <code>latest</code> pick up the new value on the next run.
+              {selectedSecret?.managedMode === "external_reference"
+                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
+                : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
             </DialogDescription>
           </DialogHeader>
           {selectedSecret?.managedMode === "external_reference" ? (
@@ -690,6 +858,9 @@ export function Secrets() {
                 placeholder={selectedSecret.externalRef ?? "Updated reference"}
                 className="font-mono text-xs"
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Rotate the actual value in the provider before changing this Paperclip reference.
+              </p>
             </div>
           ) : (
             <div>
@@ -722,7 +893,7 @@ export function Secrets() {
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              Rotate
+              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Rotate"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -826,16 +997,12 @@ function ProviderHealthBar({
 }
 
 function SecretDetailsTab({ secret }: { secret: CompanySecret }) {
-  const managedLabel: Record<SecretManagedMode, string> = {
-    paperclip_managed: "Paperclip-managed value",
-    external_reference: "External reference",
-  };
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Managed mode">{managedLabel[secret.managedMode]}</DetailRow>
+      <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{secret.provider.replaceAll("_", " ")}</DetailRow>
       <DetailRow label="Latest version">v{secret.latestVersion}</DetailRow>
       <DetailRow label="Created">{formatRelative(secret.createdAt)}</DetailRow>
@@ -844,14 +1011,16 @@ function SecretDetailsTab({ secret }: { secret: CompanySecret }) {
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       {secret.externalRef ? (
         <div className="col-span-2">
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">External reference</dt>
+          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+            {secret.managedMode === "external_reference" ? "Linked provider reference" : "Provider-managed path"}
+          </dt>
           <dd className="font-mono text-xs break-all flex items-center gap-1">
             <ExternalLink className="h-3 w-3" /> {secret.externalRef}
           </dd>
         </div>
       ) : null}
       <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
-        Paperclip never re-displays stored values. To replace, rotate to create a new version.
+        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
       </div>
     </dl>
   );

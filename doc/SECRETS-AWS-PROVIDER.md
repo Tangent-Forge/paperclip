@@ -70,6 +70,33 @@ Operational expectation:
 - Paperclip-managed secrets may be deleted only by Paperclip or an operator with equivalent break-glass access.
 - External references may resolve through Paperclip runtime, but Paperclip should not delete the external secret resource.
 
+## Existing AWS Secrets
+
+V1 keeps existing AWS Secrets Manager entries as **linked external references**, not adopted
+Paperclip-managed resources.
+
+Use the Paperclip-managed flow when Paperclip should create and rotate the value. The AWS
+secret name is derived from deployment and company scope:
+
+```text
+paperclip/{deploymentId}/{companyId}/{secretKey}
+```
+
+Use the external-reference flow when the secret already exists at an operator-owned path such
+as:
+
+```text
+/paperclip-bench/anthropic_api_key
+```
+
+In that mode Paperclip stores only the path or ARN, resolves it at runtime, and records
+redacted access events. Operators rotate the actual value in AWS. Update the Paperclip
+reference only when the AWS path, ARN, or pinned provider version changes.
+
+Paperclip does not currently offer an "adopt existing AWS secret" flow that takes over future
+`PutSecretValue` writes for an arbitrary existing secret. Adding that later requires explicit
+confirmation UX, scope validation, expected Paperclip tags, and security/cloud-ops review.
+
 ## Data Custody
 
 - Paperclip stores `externalRef`, `providerVersionRef`, provider id, fingerprint hash, status, and binding metadata.
