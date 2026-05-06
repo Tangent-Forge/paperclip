@@ -104,6 +104,24 @@ For hosted Paperclip Cloud on AWS, see the AWS Secrets Manager operational
 contract — required env vars, IAM/KMS scoping, naming and tag conventions, and
 backup/rotation/incident runbooks — in `doc/SECRETS-AWS-PROVIDER.md`.
 
+### AWS Provider Bootstrap Boundary
+
+The AWS Secrets Manager provider cannot bootstrap itself from Paperclip
+`company_secrets`. Its initial AWS access must be present before the server can
+create or resolve AWS-backed company secrets.
+
+For Paperclip Cloud, provision the server runtime IAM role/workload identity,
+KMS key, deployment prefix, and non-secret `PAPERCLIP_SECRETS_AWS_*` environment
+configuration before enabling AWS-backed secrets in the board UI. For
+self-hosted and local runs, use the AWS SDK default credential chain: instance
+profile, ECS task role, EKS IRSA/OIDC web identity, AWS SSO/shared config via
+`AWS_PROFILE`, or short-lived shell credentials for local development.
+
+Do not store AWS root credentials or long-lived IAM user access keys in
+Paperclip secrets. Bootstrap material belongs in infrastructure IAM/workload
+identity, the process environment, an AWS profile, or the orchestrator secret
+store.
+
 ## Migrating Inline Secrets
 
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:

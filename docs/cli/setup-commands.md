@@ -67,7 +67,8 @@ Validates:
 
 - Server configuration
 - Database connectivity
-- Secrets adapter configuration
+- Secrets adapter configuration, including AWS Secrets Manager non-secret env
+  config when selected
 - Storage configuration
 - Missing key files
 

@@ -7,6 +7,72 @@ Operational contract for the hosted `aws_secrets_manager` secret provider used b
 - Hosted provider for Paperclip-managed secrets when Paperclip Cloud runs on AWS.
 - Source of truth for secret values is AWS Secrets Manager, not Postgres.
 - Paperclip stores only metadata needed for ownership, bindings, version selection, audit, and runtime resolution.
+- AWS provider bootstrap credentials are deployment/runtime credentials, not Paperclip-managed company secrets.
+
+## Bootstrap Trust Model
+
+The AWS provider has a chicken-and-egg boundary: Paperclip cannot use
+`company_secrets` to unlock the AWS provider that stores those secrets. The
+initial AWS trust must exist before the Paperclip server starts.
+
+Allowed bootstrap locations:
+
+- Infrastructure IAM or workload identity attached to the Paperclip server
+  runtime.
+- Process environment or orchestrator secret store used to start the Paperclip
+  server.
+- Local AWS SDK sources such as `AWS_PROFILE`, AWS SSO/shared config, web
+  identity, container metadata, or instance metadata.
+- Short-lived shell credentials for local development only.
+
+Do not ask operators to paste AWS root credentials or long-lived IAM user access
+keys into the Paperclip board UI. Do not store those bootstrap keys in
+`company_secrets`.
+
+## Paperclip Cloud Bootstrap
+
+Paperclip Cloud must provision the AWS backing resources before any board user
+can create AWS-backed company secrets:
+
+1. Create or select the deployment KMS key.
+2. Create the Paperclip server runtime role for the deployment.
+3. Attach a minimum IAM policy scoped to the deployment Secrets Manager prefix
+   and the configured KMS key.
+4. Configure the server runtime with the non-secret provider environment
+   variables below.
+5. Run `paperclipai doctor` or the provider health endpoint from the deployed
+   runtime and confirm that the provider reports the expected region, prefix,
+   deployment id, KMS setting, and AWS SDK credential source.
+
+Once this is in place, the board UI can create Paperclip-managed AWS secrets and
+Paperclip will write them under the deployment/company namespace.
+
+## Self-Hosted And Local Bootstrap
+
+Self-hosted AWS deployments should use the AWS SDK default credential provider
+chain. Preferred sources are role-based:
+
+- EC2 instance profile.
+- ECS task role.
+- EKS IRSA or another OIDC web identity role.
+- AWS SSO/shared config via `AWS_PROFILE`.
+
+Local development can use:
+
+```sh
+aws sso login --profile paperclip-dev
+AWS_PROFILE=paperclip-dev \
+PAPERCLIP_SECRETS_PROVIDER=aws_secrets_manager \
+PAPERCLIP_SECRETS_AWS_REGION=us-east-1 \
+PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID=dev-local \
+PAPERCLIP_SECRETS_AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/abcd-... \
+pnpm dev
+```
+
+Temporary `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` environment credentials
+are acceptable only as a local break-glass or short-lived test source. They
+should not be written to Paperclip config, committed to `.env` files, stored in
+`company_secrets`, or used as the default Paperclip Cloud bootstrap path.
 
 ## Deployment Config
 
@@ -64,6 +130,38 @@ arn:aws:secretsmanager:<region>:<account-id>:secret:paperclip/<deployment-id>/*
 - Allow `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey`, and `kms:DescribeKey` for the configured deployment CMK.
 - Deny wildcard access outside the deployment prefix.
 - Prefer workload identity / role-based auth. Do not store AWS credentials inline in Paperclip config.
+
+Example minimum policy shape:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PaperclipDeploymentSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:paperclip/<deployment-id>/*"
+    },
+    {
+      "Sid": "PaperclipDeploymentKms",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:<region>:<account-id>:key/<key-id>"
+    }
+  ]
+}
+```
 
 Operational expectation:
 

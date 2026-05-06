@@ -171,18 +171,18 @@ function formatRelative(value: Date | string | null | undefined): string {
   return date.toLocaleDateString();
 }
 
-function statusBadgeTone(status: SecretStatus) {
+function statusTextTone(status: SecretStatus) {
   switch (status) {
     case "active":
-      return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
+      return "text-emerald-700 dark:text-emerald-300";
     case "disabled":
-      return "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30";
+      return "text-amber-700 dark:text-amber-300";
     case "archived":
-      return "bg-muted text-muted-foreground border-border";
+      return "text-muted-foreground";
     case "deleted":
-      return "bg-destructive/10 text-destructive border-destructive/30";
+      return "text-destructive";
     default:
-      return "bg-muted text-muted-foreground border-border";
+      return "text-muted-foreground";
   }
 }
 
@@ -199,11 +199,6 @@ function normalizeSecretKeyForPreview(input: string) {
     .slice(0, 120);
 }
 
-function modeBadgeTone(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-    : "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
-}
 
 function modeLabel(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
@@ -347,6 +342,7 @@ export function Secrets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
+  const [secretDetailTab, setSecretDetailTab] = useState("details");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
@@ -836,23 +832,17 @@ export function Secrets() {
                 >
                   <td className="px-6 py-2.5">
                     <div className="font-medium text-foreground">{secret.name}</div>
-                    <div className="text-[11px] text-muted-foreground font-mono">{secret.key}</div>
                   </td>
-                  <td className="px-2 py-2.5">
-                    <Badge variant="outline" className={cn("font-medium", modeBadgeTone(secret.managedMode))}>
-                      {modeLabel(secret.managedMode)}
-                    </Badge>
+                  <td className="px-2 py-2.5 text-xs text-muted-foreground">
+                    {modeLabel(secret.managedMode)}
                   </td>
                   <td className="px-2 py-2.5 text-xs">
                     <div>{providerLabel(providers, secret.provider)}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {providerVaultLabel(providerConfigs, secret.providerConfigId)}
-                    </div>
                   </td>
                   <td className="px-2 py-2.5">
-                    <Badge variant="outline" className={cn("font-medium", statusBadgeTone(secret.status))}>
+                    <span className={cn("text-xs font-medium", statusTextTone(secret.status))}>
                       {secret.status}
-                    </Badge>
+                    </span>
                   </td>
                   <td className="px-2 py-2.5 text-xs font-mono">v{secret.latestVersion}</td>
                   <td className="px-2 py-2.5 text-xs text-muted-foreground">
@@ -868,7 +858,7 @@ export function Secrets() {
                         {secret.externalRef ?? "—"}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">Owned by Paperclip</span>
+                      <span className="text-muted-foreground">Owned</span>
                     )}
                   </td>
                   <td className="px-6 py-2.5 text-right">
@@ -919,16 +909,12 @@ export function Secrets() {
                 <SheetTitle className="flex items-center gap-2 text-base">
                   <KeyRound className="h-4 w-4" />
                   {selectedSecret.name}
-                  <Badge variant="outline" className={cn("ml-2", statusBadgeTone(selectedSecret.status))}>
+                  <span className={cn("ml-2 text-sm font-normal", statusTextTone(selectedSecret.status))}>
                     {selectedSecret.status}
-                  </Badge>
-                  <Badge variant="outline" className={cn(modeBadgeTone(selectedSecret.managedMode))}>
-                    {modeLabel(selectedSecret.managedMode)}
-                  </Badge>
+                  </span>
                 </SheetTitle>
                 <SheetDescription>
-                  {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} ·{" "}
-                  <span className="font-mono">{selectedSecret.key}</span>
+                  {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} · {modeLabel(selectedSecret.managedMode)}
                 </SheetDescription>
               </SheetHeader>
               <div className="flex flex-wrap gap-2 px-4 pb-2">
@@ -947,7 +933,7 @@ export function Secrets() {
                   }}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Rotate"}
+                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
                 </Button>
                 {selectedSecret.status === "active" ? (
                   <Button
@@ -996,14 +982,19 @@ export function Secrets() {
                   <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete
                 </Button>
               </div>
-              <Tabs defaultValue="details" className="flex-1 min-h-0 flex flex-col">
-                <TabsList className="mx-4">
-                  <TabsTrigger value="details">Details</TabsTrigger>
-                  <TabsTrigger value="usage">
-                    Usage{usageQuery.data ? ` (${usageQuery.data.bindings.length})` : ""}
-                  </TabsTrigger>
-                  <TabsTrigger value="events">Access events</TabsTrigger>
-                </TabsList>
+              <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
+                <div className="border-b border-border px-4">
+                  <PageTabBar
+                    items={[
+                      { value: "details", label: "Details" },
+                      { value: "usage", label: usageQuery.data ? `Usage (${usageQuery.data.bindings.length})` : "Usage" },
+                      { value: "events", label: "Access events" },
+                    ]}
+                    align="start"
+                    value={secretDetailTab}
+                    onValueChange={setSecretDetailTab}
+                  />
+                </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
                     <SecretDetailsTab secret={selectedSecret} providerConfigs={providerConfigs} />
@@ -1337,7 +1328,7 @@ export function Secrets() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Rotate secret"}
+              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
             </DialogTitle>
             <DialogDescription>
               {selectedSecret?.managedMode === "external_reference"
@@ -1419,7 +1410,7 @@ export function Secrets() {
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Rotate"}
+              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Update value"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1679,19 +1670,23 @@ export function ProviderVaultsTab({
 
       <div className="min-w-0 flex-1 space-y-6">
         {providerRows.map(({ id, provider, Icon, isComingSoonFamily, configs }) => (
-          <section key={id} id={`provider-vaults-${id}`} className="scroll-mt-6 space-y-2">
+          <section key={id} id={`provider-vaults-${id}`} className={cn("scroll-mt-6 space-y-2", isComingSoonFamily && "opacity-50")}>
             <div className="flex flex-wrap items-center gap-2">
               <Icon className="h-4 w-4 text-muted-foreground" />
               <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
-              <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(id)}>
-                <Plus className="h-3.5 w-3.5 mr-1" />
-                Add vault
-              </Button>
+              {isComingSoonFamily ? (
+                <span className="ml-auto text-xs text-muted-foreground">Coming soon</span>
+              ) : (
+                <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(id)}>
+                  <Plus className="h-3.5 w-3.5 mr-1" />
+                  Add vault
+                </Button>
+              )}
             </div>
             {configs.length === 0 ? (
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
-                  ? "No draft vaults saved. You can capture non-sensitive routing metadata before runtime support lands."
+                  ? "Not yet supported."
                   : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (

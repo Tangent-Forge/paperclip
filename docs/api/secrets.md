@@ -51,6 +51,11 @@ GET /api/companies/{companyId}/secret-providers/health
 Returns provider setup diagnostics, warnings, and local backup guidance. Health
 responses must not include secret values or provider credentials.
 
+For `aws_secrets_manager`, an unready health response names the missing
+non-secret provider environment variables, the AWS SDK default credential source
+expected by the server runtime, and the custody rule that AWS bootstrap
+credentials must not be stored in Paperclip `company_secrets`.
+
 The equivalent CLI check is:
 
 ```sh

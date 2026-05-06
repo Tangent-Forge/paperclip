@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Agent, CompanySecret } from "@paperclipai/shared";
+import type { PaperclipConfig } from "../config/schema.js";
+import { secretsCheck } from "../checks/secrets-check.js";
 import {
   buildInlineMigrationSecretName,
   buildMigratedAgentEnv,
@@ -63,7 +65,81 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
   };
 }
 
+function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provider"]): PaperclipConfig {
+  return {
+    $meta: {
+      version: 1,
+      updatedAt: "2026-05-02T00:00:00.000Z",
+      source: "configure",
+    },
+    database: {
+      mode: "embedded-postgres",
+      embeddedPostgresDataDir: "/tmp/paperclip/db",
+      embeddedPostgresPort: 55432,
+      backup: {
+        enabled: true,
+        intervalMinutes: 60,
+        retentionDays: 30,
+        dir: "/tmp/paperclip/backups",
+      },
+    },
+    logging: {
+      mode: "file",
+      logDir: "/tmp/paperclip/logs",
+    },
+    server: {
+      deploymentMode: "local_trusted",
+      exposure: "private",
+      host: "127.0.0.1",
+      port: 3100,
+      allowedHostnames: [],
+      serveUi: true,
+    },
+    auth: {
+      baseUrlMode: "auto",
+      disableSignUp: false,
+    },
+    telemetry: {
+      enabled: true,
+    },
+    storage: {
+      provider: "local_disk",
+      localDisk: {
+        baseDir: "/tmp/paperclip/storage",
+      },
+      s3: {
+        bucket: "paperclip",
+        region: "us-east-1",
+        prefix: "",
+        forcePathStyle: false,
+      },
+    },
+    secrets: {
+      provider,
+      strictMode: true,
+      localEncrypted: {
+        keyFilePath: "/tmp/paperclip/secrets/master.key",
+      },
+    },
+  };
+}
+
 describe("secrets CLI helpers", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
+    delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
+    delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
   it("parses declaration include filters", () => {
     expect(parseSecretsInclude("agents,projects,tasks")).toEqual({
       company: false,
@@ -154,5 +230,28 @@ describe("secrets CLI helpers", () => {
     expect(toPlainEnvValue("plain-value")).toBe("plain-value");
     expect(toPlainEnvValue({ type: "plain", value: "wrapped" })).toBe("wrapped");
     expect(toPlainEnvValue({ type: "secret_ref", secretId: "secret-1" })).toBeNull();
+  });
+
+  it("reports the AWS bootstrap config required by doctor", () => {
+    const result = secretsCheck(configWithSecretsProvider("aws_secrets_manager"));
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID");
+    expect(result.repairHint).toContain("AWS SDK default credential chain");
+    expect(result.repairHint).toContain("Do not store AWS root credentials");
+  });
+
+  it("passes AWS doctor checks when non-secret provider config is present", () => {
+    process.env.PAPERCLIP_SECRETS_AWS_REGION = "us-east-1";
+    process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID = "prod-us-1";
+    process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID =
+      "arn:aws:kms:us-east-1:123456789012:key/test";
+    process.env.AWS_PROFILE = "paperclip-prod";
+
+    const result = secretsCheck(configWithSecretsProvider("aws_secrets_manager"));
+
+    expect(result.status).toBe("pass");
+    expect(result.message).toContain("prod-us-1");
+    expect(result.message).toContain("AWS_PROFILE/shared config");
   });
 });

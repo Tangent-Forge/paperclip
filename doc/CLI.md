@@ -157,6 +157,9 @@ pnpm paperclipai secrets migrate-inline-env --company-id <company-id> [--apply]
 Secret listing and declarations never print secret values. `create` accepts
 `--value-env` so shell history does not capture the value. `link` records
 provider-owned references without copying the secret value into Paperclip.
+For AWS-backed secrets, `secrets doctor` reports missing non-secret provider
+env and the expected AWS SDK runtime credential source; do not store AWS
+bootstrap credentials in Paperclip secrets.
 
 ## Approval Commands
 

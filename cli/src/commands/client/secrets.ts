@@ -234,10 +234,30 @@ function printProviderHealth(rows: SecretProviderHealth[], json: boolean): void 
     for (const warning of row.warnings ?? []) {
       console.log(pc.yellow(`warning=${warning}`));
     }
+    const missingConfig = asStringArray(row.details?.missingConfig);
+    if (missingConfig.length > 0) {
+      console.log(pc.dim(`missingConfig=${missingConfig.join(",")}`));
+    }
+    const credentialSource = typeof row.details?.credentialSource === "string"
+      ? row.details.credentialSource
+      : null;
+    if (credentialSource) {
+      console.log(pc.dim(`credentialSource=${credentialSource}`));
+    }
+    const detectedCredentialSources = asStringArray(row.details?.detectedCredentialSources);
+    if (detectedCredentialSources.length > 0) {
+      console.log(pc.dim(`detectedCredentialSources=${detectedCredentialSources.join(",")}`));
+    }
     for (const guidance of row.backupGuidance ?? []) {
       console.log(pc.dim(`backup=${guidance}`));
     }
   }
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
 }
 
 async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<void> {
