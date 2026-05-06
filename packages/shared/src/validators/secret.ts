@@ -71,6 +71,7 @@ export const rotateSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
 });
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;

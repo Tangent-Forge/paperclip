@@ -10,6 +10,7 @@ import type {
   SecretProviderHealthCheck,
   SecretProviderModule,
   SecretProviderValidationResult,
+  SecretProviderVaultRuntimeConfig,
   SecretProviderWriteContext,
   StoredSecretVersionMaterial,
 } from "./types.js";
@@ -19,6 +20,10 @@ const DEFAULT_PREFIX = "paperclip";
 const DEFAULT_OWNER_TAG = "paperclip";
 const DEFAULT_VERSION_STAGE = "AWSCURRENT";
 const DEFAULT_DELETE_RECOVERY_WINDOW_DAYS = 30;
+const AWS_RUNTIME_CREDENTIAL_WARNING =
+  "AWS bootstrap credentials must be available to the Paperclip server runtime through the AWS SDK default credential provider chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials.";
+const AWS_CREDENTIAL_CUSTODY_WARNING =
+  "Do not store AWS root credentials or long-lived IAM user access keys in Paperclip company_secrets; the AWS provider bootstrap belongs in deployment infrastructure, the process environment, an AWS profile, or the orchestrator secret store.";
 
 interface AwsSecretsManagerMaterial extends StoredSecretVersionMaterial {
   scheme: typeof AWS_SECRETS_MANAGER_SCHEME;
@@ -32,7 +37,7 @@ interface AwsSecretsManagerConfig {
   endpoint: string;
   deploymentId: string;
   prefix: string;
-  kmsKeyId: string;
+  kmsKeyId: string | null;
   environmentTag: string;
   providerOwnerTag: string;
   deleteRecoveryWindowDays: number;
@@ -49,7 +54,7 @@ interface AwsSecretsManagerGateway {
   createSecret(input: {
     Name: string;
     SecretString: string;
-    KmsKeyId: string;
+    KmsKeyId?: string;
     Description?: string;
     Tags: AwsSecretsManagerTag[];
   }): Promise<{
@@ -97,18 +102,109 @@ function configuredAwsSecretsManagerDescriptor() {
 }
 
 function canLoadAwsSecretsManagerConfig() {
-  return Boolean(
-    (
-      process.env.PAPERCLIP_SECRETS_AWS_REGION ??
-      process.env.AWS_REGION ??
-      process.env.AWS_DEFAULT_REGION
-    )?.trim() &&
-      process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim() &&
-      process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim(),
-  );
+  return getAwsConfigReadiness().missingConfig.length === 0;
+}
+
+function asOptionalNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readProviderVaultConfig(input: SecretProviderVaultRuntimeConfig): AwsSecretsManagerConfig {
+  if (input.provider !== "aws_secrets_manager") {
+    throw unprocessable("AWS Secrets Manager provider received a mismatched provider vault");
+  }
+  if (input.status === "disabled") {
+    throw unprocessable("AWS Secrets Manager provider vault is disabled");
+  }
+  if (input.status === "coming_soon") {
+    throw unprocessable("AWS Secrets Manager provider vault runtime is locked while coming soon");
+  }
+  const region = asOptionalNonEmptyString(input.config.region);
+  if (!region) {
+    throw unprocessable("AWS Secrets Manager provider vault requires non-secret config: region");
+  }
+  const recoveryWindowRaw = process.env.PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS?.trim();
+  const recoveryWindow = recoveryWindowRaw ? Number(recoveryWindowRaw) : DEFAULT_DELETE_RECOVERY_WINDOW_DAYS;
+  if (!Number.isFinite(recoveryWindow) || recoveryWindow < 7 || recoveryWindow > 30) {
+    throw unprocessable(
+      "PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS must be an integer between 7 and 30",
+    );
+  }
+
+  return {
+    region,
+    endpoint:
+      process.env.PAPERCLIP_SECRETS_AWS_ENDPOINT?.trim() ||
+      `https://secretsmanager.${region}.amazonaws.com`,
+    deploymentId: sanitizePathSegment(
+      asOptionalNonEmptyString(input.config.namespace) ?? input.id,
+    ),
+    prefix: sanitizePathSegment(
+      asOptionalNonEmptyString(input.config.secretNamePrefix) || DEFAULT_PREFIX,
+    ),
+    kmsKeyId: asOptionalNonEmptyString(input.config.kmsKeyId),
+    environmentTag:
+      asOptionalNonEmptyString(input.config.environmentTag) ||
+      process.env.NODE_ENV?.trim() ||
+      "unknown",
+    providerOwnerTag:
+      asOptionalNonEmptyString(input.config.ownerTag) || DEFAULT_OWNER_TAG,
+    deleteRecoveryWindowDays: recoveryWindow,
+  };
+}
+
+function getAwsConfigReadiness() {
+  const region = (
+    process.env.PAPERCLIP_SECRETS_AWS_REGION ??
+    process.env.AWS_REGION ??
+    process.env.AWS_DEFAULT_REGION
+  )?.trim();
+  const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
+  const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
+  const missingConfig: string[] = [];
+
+  if (!region) {
+    missingConfig.push("PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION");
+  }
+  if (!deploymentId) {
+    missingConfig.push("PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID");
+  }
+  if (!kmsKeyId) {
+    missingConfig.push("PAPERCLIP_SECRETS_AWS_KMS_KEY_ID");
+  }
+
+  return {
+    missingConfig,
+    region: region || null,
+    deploymentId: deploymentId || null,
+    kmsKeyConfigured: Boolean(kmsKeyId),
+    credentialSources: describeDetectedAwsCredentialSources(),
+  };
+}
+
+function describeDetectedAwsCredentialSources() {
+  const sources: string[] = [];
+  if (process.env.AWS_PROFILE?.trim()) sources.push("AWS_PROFILE/shared config");
+  if (process.env.AWS_ACCESS_KEY_ID?.trim() && process.env.AWS_SECRET_ACCESS_KEY?.trim()) {
+    sources.push("temporary AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment credentials");
+  }
+  if (process.env.AWS_WEB_IDENTITY_TOKEN_FILE?.trim() && process.env.AWS_ROLE_ARN?.trim()) {
+    sources.push("AWS web identity token");
+  }
+  if (
+    process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI?.trim() ||
+    process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI?.trim()
+  ) {
+    sources.push("AWS container credentials endpoint");
+  }
+  if (process.env.AWS_SHARED_CREDENTIALS_FILE?.trim() || process.env.AWS_CONFIG_FILE?.trim()) {
+    sources.push("custom AWS shared credentials/config file");
+  }
+  return sources;
 }
 
 function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
+  const readiness = getAwsConfigReadiness();
   const region =
     process.env.PAPERCLIP_SECRETS_AWS_REGION?.trim() ||
     process.env.AWS_REGION?.trim() ||
@@ -116,6 +212,11 @@ function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   const deploymentId = process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID?.trim();
   const kmsKeyId = process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID?.trim();
 
+  if (readiness.missingConfig.length > 0) {
+    throw unprocessable(
+      `AWS Secrets Manager provider requires non-secret config: ${readiness.missingConfig.join(", ")}`,
+    );
+  }
   if (!region) {
     throw unprocessable(
       "AWS Secrets Manager provider requires PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION",
@@ -322,7 +423,7 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
   createSecret(input: {
     Name: string;
     SecretString: string;
-    KmsKeyId: string;
+    KmsKeyId?: string;
     Description?: string;
     Tags: AwsSecretsManagerTag[];
   }) {
@@ -404,7 +505,8 @@ export function createAwsSecretsManagerProvider(
     gateway?: AwsSecretsManagerGateway;
   },
 ): SecretProviderModule {
-  function resolveConfig() {
+  function resolveConfig(providerConfig?: SecretProviderVaultRuntimeConfig | null) {
+    if (providerConfig) return readProviderVaultConfig(providerConfig);
     return options?.config ?? loadAwsSecretsManagerConfig();
   }
 
@@ -413,13 +515,17 @@ export function createAwsSecretsManagerProvider(
   }
 
   async function validateConfig(
-    input?: { deploymentMode?: DeploymentMode; strictMode?: boolean },
+    input?: {
+      deploymentMode?: DeploymentMode;
+      strictMode?: boolean;
+      providerConfig?: SecretProviderVaultRuntimeConfig | null;
+    },
   ): Promise<SecretProviderValidationResult> {
     const warnings: string[] = [];
     if (input?.deploymentMode === "authenticated" && input.strictMode !== true) {
       warnings.push("Strict secret mode should be enabled for authenticated deployments");
     }
-    const config = resolveConfig();
+    const config = resolveConfig(input?.providerConfig);
     if (!config.prefix) {
       warnings.push("PAPERCLIP_SECRETS_AWS_PREFIX should be set to a deployment-scoped prefix");
     }
@@ -427,20 +533,38 @@ export function createAwsSecretsManagerProvider(
   }
 
   async function healthCheck(
-    input?: { deploymentMode?: DeploymentMode; strictMode?: boolean },
+    input?: {
+      deploymentMode?: DeploymentMode;
+      strictMode?: boolean;
+      providerConfig?: SecretProviderVaultRuntimeConfig | null;
+    },
   ): Promise<SecretProviderHealthCheck> {
     try {
       const validation = await validateConfig(input);
+      const config = resolveConfig(input?.providerConfig);
+      const readiness = getAwsConfigReadiness();
+      const warnings = [...validation.warnings];
+      if (
+        process.env.AWS_ACCESS_KEY_ID?.trim() &&
+        process.env.AWS_SECRET_ACCESS_KEY?.trim()
+      ) {
+        warnings.push(
+          "AWS static environment credentials are visible to this process; use only short-lived shell credentials locally and prefer IAM role/workload identity for hosted deployments.",
+        );
+      }
       return {
         provider: "aws_secrets_manager",
-        status: validation.warnings.length > 0 ? "warn" : "ok",
-        message: "AWS Secrets Manager provider is configured",
-        warnings: validation.warnings,
+        status: warnings.length > 0 ? "warn" : "ok",
+        message:
+          "AWS Secrets Manager provider config is present; AWS credentials are resolved by the server runtime through the AWS SDK default credential provider chain.",
+        warnings,
         details: {
-          region: resolveConfig().region,
-          prefix: resolveConfig().prefix,
-          deploymentId: resolveConfig().deploymentId,
-          kmsKeyConfigured: true,
+          region: config.region,
+          prefix: config.prefix,
+          deploymentId: config.deploymentId,
+          kmsKeyConfigured: Boolean(config.kmsKeyId),
+          credentialSource: "AWS SDK default credential provider chain",
+          detectedCredentialSources: readiness.credentialSources,
         },
         backupGuidance: [
           "Back up Paperclip metadata separately from AWS-managed secrets.",
@@ -448,13 +572,47 @@ export function createAwsSecretsManagerProvider(
         ],
       };
     } catch (error) {
+      const readiness = getAwsConfigReadiness();
+      const providerConfigMissing = input?.providerConfig && !asOptionalNonEmptyString(input.providerConfig.config.region)
+        ? ["region"]
+        : [];
+      const missingConfig = input?.providerConfig ? providerConfigMissing : readiness.missingConfig;
       return {
         provider: "aws_secrets_manager",
         status: "warn",
-        message: error instanceof Error ? error.message : String(error),
+        message:
+          missingConfig.length > 0
+            ? `AWS Secrets Manager provider is not ready: missing ${missingConfig.join(", ")}.`
+            : error instanceof Error
+              ? error.message
+              : String(error),
         warnings: [
+          ...(missingConfig.length > 0
+            ? [`Missing required non-secret AWS provider config: ${missingConfig.join(", ")}.`]
+            : []),
+          AWS_RUNTIME_CREDENTIAL_WARNING,
+          AWS_CREDENTIAL_CUSTODY_WARNING,
           "Managed secret create/rotate/resolve calls will fail until AWS provider configuration is complete.",
         ],
+        details: {
+          missingConfig,
+          requiredProviderConfig: input?.providerConfig
+            ? ["region"]
+            : [
+                "PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
+                "PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID",
+                "PAPERCLIP_SECRETS_AWS_KMS_KEY_ID",
+              ],
+          optionalProviderConfig: [
+            "PAPERCLIP_SECRETS_AWS_PREFIX",
+            "PAPERCLIP_SECRETS_AWS_ENVIRONMENT",
+            "PAPERCLIP_SECRETS_AWS_PROVIDER_OWNER",
+            "PAPERCLIP_SECRETS_AWS_ENDPOINT",
+            "PAPERCLIP_SECRETS_AWS_DELETE_RECOVERY_DAYS",
+          ],
+          credentialSource: "AWS SDK default credential provider chain",
+          detectedCredentialSources: readiness.credentialSources,
+        },
       };
     }
   }
@@ -466,18 +624,21 @@ export function createAwsSecretsManagerProvider(
     },
     validateConfig,
     async createSecret(input) {
-      const config = resolveConfig();
+      const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
       const valueSha256 = sha256Hex(input.value);
       const secretId = buildManagedSecretId(config, input.context);
 
       try {
-        const created = await gateway.createSecret({
+        const createInput = {
           Name: secretId,
           SecretString: input.value,
-          KmsKeyId: config.kmsKeyId,
+          ...(config.kmsKeyId ? { KmsKeyId: config.kmsKeyId } : {}),
           Description: input.context ? `Paperclip secret ${input.context.secretName}` : undefined,
           Tags: buildManagedSecretTags(config, input.context),
+        };
+        const created = await gateway.createSecret({
+          ...createInput,
         });
         const normalizedSecretId = created.ARN ?? created.Name ?? secretId;
         return {
@@ -492,7 +653,7 @@ export function createAwsSecretsManagerProvider(
       }
     },
     async createVersion(input) {
-      const config = resolveConfig();
+      const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
       const valueSha256 = sha256Hex(input.value);
       const secretId = resolveManagedSecretRef({
@@ -522,7 +683,7 @@ export function createAwsSecretsManagerProvider(
       return createExternalReferenceMaterial(input.externalRef, input.providerVersionRef ?? null);
     },
     async resolveVersion(input) {
-      const config = resolveConfig();
+      const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
       const material = asAwsSecretsManagerMaterial(input.material);
       const secretId =
@@ -557,7 +718,7 @@ export function createAwsSecretsManagerProvider(
 
       if (input.mode !== "delete" || material?.source !== "managed") return;
 
-      const config = resolveConfig();
+      const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
       const secretId = resolveManagedSecretRef({
         config,

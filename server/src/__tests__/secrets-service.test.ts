@@ -255,6 +255,72 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/coming soon/i);
   });
 
+  it("passes selected provider vault config through create, rotate, and resolve", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: {
+        region: "us-east-1",
+        namespace: "prod-use1",
+        secretNamePrefix: "paperclip",
+      },
+    });
+
+    const createSpy = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
+      providerVersionRef: "aws-version-1",
+    });
+    const createVersionSpy = vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
+        versionId: "aws-version-2",
+        source: "managed",
+      },
+      valueSha256: "value-sha-2",
+      fingerprintSha256: "fingerprint-sha-2",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/openai-api-key",
+      providerVersionRef: "aws-version-2",
+    });
+    const resolveSpy = vi.spyOn(awsSecretsManagerProvider, "resolveVersion").mockResolvedValue("resolved-secret");
+
+    const secret = await svc.create(companyId, {
+      name: `aws-managed-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "runtime-secret",
+    });
+    const rotated = await svc.rotate(secret.id, { value: "rotated-runtime-secret" });
+    const resolved = await svc.resolveSecretValue(companyId, rotated.id, "latest");
+
+    expect(resolved).toBe("resolved-secret");
+    expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({
+        id: awsVault.id,
+        provider: "aws_secrets_manager",
+        config: expect.objectContaining({ region: "us-east-1", namespace: "prod-use1" }),
+      }),
+    }));
+    expect(createVersionSpy).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+    }));
+    expect(resolveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      providerVersionRef: "aws-version-2",
+    }));
+    expect(JSON.stringify(resolveSpy.mock.calls[0]?.[0])).not.toContain("resolved-secret");
+  });
+
   it("rejects externalRef overrides on managed secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -340,6 +406,7 @@ describeEmbeddedPostgres("secretService", () => {
         version: 1,
       },
       mode: "delete",
+      providerConfig: null,
     });
     expect(persisted).toBeNull();
   });

@@ -81,6 +81,88 @@ describe("awsSecretsManagerProvider", () => {
     expect(prepared.providerVersionRef).toBe("aws-version-1");
   });
 
+  it("creates AWS secrets from selected provider vault config without deployment env fallback", async () => {
+    delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
+    delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
+    delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+
+    const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
+    const provider = createAwsSecretsManagerProvider({
+      gateway: {
+        async createSecret(input) {
+          calls.push({ op: "createSecret", input });
+          return {
+            ARN: "arn:aws:secretsmanager:us-west-2:123456789012:secret:clip/prod-us-west/company-1/openai-api-key",
+            VersionId: "aws-version-1",
+          };
+        },
+        async putSecretValue(input) {
+          calls.push({ op: "putSecretValue", input });
+          return { ARN: String(input.SecretId), VersionId: "unused" };
+        },
+        async getSecretValue(input) {
+          calls.push({ op: "getSecretValue", input });
+          return { SecretString: "resolved-value", VersionId: "unused" };
+        },
+        async deleteSecret(input) {
+          calls.push({ op: "deleteSecret", input });
+          return {};
+        },
+      },
+    });
+
+    const providerConfig = {
+      id: "vault-1",
+      provider: "aws_secrets_manager" as const,
+      status: "ready",
+      config: {
+        region: "us-west-2",
+        namespace: "prod-us-west",
+        secretNamePrefix: "clip",
+        ownerTag: "platform",
+        environmentTag: "production",
+      },
+    };
+
+    const health = await provider.healthCheck({ providerConfig });
+    const prepared = await provider.createSecret({
+      value: "super-secret-value",
+      providerConfig,
+      context: {
+        companyId: "company-1",
+        secretKey: "openai-api-key",
+        secretName: "OpenAI API Key",
+        version: 1,
+      },
+    });
+
+    expect(health.status).toBe("ok");
+    expect(health.details).toMatchObject({
+      region: "us-west-2",
+      prefix: "clip",
+      deploymentId: "prod-us-west",
+      kmsKeyConfigured: false,
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        op: "createSecret",
+        input: expect.objectContaining({
+          Name: "clip/prod-us-west/company-1/openai-api-key",
+          SecretString: "super-secret-value",
+          Tags: expect.arrayContaining([
+            { Key: "paperclip:provider-owner", Value: "platform" },
+            { Key: "paperclip:environment", Value: "production" },
+          ]),
+        }),
+      }),
+    ]);
+    expect(calls[0]?.input).not.toHaveProperty("KmsKeyId");
+    expect(JSON.stringify(prepared)).not.toContain("super-secret-value");
+    expect(prepared.externalRef).toContain("clip/prod-us-west/company-1/openai-api-key");
+  });
+
   it("creates new AWS secret versions against a namespace-valid existing secret reference", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
@@ -324,6 +406,22 @@ describe("awsSecretsManagerProvider", () => {
     const health = await provider.healthCheck();
 
     expect(health.status).toBe("warn");
+    expect(health.message).toContain("missing PAPERCLIP_SECRETS_AWS_REGION");
+    expect(health.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Missing required non-secret AWS provider config"),
+        expect.stringContaining("AWS bootstrap credentials must be available"),
+        expect.stringContaining("Do not store AWS root credentials"),
+      ]),
+    );
+    expect(health.details).toMatchObject({
+      missingConfig: [
+        "PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
+        "PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID",
+        "PAPERCLIP_SECRETS_AWS_KMS_KEY_ID",
+      ],
+      credentialSource: "AWS SDK default credential provider chain",
+    });
     await expect(
       provider.createSecret({
         value: "super-secret-value",

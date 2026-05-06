@@ -29,6 +29,7 @@ import {
   getSecretProvider,
   listSecretProviders,
 } from "../secrets/provider-registry.js";
+import type { SecretProviderHealthCheck, SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -256,6 +257,31 @@ export function secretService(db: Db) {
     return providerConfig;
   }
 
+  function toProviderVaultRuntimeConfig(
+    providerConfig: Awaited<ReturnType<typeof getProviderConfigById>> | null,
+  ): SecretProviderVaultRuntimeConfig | null {
+    if (!providerConfig) return null;
+    return {
+      id: providerConfig.id,
+      provider: providerConfig.provider as SecretProvider,
+      status: providerConfig.status,
+      config: providerConfig.config ?? {},
+    };
+  }
+
+  async function getSelectableRuntimeProviderConfig(input: {
+    companyId: string;
+    provider: SecretProvider;
+    providerConfigId: string | null | undefined;
+  }) {
+    const providerConfig = await assertProviderConfigForSecret(
+      input.companyId,
+      input.provider,
+      input.providerConfigId,
+    );
+    return toProviderVaultRuntimeConfig(providerConfig);
+  }
+
   function validateProviderConfigPayload(
     provider: SecretProvider,
     config: Record<string, unknown>,
@@ -272,7 +298,7 @@ export function secretService(db: Db) {
     provider: SecretProvider;
     status: SecretProviderConfigStatus;
     config: Record<string, unknown>;
-  }): Omit<SecretProviderConfigHealthResponse, "checkedAt"> {
+  }): Omit<SecretProviderConfigHealthResponse, "checkedAt"> | null {
     if (input.status === "disabled") {
       return {
         configId: input.id,
@@ -295,33 +321,34 @@ export function secretService(db: Db) {
         },
       };
     }
-    if (input.provider === "aws_secrets_manager" && typeof input.config.region !== "string") {
-      return {
-        configId: input.id,
-        provider: input.provider,
-        status: "warning",
-        message: "AWS Secrets Manager vault is missing region routing metadata.",
-        details: {
-          code: "missing_config",
-          message: "AWS Secrets Manager vault is missing region routing metadata.",
-          missingFields: ["region"],
-        },
-      };
-    }
+    return null;
+  }
+
+  function mapProviderModuleHealth(input: {
+    configId: string;
+    provider: SecretProvider;
+    providerStatus: SecretProviderConfigStatus;
+    health: SecretProviderHealthCheck;
+  }): Omit<SecretProviderConfigHealthResponse, "checkedAt"> {
+    const status: SecretProviderConfigHealthStatus =
+      input.health.status === "ok"
+        ? input.providerStatus === "warning" ? "warning" : "ready"
+        : input.health.status === "error"
+          ? "error"
+          : "warning";
+    const guidance = [
+      ...(input.health.warnings ?? []),
+      ...(input.health.backupGuidance ?? []),
+    ];
     return {
-      configId: input.id,
+      configId: input.configId,
       provider: input.provider,
-      status: input.status === "warning" ? "warning" : "ready",
-      message:
-        input.status === "warning"
-          ? "Provider vault is saved but needs operator attention."
-          : "Provider vault metadata is ready.",
+      status,
+      message: input.health.message,
       details: {
-        code: input.status === "warning" ? "needs_attention" : "metadata_ready",
-        message:
-          input.status === "warning"
-            ? "Provider vault is saved but needs operator attention."
-            : "Provider vault metadata is ready.",
+        code: input.health.status === "ok" ? "provider_ready" : "provider_needs_attention",
+        message: input.health.message,
+        guidance: guidance.length > 0 ? guidance : undefined,
       },
     };
   }
@@ -347,10 +374,16 @@ export function secretService(db: Db) {
         throw unprocessable("Secret version is not active");
       }
       const provider = getSecretProvider(providerId);
+      const providerConfig = await getSelectableRuntimeProviderConfig({
+        companyId,
+        provider: providerId,
+        providerConfigId: secret.providerConfigId,
+      });
       const value = await provider.resolveVersion({
         material: versionRow.material as Record<string, unknown>,
         externalRef: secret.externalRef,
         providerVersionRef: versionRow.providerVersionRef,
+        providerConfig,
         context: {
           companyId,
           secretId: secret.id,
@@ -618,11 +651,20 @@ export function secretService(db: Db) {
       const existing = await getProviderConfigById(id);
       if (!existing) return null;
       const checkedAt = new Date();
-      const health = providerConfigHealth({
+      const staticHealth = providerConfigHealth({
         id: existing.id,
         provider: existing.provider as SecretProvider,
         status: existing.status as SecretProviderConfigStatus,
         config: existing.config ?? {},
+      });
+      const provider = getSecretProvider(existing.provider as SecretProvider);
+      const health = staticHealth ?? mapProviderModuleHealth({
+        configId: existing.id,
+        provider: existing.provider as SecretProvider,
+        providerStatus: existing.status as SecretProviderConfigStatus,
+        health: await provider.healthCheck({
+          providerConfig: toProviderVaultRuntimeConfig(existing),
+        }),
       });
       await db
         .update(companySecretProviderConfigs)
@@ -695,7 +737,11 @@ export function secretService(db: Db) {
 
       const managedMode = input.managedMode ?? "paperclip_managed";
       const provider = getSecretProvider(input.provider);
-      await assertProviderConfigForSecret(companyId, input.provider, input.providerConfigId);
+      const providerConfig = await getSelectableRuntimeProviderConfig({
+        companyId,
+        provider: input.provider,
+        providerConfigId: input.providerConfigId,
+      });
       if (managedMode === "external_reference" && !input.externalRef?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
@@ -710,6 +756,7 @@ export function secretService(db: Db) {
           ? await provider.linkExternalSecret({
               externalRef: input.externalRef ?? "",
               providerVersionRef: input.providerVersionRef ?? null,
+              providerConfig,
               context: {
                 companyId,
                 secretKey: key,
@@ -720,6 +767,7 @@ export function secretService(db: Db) {
           : await provider.createSecret({
               value: input.value ?? "",
               externalRef: null,
+              providerConfig,
               context: {
                 companyId,
                 secretKey: key,
@@ -768,12 +816,25 @@ export function secretService(db: Db) {
 
     rotate: async (
       secretId: string,
-      input: { value?: string | null; externalRef?: string | null; providerVersionRef?: string | null },
+      input: {
+        value?: string | null;
+        externalRef?: string | null;
+        providerVersionRef?: string | null;
+        providerConfigId?: string | null;
+      },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
-      const provider = getSecretProvider(secret.provider as SecretProvider);
+      const providerId = secret.provider as SecretProvider;
+      const provider = getSecretProvider(providerId);
+      const providerConfigId =
+        input.providerConfigId === undefined ? secret.providerConfigId : input.providerConfigId;
+      const providerConfig = await getSelectableRuntimeProviderConfig({
+        companyId: secret.companyId,
+        provider: providerId,
+        providerConfigId,
+      });
       const nextVersion = secret.latestVersion + 1;
       if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
@@ -789,6 +850,7 @@ export function secretService(db: Db) {
           ? await provider.linkExternalSecret({
               externalRef: input.externalRef ?? secret.externalRef ?? "",
               providerVersionRef: input.providerVersionRef ?? null,
+              providerConfig,
               context: {
                 companyId: secret.companyId,
                 secretKey: secret.key,
@@ -799,6 +861,7 @@ export function secretService(db: Db) {
           : await provider.createVersion({
               value: input.value ?? "",
               externalRef: secret.externalRef ?? null,
+              providerConfig,
               context: {
                 companyId: secret.companyId,
                 secretKey: secret.key,
@@ -829,6 +892,7 @@ export function secretService(db: Db) {
           .set({
             latestVersion: nextVersion,
             externalRef: prepared.externalRef,
+            providerConfigId,
             lastRotatedAt: new Date(),
             updatedAt: new Date(),
           })
@@ -1059,10 +1123,17 @@ export function secretService(db: Db) {
       const secret = await getById(secretId);
       if (!secret) return null;
       const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
-      const provider = getSecretProvider(secret.provider as SecretProvider);
+      const providerId = secret.provider as SecretProvider;
+      const provider = getSecretProvider(providerId);
+      const providerConfig = await getSelectableRuntimeProviderConfig({
+        companyId: secret.companyId,
+        provider: providerId,
+        providerConfigId: secret.providerConfigId,
+      });
       await provider.deleteOrArchive({
         material: versionRow?.material as Record<string, unknown> | undefined,
         externalRef: secret.externalRef,
+        providerConfig,
         context: {
           companyId: secret.companyId,
           secretKey: secret.key,

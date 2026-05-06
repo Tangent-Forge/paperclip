@@ -36,6 +36,13 @@ export interface SecretProviderRuntimeContext {
   version: number;
 }
 
+export interface SecretProviderVaultRuntimeConfig {
+  id: string;
+  provider: SecretProvider;
+  status: string;
+  config: Record<string, unknown>;
+}
+
 export interface SecretProviderWriteContext {
   companyId: string;
   secretKey: string;
@@ -49,41 +56,49 @@ export interface SecretProviderModule {
   validateConfig(input?: {
     deploymentMode?: DeploymentMode;
     strictMode?: boolean;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<SecretProviderValidationResult>;
   createSecret(input: {
     value: string;
     externalRef?: string | null;
     context?: SecretProviderWriteContext;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
   createVersion(input: {
     value: string;
     externalRef?: string | null;
     context?: SecretProviderWriteContext;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
   linkExternalSecret(input: {
     externalRef: string;
     providerVersionRef?: string | null;
     context?: SecretProviderWriteContext;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
   resolveVersion(input: {
     material: StoredSecretVersionMaterial;
     externalRef: string | null;
     providerVersionRef?: string | null;
     context?: SecretProviderRuntimeContext;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<string>;
   rotate?(input: {
     material: StoredSecretVersionMaterial;
     externalRef: string | null;
     providerVersionRef?: string | null;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
   deleteOrArchive(input: {
     material?: StoredSecretVersionMaterial | null;
     externalRef: string | null;
     context?: SecretProviderWriteContext;
     mode: "archive" | "delete";
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<void>;
   healthCheck(input?: {
     deploymentMode?: DeploymentMode;
     strictMode?: boolean;
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<SecretProviderHealthCheck>;
 }

@@ -282,6 +282,7 @@ export function secretRoutes(db: Db) {
         value: req.body.value,
         externalRef: req.body.externalRef,
         providerVersionRef: req.body.providerVersionRef,
+        providerConfigId: req.body.providerConfigId,
       },
       { userId: req.actor.userId ?? "board", agentId: null },
     );
