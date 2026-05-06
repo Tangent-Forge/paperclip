@@ -141,8 +141,46 @@ export const gcpSecretManagerProviderConfigSchema = z.object({
   secretNamePrefix: optionalSafeShortText,
 }).strict();
 
+const vaultAddressSchema = z.preprocess(
+  (value) => typeof value === "string" ? value.trim() : value,
+  z.string().url().superRefine((value, ctx) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return;
+    }
+    const hasPath = url.pathname !== "" && url.pathname !== "/";
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      hasPath
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Vault address must be an origin-only HTTP(S) URL without credentials, path, query, or fragment",
+      });
+    }
+  }).transform((value) => new URL(value).origin),
+);
+
+function rejectUnsafeVaultAddress(value: unknown, ctx: z.RefinementCtx) {
+  if (value === undefined || value === null) return;
+  const parsed = vaultAddressSchema.safeParse(value);
+  if (parsed.success) return;
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({
+      ...issue,
+      path: ["config", "address", ...issue.path],
+    });
+  }
+}
+
 export const vaultProviderConfigSchema = z.object({
-  address: z.string().trim().url().optional().nullable(),
+  address: vaultAddressSchema.optional().nullable(),
   namespace: optionalSafeShortText,
   mountPath: optionalSafeShortText,
   secretPathPrefix: optionalSafeShortText,
@@ -202,6 +240,7 @@ export const updateSecretProviderConfigSchema = z.object({
 }).superRefine((value, ctx) => {
   if (value.config !== undefined) {
     rejectSensitiveProviderConfigKeys(value.config, ctx);
+    rejectUnsafeVaultAddress(value.config.address, ctx);
   }
   if ((value.status === "coming_soon" || value.status === "disabled") && value.isDefault) {
     ctx.addIssue({

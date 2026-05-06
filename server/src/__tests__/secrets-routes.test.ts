@@ -141,6 +141,48 @@ describe("secret routes", () => {
     expect(mockSecretService.createProviderConfig).not.toHaveBeenCalled();
   });
 
+  it("rejects credential-bearing Vault provider vault addresses before persistence", async () => {
+    const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
+      provider: "vault",
+      displayName: "Vault draft",
+      config: {
+        address: "https://user:pass@vault.example.com",
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/origin-only HTTP\(S\) URL/i);
+    expect(mockSecretService.createProviderConfig).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "https://vault.example.com?token=hvs.x",
+    "https://vault.example.com#token=hvs.x",
+  ])("rejects token-bearing Vault provider vault address %s before persistence", async (address) => {
+    const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
+      provider: "vault",
+      displayName: "Vault draft",
+      config: { address },
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/origin-only HTTP\(S\) URL/i);
+    expect(mockSecretService.createProviderConfig).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsafe Vault provider vault address patches before persistence", async () => {
+    const res = await request(createApp()).patch("/api/secret-provider-configs/vault-1").send({
+      config: {
+        address: "https://vault.example.com#token=hvs.x",
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/origin-only HTTP\(S\) URL/i);
+    expect(mockSecretService.getProviderConfigById).not.toHaveBeenCalled();
+    expect(mockSecretService.updateProviderConfig).not.toHaveBeenCalled();
+  });
+
   it("creates provider vaults and logs safe activity details", async () => {
     const createdAt = new Date("2026-05-06T00:00:00.000Z");
     mockSecretService.createProviderConfig.mockResolvedValue({
