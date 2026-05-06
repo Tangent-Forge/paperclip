@@ -347,7 +347,7 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const bindings = await svc.listBindings(existing.companyId, existing.id);
+    const bindings = await svc.listBindingReferences(existing.companyId, existing.id);
     res.json({ secretId: existing.id, bindings });
   });
 

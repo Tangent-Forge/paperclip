@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  agents,
   companies,
   companySecretBindings,
   companySecretProviderConfigs,
@@ -47,6 +48,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -121,6 +123,47 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("reports reference counts and resolves binding target labels", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `referenced-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const [agent] = await db
+      .insert(agents)
+      .values({
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      })
+      .returning();
+
+    await svc.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: agent!.id },
+      {
+        OPENAI_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      },
+    );
+
+    const listed = await svc.list(companyId);
+    expect(listed.find((row) => row.id === secret.id)?.referenceCount).toBe(1);
+
+    const bindings = await svc.listBindingReferences(companyId, secret.id);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.target).toMatchObject({
+      type: "agent",
+      id: agent!.id,
+      label: "CodexCoder",
+      href: "/agents/codexcoder",
+      status: "idle",
+    });
   });
 
   it("enforces binding context and records value-free access events", async () => {

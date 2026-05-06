@@ -1,6 +1,6 @@
 import type {
   CompanySecret,
-  CompanySecretBinding,
+  CompanySecretUsageBinding,
   CompanySecretProviderConfig,
   SecretAccessEvent,
   SecretManagedMode,
@@ -14,7 +14,7 @@ import { api } from "./client";
 
 export interface SecretUsageResponse {
   secretId: string;
-  bindings: CompanySecretBinding[];
+  bindings: CompanySecretUsageBinding[];
 }
 
 export interface CreateSecretInput {

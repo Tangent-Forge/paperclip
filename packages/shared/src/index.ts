@@ -539,6 +539,8 @@ export type {
   SecretProviderConfigHealthDetails,
   SecretProviderConfigHealthResponse,
   CompanySecretBinding,
+  CompanySecretBindingTarget,
+  CompanySecretUsageBinding,
   CompanySecretVersion,
   SecretAccessEvent,
   SecretAccessOutcome,

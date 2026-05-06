@@ -24,9 +24,10 @@ import {
   Filter,
   Info,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import type {
   CompanySecret,
-  CompanySecretBinding,
+  CompanySecretUsageBinding,
   CompanySecretProviderConfig,
   SecretAccessEvent,
   SecretManagedMode,
@@ -348,6 +349,7 @@ export function Secrets() {
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
+  const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("managed");
   const [createForm, setCreateForm] = useState({
@@ -418,6 +420,10 @@ export function Secrets() {
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? null,
     [secrets, selectedSecretId],
   );
+  const usageDialogSecret = useMemo(
+    () => secrets.find((secret) => secret.id === usageDialogSecretId) ?? null,
+    [secrets, usageDialogSecretId],
+  );
   const selectedCreateProvider = useMemo(
     () => providers.find((provider) => provider.id === createForm.provider) ?? null,
     [providers, createForm.provider],
@@ -482,6 +488,14 @@ export function Secrets() {
       : ["secrets", "access-events", "__disabled__"],
     queryFn: () => secretsApi.accessEvents(selectedSecret!.id),
     enabled: Boolean(selectedSecret),
+  });
+
+  const usageDialogQuery = useQuery({
+    queryKey: usageDialogSecret
+      ? queryKeys.secrets.usage(usageDialogSecret.id)
+      : ["secrets", "usage-dialog", "__disabled__"],
+    queryFn: () => secretsApi.usage(usageDialogSecret!.id),
+    enabled: Boolean(usageDialogSecret),
   });
 
   function invalidateAll(extraIds: string[] = []) {
@@ -812,6 +826,7 @@ export function Secrets() {
                   <th className="px-2 py-2 text-left font-medium">Version</th>
                   <th className="px-2 py-2 text-left font-medium">Last rotated</th>
                   <th className="px-2 py-2 text-left font-medium">Last resolved</th>
+                  <th className="px-2 py-2 text-left font-medium">References</th>
                   <th className="px-2 py-2 text-left font-medium">Reference</th>
                   <th className="px-3 py-2"></th>
                 </tr>
@@ -846,6 +861,20 @@ export function Secrets() {
                     </td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground">
                       {formatRelative(secret.lastResolvedAt)}
+                    </td>
+                    <td className="px-2 py-2.5 text-xs">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        aria-label={`View references for ${secret.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setUsageDialogSecretId(secret.id);
+                        }}
+                      >
+                        {secret.referenceCount ?? 0}
+                      </Button>
                     </td>
                     <td className="px-2 py-2.5 text-xs">
                       {secret.managedMode === "external_reference" ? (
@@ -1008,6 +1037,28 @@ export function Secrets() {
           ) : null}
         </SheetContent>
       </Sheet>
+
+      <Dialog
+        open={Boolean(usageDialogSecret)}
+        onOpenChange={(open) => !open && setUsageDialogSecretId(null)}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Secret references</DialogTitle>
+            <DialogDescription>
+              {usageDialogSecret
+                ? `${usageDialogSecret.name} is referenced by ${usageDialogSecret.referenceCount ?? 0} ${
+                    (usageDialogSecret.referenceCount ?? 0) === 1 ? "place" : "places"
+                  }.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <SecretUsageTab
+            loading={usageDialogQuery.isPending}
+            bindings={usageDialogQuery.data?.bindings ?? []}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-lg">
@@ -1948,7 +1999,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretBinding[] }) {
+function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
   if (loading) {
     return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
   }
@@ -1966,9 +2017,23 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
           key={binding.id}
           className="rounded-md border border-border bg-muted/30 p-2 text-xs"
         >
-          <div className="flex items-center justify-between">
-            <span className="font-medium capitalize">{binding.targetType}</span>
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium capitalize">{binding.target.type}</span>
             <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            {binding.target.href ? (
+              <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
+                {binding.target.label}
+              </Link>
+            ) : (
+              <span className="truncate font-medium">{binding.target.label}</span>
+            )}
+            {binding.target.status ? (
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                {binding.target.status.replaceAll("_", " ")}
+              </Badge>
+            ) : null}
           </div>
           <div className="font-mono text-[11px] text-muted-foreground break-all">
             {binding.targetId}

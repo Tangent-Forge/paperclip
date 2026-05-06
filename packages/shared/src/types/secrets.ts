@@ -56,6 +56,7 @@ export interface CompanySecret {
   deletedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  referenceCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -161,6 +162,18 @@ export interface CompanySecretBinding {
   label: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CompanySecretBindingTarget {
+  type: SecretBindingTargetType;
+  id: string;
+  label: string;
+  href: string | null;
+  status: string | null;
+}
+
+export interface CompanySecretUsageBinding extends CompanySecretBinding {
+  target: CompanySecretBindingTarget;
 }
 
 export interface SecretAccessEvent {

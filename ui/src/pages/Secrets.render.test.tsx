@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CompanySecretProviderConfig, SecretProviderDescriptor } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -214,6 +215,94 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       vaultRoot.unmount();
+    });
+  });
+
+  it("opens reference details from the secrets table count", async () => {
+    mockSecretsApi.list.mockResolvedValue([
+      {
+        id: "secret-openai",
+        companyId: "company-1",
+        key: "openai_api_key",
+        name: "OPENAI_API_KEY",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        externalRef: null,
+        providerConfigId: null,
+        providerMetadata: null,
+        latestVersion: 1,
+        description: null,
+        lastResolvedAt: null,
+        lastRotatedAt: null,
+        deletedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        referenceCount: 2,
+        createdAt: new Date("2026-05-06T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+      },
+    ]);
+    mockSecretsApi.usage.mockResolvedValue({
+      secretId: "secret-openai",
+      bindings: [
+        {
+          id: "binding-agent",
+          companyId: "company-1",
+          secretId: "secret-openai",
+          targetType: "agent",
+          targetId: "agent-1",
+          configPath: "env.OPENAI_API_KEY",
+          versionSelector: "latest",
+          required: true,
+          label: null,
+          target: {
+            type: "agent",
+            id: "agent-1",
+            label: "CodexCoder",
+            href: "/agents/codexcoder",
+            status: "idle",
+          },
+          createdAt: new Date("2026-05-06T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+        },
+      ],
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const referencesButton = container.querySelector(
+      'button[aria-label="View references for OPENAI_API_KEY"]',
+    ) as HTMLButtonElement | null;
+    expect(referencesButton?.textContent).toBe("2");
+
+    await act(async () => {
+      referencesButton?.click();
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
+    expect(document.body.textContent).toContain("Secret references");
+    expect(document.body.textContent).toContain("CodexCoder");
+    expect(document.body.textContent).toContain("env.OPENAI_API_KEY");
+
+    await act(async () => {
+      root.unmount();
     });
   });
 });

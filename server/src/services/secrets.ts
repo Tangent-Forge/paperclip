@@ -1,14 +1,21 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
+  environments,
+  heartbeatRuns,
+  issues,
+  projects,
+  routines,
   secretAccessEvents,
 } from "@paperclipai/db";
 import type {
   AgentEnvConfig,
+  CompanySecretBindingTarget,
   EnvBinding,
   SecretBindingTargetType,
   SecretProvider,
@@ -19,7 +26,10 @@ import type {
 } from "@paperclipai/shared";
 import {
   createSecretProviderConfigSchema,
+  deriveProjectUrlKey,
   envBindingSchema,
+  isUuidLike,
+  normalizeAgentUrlKey,
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
@@ -497,6 +507,171 @@ export function secretService(db: Db) {
     return normalized;
   }
 
+  function collectTargetIds(
+    bindings: Array<typeof companySecretBindings.$inferSelect>,
+    targetType: SecretBindingTargetType,
+    opts?: { uuidOnly?: boolean },
+  ) {
+    return [
+      ...new Set(
+        bindings
+          .filter((binding) => binding.targetType === targetType)
+          .map((binding) => binding.targetId)
+          .filter((id) => !opts?.uuidOnly || isUuidLike(id)),
+      ),
+    ];
+  }
+
+  function fallbackBindingTarget(binding: typeof companySecretBindings.$inferSelect): CompanySecretBindingTarget {
+    return {
+      type: binding.targetType as SecretBindingTargetType,
+      id: binding.targetId,
+      label: binding.targetId,
+      href: null,
+      status: null,
+    };
+  }
+
+  async function buildBindingTargetMap(
+    companyId: string,
+    bindings: Array<typeof companySecretBindings.$inferSelect>,
+  ) {
+    const targetMap = new Map<string, CompanySecretBindingTarget>();
+    const setTarget = (target: CompanySecretBindingTarget) => {
+      targetMap.set(`${target.type}:${target.id}`, target);
+    };
+
+    const agentIds = collectTargetIds(bindings, "agent", { uuidOnly: true });
+    if (agentIds.length > 0) {
+      const rows = await db
+        .select({
+          id: agents.id,
+          name: agents.name,
+          title: agents.title,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "agent",
+          id: row.id,
+          label: row.title ? `${row.name} (${row.title})` : row.name,
+          href: `/agents/${normalizeAgentUrlKey(row.name) ?? row.id}`,
+          status: row.status,
+        });
+      }
+    }
+
+    const projectIds = collectTargetIds(bindings, "project", { uuidOnly: true });
+    if (projectIds.length > 0) {
+      const rows = await db
+        .select({
+          id: projects.id,
+          name: projects.name,
+          status: projects.status,
+        })
+        .from(projects)
+        .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "project",
+          id: row.id,
+          label: row.name,
+          href: `/projects/${deriveProjectUrlKey(row.name, row.id)}`,
+          status: row.status,
+        });
+      }
+    }
+
+    const environmentIds = collectTargetIds(bindings, "environment", { uuidOnly: true });
+    if (environmentIds.length > 0) {
+      const rows = await db
+        .select({
+          id: environments.id,
+          name: environments.name,
+          status: environments.status,
+        })
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), inArray(environments.id, environmentIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "environment",
+          id: row.id,
+          label: row.name,
+          href: "/company/settings/environments",
+          status: row.status,
+        });
+      }
+    }
+
+    const routineIds = collectTargetIds(bindings, "routine", { uuidOnly: true });
+    if (routineIds.length > 0) {
+      const rows = await db
+        .select({
+          id: routines.id,
+          title: routines.title,
+          status: routines.status,
+        })
+        .from(routines)
+        .where(and(eq(routines.companyId, companyId), inArray(routines.id, routineIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "routine",
+          id: row.id,
+          label: row.title,
+          href: `/routines/${row.id}`,
+          status: row.status,
+        });
+      }
+    }
+
+    const issueIds = collectTargetIds(bindings, "issue", { uuidOnly: true });
+    if (issueIds.length > 0) {
+      const rows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "issue",
+          id: row.id,
+          label: row.identifier ? `${row.identifier} ${row.title}` : row.title,
+          href: `/issues/${row.identifier ?? row.id}`,
+          status: row.status,
+        });
+      }
+    }
+
+    const runIds = collectTargetIds(bindings, "run", { uuidOnly: true });
+    if (runIds.length > 0) {
+      const rows = await db
+        .select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds)));
+      for (const row of rows) {
+        setTarget({
+          type: "run",
+          id: row.id,
+          label: `Run ${row.id.slice(0, 8)}`,
+          href: `/agents/${row.agentId}/runs/${row.id}`,
+          status: row.status,
+        });
+      }
+    }
+
+    return targetMap;
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -679,12 +854,28 @@ export function secretService(db: Db) {
       return { ...health, checkedAt };
     },
 
-    list: (companyId: string) =>
-      db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.companyId, companyId))
-        .orderBy(desc(companySecrets.createdAt)),
+    list: async (companyId: string) => {
+      const [secrets, referenceCounts] = await Promise.all([
+        db
+          .select()
+          .from(companySecrets)
+          .where(eq(companySecrets.companyId, companyId))
+          .orderBy(desc(companySecrets.createdAt)),
+        db
+          .select({
+            secretId: companySecretBindings.secretId,
+            count: sql<number>`count(*)::int`,
+          })
+          .from(companySecretBindings)
+          .where(eq(companySecretBindings.companyId, companyId))
+          .groupBy(companySecretBindings.secretId),
+      ]);
+      const countsBySecretId = new Map(referenceCounts.map((row) => [row.secretId, row.count]));
+      return secrets.map((secret) => ({
+        ...secret,
+        referenceCount: countsBySecretId.get(secret.id) ?? 0,
+      }));
+    },
 
     listBindings: (companyId: string, secretId?: string) =>
       db
@@ -696,6 +887,21 @@ export function secretService(db: Db) {
             : eq(companySecretBindings.companyId, companyId),
         )
         .orderBy(desc(companySecretBindings.createdAt)),
+
+    listBindingReferences: async (companyId: string, secretId: string) => {
+      const bindings = await db
+        .select()
+        .from(companySecretBindings)
+        .where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.secretId, secretId)))
+        .orderBy(desc(companySecretBindings.createdAt));
+      const targetMap = await buildBindingTargetMap(companyId, bindings);
+      return bindings.map((binding) => ({
+        ...binding,
+        target:
+          targetMap.get(`${binding.targetType}:${binding.targetId}`) ??
+          fallbackBindingTarget(binding),
+      }));
+    },
 
     listAccessEvents: (companyId: string, secretId: string) =>
       db
