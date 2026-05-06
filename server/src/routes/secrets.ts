@@ -3,6 +3,8 @@ import type { Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
+  remoteSecretImportPreviewSchema,
+  remoteSecretImportSchema,
   rotateSecretSchema,
   updateSecretProviderConfigSchema,
   updateSecretSchema,
@@ -265,6 +267,77 @@ export function secretRoutes(db: Db) {
 
     res.status(201).json(created);
   });
+
+  router.post(
+    "/companies/:companyId/secrets/remote-import/preview",
+    validate(remoteSecretImportPreviewSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const preview = await svc.previewRemoteImport(companyId, {
+        providerConfigId: req.body.providerConfigId,
+        query: req.body.query,
+        nextToken: req.body.nextToken,
+        pageSize: req.body.pageSize,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.remote_import.previewed",
+        entityType: "secret_provider_config",
+        entityId: preview.providerConfigId,
+        details: {
+          provider: preview.provider,
+          candidateCount: preview.candidates.length,
+          readyCount: preview.candidates.filter((candidate) => candidate.status === "ready").length,
+          duplicateCount: preview.candidates.filter((candidate) => candidate.status === "duplicate").length,
+          conflictCount: preview.candidates.filter((candidate) => candidate.status === "conflict").length,
+        },
+      });
+
+      res.json(preview);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/secrets/remote-import",
+    validate(remoteSecretImportSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const result = await svc.importRemoteSecrets(
+        companyId,
+        {
+          providerConfigId: req.body.providerConfigId,
+          secrets: req.body.secrets,
+        },
+        { userId: req.actor.userId ?? "board", agentId: null },
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.remote_import.completed",
+        entityType: "secret_provider_config",
+        entityId: result.providerConfigId,
+        details: {
+          provider: result.provider,
+          importedCount: result.importedCount,
+          skippedCount: result.skippedCount,
+          errorCount: result.errorCount,
+        },
+      });
+
+      res.json(result);
+    },
+  );
 
   router.post("/secrets/:id/rotate", validate(rotateSecretSchema), async (req, res) => {
     assertBoard(req);

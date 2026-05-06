@@ -15,6 +15,8 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   create: vi.fn(),
+  previewRemoteImport: vi.fn(),
+  importRemoteSecrets: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -233,5 +235,126 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("accessKey");
+  });
+
+  it("rejects remote import preview for non-board actors", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    })).post("/api/companies/company-1/secrets/remote-import/preview").send({
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.previewRemoteImport).not.toHaveBeenCalled();
+  });
+
+  it("previews remote imports and logs only aggregate metadata", async () => {
+    mockSecretService.previewRemoteImport.mockResolvedValue({
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      provider: "aws_secrets_manager",
+      nextToken: null,
+      candidates: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          remoteName: "prod/openai",
+          name: "openai",
+          key: "openai",
+          providerVersionRef: null,
+          providerMetadata: { description: "OpenAI API key" },
+          status: "ready",
+          importable: true,
+          conflicts: [],
+        },
+      ],
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secrets/remote-import/preview")
+      .send({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        query: "openai",
+        pageSize: 25,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.previewRemoteImport).toHaveBeenCalledWith("company-1", {
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      query: "openai",
+      nextToken: undefined,
+      pageSize: 25,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.remote_import.previewed",
+      details: {
+        provider: "aws_secrets_manager",
+        candidateCount: 1,
+        readyCount: 1,
+        duplicateCount: 0,
+        conflictCount: 0,
+      },
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("prod/openai");
+  });
+
+  it("imports remote references and logs aggregate row counts", async () => {
+    mockSecretService.importRemoteSecrets.mockResolvedValue({
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      provider: "aws_secrets_manager",
+      importedCount: 1,
+      skippedCount: 0,
+      errorCount: 0,
+      results: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          name: "OpenAI API key",
+          key: "openai-api-key",
+          status: "imported",
+          reason: null,
+          secretId: "22222222-2222-4222-8222-222222222222",
+          conflicts: [],
+        },
+      ],
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secrets/remote-import")
+      .send({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        secrets: [
+          {
+            externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+            name: "OpenAI API key",
+            key: "openai-api-key",
+          },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.importRemoteSecrets).toHaveBeenCalledWith(
+      "company-1",
+      {
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        secrets: [
+          {
+            externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+            name: "OpenAI API key",
+            key: "openai-api-key",
+          },
+        ],
+      },
+      { userId: "user-1", agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.remote_import.completed",
+      details: {
+        provider: "aws_secrets_manager",
+        importedCount: 1,
+        skippedCount: 0,
+        errorCount: 0,
+      },
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("prod/openai");
   });
 });

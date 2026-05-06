@@ -7,6 +7,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type {
   PreparedSecretVersion,
+  RemoteSecretListResult,
   SecretProviderHealthCheck,
   SecretProviderModule,
   SecretProviderValidationResult,
@@ -48,6 +49,18 @@ interface AwsSecretsManagerTag {
   Value: string;
 }
 
+interface AwsSecretsManagerListSecretEntry {
+  ARN?: string;
+  Name?: string;
+  Description?: string;
+  KmsKeyId?: string;
+  CreatedDate?: string | number | Date;
+  LastAccessedDate?: string | number | Date;
+  LastChangedDate?: string | number | Date;
+  DeletedDate?: string | number | Date;
+  Tags?: AwsSecretsManagerTag[];
+}
+
 type ManagedSecretNamespaceContext = Pick<SecretProviderWriteContext, "companyId" | "secretKey">;
 
 interface AwsSecretsManagerGateway {
@@ -84,6 +97,18 @@ interface AwsSecretsManagerGateway {
     SecretId: string;
     RecoveryWindowInDays: number;
   }): Promise<unknown>;
+  listSecrets?(input: {
+    MaxResults?: number;
+    NextToken?: string;
+    Filters?: Array<{
+      Key: "all" | "name" | "description" | "tag-key" | "tag-value" | "primary-region" | "owning-service";
+      Values: string[];
+    }>;
+    IncludePlannedDeletion?: boolean;
+  }): Promise<{
+    SecretList?: AwsSecretsManagerListSecretEntry[];
+    NextToken?: string;
+  }>;
 }
 
 function sha256Hex(value: string): string {
@@ -381,6 +406,26 @@ function createManagedMaterial(secretId: string, versionId: string | null): AwsS
   };
 }
 
+function serializeAwsDate(value: string | number | Date | undefined): string | null {
+  if (value === undefined) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function createRemoteSecretMetadata(entry: AwsSecretsManagerListSecretEntry): Record<string, unknown> {
+  return {
+    arn: entry.ARN ?? null,
+    name: entry.Name ?? null,
+    description: entry.Description ?? null,
+    kmsKeyId: entry.KmsKeyId ?? null,
+    createdDate: serializeAwsDate(entry.CreatedDate),
+    lastAccessedDate: serializeAwsDate(entry.LastAccessedDate),
+    lastChangedDate: serializeAwsDate(entry.LastChangedDate),
+    deletedDate: serializeAwsDate(entry.DeletedDate),
+    tags: entry.Tags ?? [],
+  };
+}
+
 function asAwsSecretsManagerMaterial(value: StoredSecretVersionMaterial): AwsSecretsManagerMaterial {
   if (
     value &&
@@ -463,6 +508,21 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
     RecoveryWindowInDays: number;
   }) {
     return this.call("DeleteSecret", input);
+  }
+
+  listSecrets(input: {
+    MaxResults?: number;
+    NextToken?: string;
+    Filters?: Array<{
+      Key: "all" | "name" | "description" | "tag-key" | "tag-value" | "primary-region" | "owning-service";
+      Values: string[];
+    }>;
+    IncludePlannedDeletion?: boolean;
+  }) {
+    return this.call<{
+      SecretList?: AwsSecretsManagerListSecretEntry[];
+      NextToken?: string;
+    }>("ListSecrets", input);
   }
 
   private async call<T>(operation: string, payload: Record<string, unknown>): Promise<T> {
@@ -681,6 +741,40 @@ export function createAwsSecretsManagerProvider(
     },
     async linkExternalSecret(input) {
       return createExternalReferenceMaterial(input.externalRef, input.providerVersionRef ?? null);
+    },
+    async listRemoteSecrets(input): Promise<RemoteSecretListResult> {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const query = input.query?.trim();
+      const pageSize =
+        input.pageSize && Number.isFinite(input.pageSize)
+          ? Math.min(Math.max(Math.trunc(input.pageSize), 1), 100)
+          : 50;
+
+      try {
+        if (!gateway.listSecrets) {
+          throw new Error("ListSecrets gateway operation is unavailable");
+        }
+        const listed = await gateway.listSecrets({
+          MaxResults: pageSize,
+          NextToken: input.nextToken?.trim() || undefined,
+          IncludePlannedDeletion: false,
+          Filters: query ? [{ Key: "all", Values: [query] }] : undefined,
+        });
+        return {
+          nextToken: listed.NextToken ?? null,
+          secrets: (listed.SecretList ?? [])
+            .filter((entry) => Boolean(entry.ARN ?? entry.Name))
+            .map((entry) => ({
+              externalRef: entry.ARN ?? entry.Name ?? "",
+              name: entry.Name ?? entry.ARN ?? "",
+              providerVersionRef: null,
+              metadata: createRemoteSecretMetadata(entry),
+            })),
+        };
+      } catch (error) {
+        normalizeAwsError("listSecrets", error);
+      }
     },
     async resolveVersion(input) {
       const config = resolveConfig(input.providerConfig);

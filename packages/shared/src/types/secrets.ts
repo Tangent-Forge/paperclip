@@ -194,3 +194,51 @@ export interface SecretAccessEvent {
   errorCode: string | null;
   createdAt: Date;
 }
+
+export type RemoteSecretImportCandidateStatus = "ready" | "duplicate" | "conflict";
+
+export interface RemoteSecretImportConflict {
+  type: "exact_reference" | "name" | "key";
+  message: string;
+  existingSecretId?: string;
+}
+
+export interface RemoteSecretImportCandidate {
+  externalRef: string;
+  remoteName: string;
+  name: string;
+  key: string;
+  providerVersionRef: string | null;
+  providerMetadata: Record<string, unknown> | null;
+  status: RemoteSecretImportCandidateStatus;
+  importable: boolean;
+  conflicts: RemoteSecretImportConflict[];
+}
+
+export interface RemoteSecretImportPreviewResult {
+  providerConfigId: string;
+  provider: SecretProvider;
+  nextToken: string | null;
+  candidates: RemoteSecretImportCandidate[];
+}
+
+export type RemoteSecretImportRowStatus = "imported" | "skipped" | "error";
+
+export interface RemoteSecretImportRowResult {
+  externalRef: string;
+  name: string;
+  key: string;
+  status: RemoteSecretImportRowStatus;
+  reason: string | null;
+  secretId: string | null;
+  conflicts: RemoteSecretImportConflict[];
+}
+
+export interface RemoteSecretImportResult {
+  providerConfigId: string;
+  provider: SecretProvider;
+  importedCount: number;
+  skippedCount: number;
+  errorCount: number;
+  results: RemoteSecretImportRowResult[];
+}

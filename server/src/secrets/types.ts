@@ -29,6 +29,18 @@ export interface PreparedSecretVersion {
   providerVersionRef?: string | null;
 }
 
+export interface RemoteSecretListEntry {
+  externalRef: string;
+  name: string;
+  providerVersionRef?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface RemoteSecretListResult {
+  secrets: RemoteSecretListEntry[];
+  nextToken?: string | null;
+}
+
 export interface SecretProviderRuntimeContext {
   companyId: string;
   secretId: string;
@@ -76,6 +88,12 @@ export interface SecretProviderModule {
     context?: SecretProviderWriteContext;
     providerConfig?: SecretProviderVaultRuntimeConfig | null;
   }): Promise<PreparedSecretVersion>;
+  listRemoteSecrets?(input: {
+    providerConfig?: SecretProviderVaultRuntimeConfig | null;
+    query?: string | null;
+    nextToken?: string | null;
+    pageSize?: number;
+  }): Promise<RemoteSecretListResult>;
   resolveVersion(input: {
     material: StoredSecretVersionMaterial;
     externalRef: string | null;

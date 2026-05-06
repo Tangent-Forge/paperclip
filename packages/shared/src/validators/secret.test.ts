@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
+  remoteSecretImportPreviewSchema,
+  remoteSecretImportSchema,
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
@@ -99,5 +101,51 @@ describe("secret validators", () => {
         config: { address: "https://vault.example.com#token=hvs.x" },
       }),
     ).toThrow(/origin-only HTTP\(S\) URL/i);
+  });
+
+  it("validates AWS remote import preview and import payloads", () => {
+    expect(
+      remoteSecretImportPreviewSchema.parse({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        query: "openai",
+        pageSize: 50,
+      }),
+    ).toEqual({
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      query: "openai",
+      pageSize: 50,
+    });
+
+    expect(
+      remoteSecretImportSchema.parse({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        secrets: [
+          {
+            externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+            name: "OpenAI API key",
+            key: "OPENAI_API_KEY",
+            providerMetadata: { name: "prod/openai" },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      providerConfigId: "11111111-1111-4111-8111-111111111111",
+      secrets: [expect.objectContaining({ key: "OPENAI_API_KEY" })],
+    });
+  });
+
+  it("caps AWS remote import paging and row counts", () => {
+    expect(() =>
+      remoteSecretImportPreviewSchema.parse({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        pageSize: 101,
+      }),
+    ).toThrow();
+    expect(() =>
+      remoteSecretImportSchema.parse({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+        secrets: [],
+      }),
+    ).toThrow();
   });
 });

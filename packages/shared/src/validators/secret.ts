@@ -252,3 +252,28 @@ export const updateSecretProviderConfigSchema = z.object({
 });
 
 export type UpdateSecretProviderConfig = z.infer<typeof updateSecretProviderConfigSchema>;
+
+export const remoteSecretImportPreviewSchema = z.object({
+  providerConfigId: z.string().uuid(),
+  query: z.string().trim().max(200).optional().nullable(),
+  nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+});
+
+export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreviewSchema>;
+
+export const remoteSecretImportSelectionSchema = z.object({
+  externalRef: z.string().trim().min(1).max(2048),
+  name: z.string().trim().min(1).max(160).optional().nullable(),
+  key: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]+$/).optional().nullable(),
+  providerVersionRef: z.string().trim().min(1).max(512).optional().nullable(),
+  providerMetadata: z.record(z.unknown()).optional().nullable(),
+});
+
+export const remoteSecretImportSchema = z.object({
+  providerConfigId: z.string().uuid(),
+  secrets: z.array(remoteSecretImportSelectionSchema).min(1).max(100),
+});
+
+export type RemoteSecretImportSelection = z.infer<typeof remoteSecretImportSelectionSchema>;
+export type RemoteSecretImport = z.infer<typeof remoteSecretImportSchema>;

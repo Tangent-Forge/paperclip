@@ -364,6 +364,177 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(resolveSpy.mock.calls[0]?.[0])).not.toContain("resolved-secret");
   });
 
+  it("previews AWS remote import candidates with duplicate and collision enrichment", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const duplicate = await svc.create(companyId, {
+      name: "Existing duplicate",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/duplicate",
+    });
+    const nameConflict = await svc.create(companyId, {
+      name: "Prod Conflict",
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    const listSpy = vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+      nextToken: "next-page",
+      secrets: [
+        {
+          externalRef: duplicate.externalRef!,
+          name: "prod/duplicate",
+          providerVersionRef: null,
+          metadata: { arn: duplicate.externalRef },
+        },
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/conflict",
+          name: nameConflict.name,
+          providerVersionRef: null,
+          metadata: { arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/conflict" },
+        },
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/ready",
+          name: "prod/ready",
+          providerVersionRef: null,
+          metadata: { arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/ready" },
+        },
+      ],
+    });
+
+    const preview = await svc.previewRemoteImport(companyId, {
+      providerConfigId: awsVault.id,
+      query: "prod",
+      pageSize: 25,
+    });
+
+    expect(listSpy).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      query: "prod",
+      pageSize: 25,
+    }));
+    expect(preview.nextToken).toBe("next-page");
+    expect(preview.candidates.map((candidate) => candidate.status)).toEqual([
+      "duplicate",
+      "conflict",
+      "ready",
+    ]);
+    expect(preview.candidates[0]?.conflicts[0]).toMatchObject({
+      type: "exact_reference",
+      existingSecretId: duplicate.id,
+    });
+    expect(preview.candidates[1]?.conflicts[0]).toMatchObject({
+      type: "name",
+      existingSecretId: nameConflict.id,
+    });
+    expect(preview.candidates[2]).toMatchObject({
+      importable: true,
+      name: "prod/ready",
+      key: "prod-ready",
+    });
+  });
+
+  it("imports AWS remote references row-by-row without fetching plaintext", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const duplicate = await svc.create(companyId, {
+      name: "Existing duplicate",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/duplicate",
+    });
+
+    const resolveSpy = vi.spyOn(awsSecretsManagerProvider, "resolveVersion");
+    const result = await svc.importRemoteSecrets(
+      companyId,
+      {
+        providerConfigId: awsVault.id,
+        secrets: [
+          {
+            externalRef: duplicate.externalRef!,
+            name: "Existing duplicate",
+            key: "existing-duplicate",
+          },
+          {
+            externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+            name: "OpenAI API key",
+            key: "openai-api-key",
+            providerMetadata: { arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai" },
+          },
+        ],
+      },
+      { userId: "user-1" },
+    );
+
+    expect(result.importedCount).toBe(1);
+    expect(result.skippedCount).toBe(1);
+    expect(result.results.map((row) => row.status)).toEqual(["skipped", "imported"]);
+    expect(result.results[0]).toMatchObject({
+      reason: "exact_reference_duplicate",
+      conflicts: [expect.objectContaining({ type: "exact_reference", existingSecretId: duplicate.id })],
+    });
+    expect(resolveSpy).not.toHaveBeenCalled();
+
+    const imported = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.key, "openai-api-key"))
+      .then((rows) => rows[0]);
+    expect(imported).toMatchObject({
+      companyId,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+      createdByUserId: "user-1",
+    });
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, imported!.id));
+    expect(versions).toHaveLength(1);
+    expect(JSON.stringify(versions[0])).not.toContain("runtime-secret");
+    expect(JSON.stringify(versions[0])).not.toContain("sk-");
+  });
+
+  it("rejects remote import for disabled or cross-company provider vaults", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const disabledVault = await svc.createProviderConfig(companyA, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS disabled",
+      status: "disabled",
+      config: { region: "us-east-1" },
+    });
+    const foreignVault = await svc.createProviderConfig(companyB, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS foreign",
+      config: { region: "us-east-1" },
+    });
+
+    await expect(
+      svc.previewRemoteImport(companyA, { providerConfigId: disabledVault.id }),
+    ).rejects.toThrow(/disabled/i);
+    await expect(
+      svc.previewRemoteImport(companyA, { providerConfigId: foreignVault.id }),
+    ).rejects.toThrow(/same company/i);
+  });
+
   it("rejects externalRef overrides on managed secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

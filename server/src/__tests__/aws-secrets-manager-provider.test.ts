@@ -283,6 +283,86 @@ describe("awsSecretsManagerProvider", () => {
     expect(prepared.valueSha256).toBeTruthy();
   });
 
+  it("lists remote AWS secrets with metadata only and never resolves plaintext", async () => {
+    const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+      gateway: {
+        async createSecret() {
+          throw new Error("not used");
+        },
+        async putSecretValue() {
+          throw new Error("not used");
+        },
+        async getSecretValue() {
+          throw new Error("GetSecretValue must not be used for remote import preview");
+        },
+        async deleteSecret() {
+          throw new Error("not used");
+        },
+        async listSecrets(input) {
+          calls.push({ op: "listSecrets", input });
+          return {
+            NextToken: "token-2",
+            SecretList: [
+              {
+                ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+                Name: "prod/openai",
+                Description: "OpenAI API key",
+                CreatedDate: new Date("2026-05-06T00:00:00.000Z"),
+                Tags: [{ Key: "team", Value: "platform" }],
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    const listed = await provider.listRemoteSecrets?.({
+      query: "openai",
+      nextToken: "token-1",
+      pageSize: 25,
+    });
+
+    expect(calls).toEqual([
+      {
+        op: "listSecrets",
+        input: {
+          MaxResults: 25,
+          NextToken: "token-1",
+          IncludePlannedDeletion: false,
+          Filters: [{ Key: "all", Values: ["openai"] }],
+        },
+      },
+    ]);
+    expect(listed).toEqual({
+      nextToken: "token-2",
+      secrets: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          name: "prod/openai",
+          providerVersionRef: null,
+          metadata: expect.objectContaining({
+            arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+            name: "prod/openai",
+            description: "OpenAI API key",
+            createdDate: "2026-05-06T00:00:00.000Z",
+          }),
+        },
+      ],
+    });
+    expect(JSON.stringify(listed)).not.toContain("SecretString");
+  });
+
   it("resolves AWS secret values by provider version reference", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({

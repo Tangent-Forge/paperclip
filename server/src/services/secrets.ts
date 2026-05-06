@@ -17,6 +17,9 @@ import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
   EnvBinding,
+  RemoteSecretImportCandidate,
+  RemoteSecretImportConflict,
+  RemoteSecretImportRowResult,
   SecretBindingTargetType,
   SecretProvider,
   SecretProviderConfigHealthResponse,
@@ -97,6 +100,13 @@ function normalizeSecretKey(input: string) {
     .replace(/[^a-z0-9_.-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
+}
+
+function deriveSecretNameFromExternalRef(externalRef: string) {
+  const trimmed = externalRef.trim();
+  const arnMatch = /^arn:[^:]+:secretsmanager:[^:]*:[^:]*:secret:(.+)$/i.exec(trimmed);
+  const name = arnMatch?.[1] ?? trimmed;
+  return name.split("/").filter(Boolean).at(-1) ?? name;
 }
 
 function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
@@ -672,6 +682,71 @@ export function secretService(db: Db) {
     return targetMap;
   }
 
+  async function buildRemoteImportConflictMaps(companyId: string, provider: SecretProvider) {
+    const existingSecrets = await db
+      .select({
+        id: companySecrets.id,
+        name: companySecrets.name,
+        key: companySecrets.key,
+        provider: companySecrets.provider,
+        externalRef: companySecrets.externalRef,
+      })
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    return {
+      byExternalRef: new Map(
+        existingSecrets
+          .filter((secret) => secret.provider === provider && typeof secret.externalRef === "string" && secret.externalRef.trim())
+          .map((secret) => [secret.externalRef!.trim(), secret]),
+      ),
+      byName: new Map(existingSecrets.map((secret) => [secret.name, secret])),
+      byKey: new Map(existingSecrets.map((secret) => [secret.key, secret])),
+    };
+  }
+
+  function remoteImportConflictsFor(input: {
+    externalRef: string;
+    name: string;
+    key: string;
+    maps: Awaited<ReturnType<typeof buildRemoteImportConflictMaps>>;
+  }): RemoteSecretImportConflict[] {
+    const conflicts: RemoteSecretImportConflict[] = [];
+    const duplicate = input.maps.byExternalRef.get(input.externalRef);
+    if (duplicate) {
+      conflicts.push({
+        type: "exact_reference",
+        existingSecretId: duplicate.id,
+        message: "An existing secret already links this exact provider reference.",
+      });
+      return conflicts;
+    }
+    const nameConflict = input.maps.byName.get(input.name);
+    if (nameConflict) {
+      conflicts.push({
+        type: "name",
+        existingSecretId: nameConflict.id,
+        message: `Secret name already exists: ${input.name}`,
+      });
+    }
+    const keyConflict = input.maps.byKey.get(input.key);
+    if (keyConflict) {
+      conflicts.push({
+        type: "key",
+        existingSecretId: keyConflict.id,
+        message: `Secret key already exists: ${input.key}`,
+      });
+    }
+    return conflicts;
+  }
+
+  async function getRemoteImportProviderConfig(companyId: string, providerConfigId: string) {
+    const providerConfig = await getProviderConfigById(providerConfigId);
+    if (!providerConfig) throw notFound("Provider vault not found");
+    const provider = providerConfig.provider as SecretProvider;
+    assertSelectableProviderConfig(providerConfig, companyId, provider);
+    return { providerConfig, provider, runtimeConfig: toProviderVaultRuntimeConfig(providerConfig) };
+  }
+
   return {
     listProviders: () => listSecretProviders(),
 
@@ -909,6 +984,196 @@ export function secretService(db: Db) {
         .from(secretAccessEvents)
         .where(and(eq(secretAccessEvents.companyId, companyId), eq(secretAccessEvents.secretId, secretId)))
         .orderBy(desc(secretAccessEvents.createdAt)),
+
+    previewRemoteImport: async (
+      companyId: string,
+      input: {
+        providerConfigId: string;
+        query?: string | null;
+        nextToken?: string | null;
+        pageSize?: number;
+      },
+    ) => {
+      const { providerConfig, provider: providerId, runtimeConfig } = await getRemoteImportProviderConfig(
+        companyId,
+        input.providerConfigId,
+      );
+      const provider = getSecretProvider(providerId);
+      if (!provider.listRemoteSecrets) {
+        throw unprocessable(`${providerId} provider does not support remote import listing`);
+      }
+      const listed = await provider.listRemoteSecrets({
+        providerConfig: runtimeConfig,
+        query: input.query,
+        nextToken: input.nextToken,
+        pageSize: input.pageSize,
+      });
+      const maps = await buildRemoteImportConflictMaps(companyId, providerId);
+      const candidates: RemoteSecretImportCandidate[] = listed.secrets.map((remote) => {
+        const externalRef = remote.externalRef.trim();
+        const remoteName = remote.name.trim() || deriveSecretNameFromExternalRef(externalRef);
+        const name = remoteName || deriveSecretNameFromExternalRef(externalRef);
+        const key = normalizeSecretKey(name);
+        const conflicts = remoteImportConflictsFor({ externalRef, name, key, maps });
+        const hasDuplicate = conflicts.some((conflict) => conflict.type === "exact_reference");
+        const hasConflict = conflicts.length > 0;
+        return {
+          externalRef,
+          remoteName,
+          name,
+          key,
+          providerVersionRef: remote.providerVersionRef ?? null,
+          providerMetadata: remote.metadata ?? null,
+          status: hasDuplicate ? "duplicate" : hasConflict ? "conflict" : "ready",
+          importable: !hasConflict,
+          conflicts,
+        };
+      });
+      return {
+        providerConfigId: providerConfig.id,
+        provider: providerId,
+        nextToken: listed.nextToken ?? null,
+        candidates,
+      };
+    },
+
+    importRemoteSecrets: async (
+      companyId: string,
+      input: {
+        providerConfigId: string;
+        secrets: Array<{
+          externalRef: string;
+          name?: string | null;
+          key?: string | null;
+          providerVersionRef?: string | null;
+          providerMetadata?: Record<string, unknown> | null;
+        }>;
+      },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const { providerConfig, provider: providerId, runtimeConfig } = await getRemoteImportProviderConfig(
+        companyId,
+        input.providerConfigId,
+      );
+      const provider = getSecretProvider(providerId);
+      if (provider.descriptor().supportsExternalReferences === false) {
+        throw unprocessable(`${providerId} provider does not support linked external references`);
+      }
+      const maps = await buildRemoteImportConflictMaps(companyId, providerId);
+      const results: RemoteSecretImportRowResult[] = [];
+
+      for (const selection of input.secrets) {
+        const externalRef = selection.externalRef.trim();
+        const name = selection.name?.trim() || deriveSecretNameFromExternalRef(externalRef);
+        const key = normalizeSecretKey(selection.key?.trim() || name);
+        const conflicts = remoteImportConflictsFor({ externalRef, name, key, maps });
+        if (!key) {
+          results.push({
+            externalRef,
+            name,
+            key,
+            status: "error",
+            reason: "Secret key is required",
+            secretId: null,
+            conflicts,
+          });
+          continue;
+        }
+        if (conflicts.length > 0) {
+          results.push({
+            externalRef,
+            name,
+            key,
+            status: "skipped",
+            reason: conflicts.some((conflict) => conflict.type === "exact_reference")
+              ? "exact_reference_duplicate"
+              : "name_or_key_conflict",
+            secretId: null,
+            conflicts,
+          });
+          continue;
+        }
+
+        try {
+          const prepared = await provider.linkExternalSecret({
+            externalRef,
+            providerVersionRef: selection.providerVersionRef ?? null,
+            providerConfig: runtimeConfig,
+            context: {
+              companyId,
+              secretKey: key,
+              secretName: name,
+              version: 1,
+            },
+          });
+          const secret = await db.transaction(async (tx) => {
+            const inserted = await tx
+              .insert(companySecrets)
+              .values({
+                companyId,
+                key,
+                name,
+                provider: providerId,
+                providerConfigId: providerConfig.id,
+                status: "active",
+                managedMode: "external_reference",
+                externalRef: prepared.externalRef,
+                providerMetadata: selection.providerMetadata ?? null,
+                latestVersion: 1,
+                description: null,
+                lastRotatedAt: new Date(),
+                createdByAgentId: actor?.agentId ?? null,
+                createdByUserId: actor?.userId ?? null,
+              })
+              .returning()
+              .then((rows) => rows[0]);
+            await tx.insert(companySecretVersions).values({
+              secretId: inserted.id,
+              version: 1,
+              material: prepared.material,
+              valueSha256: prepared.valueSha256,
+              fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+              providerVersionRef: prepared.providerVersionRef ?? null,
+              status: "current",
+              createdByAgentId: actor?.agentId ?? null,
+              createdByUserId: actor?.userId ?? null,
+            });
+            return inserted;
+          });
+          maps.byExternalRef.set(externalRef, secret);
+          maps.byName.set(name, secret);
+          maps.byKey.set(key, secret);
+          results.push({
+            externalRef,
+            name,
+            key,
+            status: "imported",
+            reason: null,
+            secretId: secret.id,
+            conflicts: [],
+          });
+        } catch (error) {
+          results.push({
+            externalRef,
+            name,
+            key,
+            status: "error",
+            reason: error instanceof Error ? error.message : "Import failed",
+            secretId: null,
+            conflicts: [],
+          });
+        }
+      }
+
+      return {
+        providerConfigId: providerConfig.id,
+        provider: providerId,
+        importedCount: results.filter((result) => result.status === "imported").length,
+        skippedCount: results.filter((result) => result.status === "skipped").length,
+        errorCount: results.filter((result) => result.status === "error").length,
+        results,
+      };
+    },
 
     getById,
     getByName,
