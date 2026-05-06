@@ -518,6 +518,7 @@ describeEmbeddedPostgres("secretService", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "openai-api-key",
+            description: "  Operator-entered production OpenAI key  ",
             providerMetadata: { arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai" },
           },
         ],
@@ -547,6 +548,7 @@ describeEmbeddedPostgres("secretService", () => {
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
       createdByUserId: "user-1",
       providerMetadata: null,
+      description: "Operator-entered production OpenAI key",
     });
 
     const versions = await db

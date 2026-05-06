@@ -85,6 +85,7 @@ export interface RemoteImportSelectionInput {
   externalRef: string;
   name?: string | null;
   key?: string | null;
+  description?: string | null;
   providerVersionRef?: string | null;
   providerMetadata?: Record<string, unknown> | null;
 }

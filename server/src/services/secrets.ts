@@ -1197,6 +1197,7 @@ export function secretService(db: Db) {
           externalRef: string;
           name?: string | null;
           key?: string | null;
+          description?: string | null;
           providerVersionRef?: string | null;
           providerMetadata?: Record<string, unknown> | null;
         }>;
@@ -1218,6 +1219,7 @@ export function secretService(db: Db) {
         const externalRef = selection.externalRef.trim();
         const name = selection.name?.trim() || deriveSecretNameFromExternalRef(externalRef);
         const key = normalizeSecretKey(selection.key?.trim() || name);
+        const description = selection.description?.trim() || null;
         let prepared: PreparedSecretVersion | undefined;
         const conflicts = remoteImportConflictsFor({
           providerConfigId: providerConfig.id,
@@ -1326,7 +1328,7 @@ export function secretService(db: Db) {
                 externalRef: preparedSecret.externalRef,
                 providerMetadata: null,
                 latestVersion: 1,
-                description: null,
+                description,
                 lastRotatedAt: new Date(),
                 createdByAgentId: actor?.agentId ?? null,
                 createdByUserId: actor?.userId ?? null,

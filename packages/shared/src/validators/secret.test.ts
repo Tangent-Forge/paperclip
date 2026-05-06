@@ -124,13 +124,19 @@ describe("secret validators", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "OPENAI_API_KEY",
+            description: "  Operator-entered Paperclip description  ",
             providerMetadata: { name: "prod/openai" },
           },
         ],
       }),
     ).toMatchObject({
       providerConfigId: "11111111-1111-4111-8111-111111111111",
-      secrets: [expect.objectContaining({ key: "OPENAI_API_KEY" })],
+      secrets: [
+        expect.objectContaining({
+          key: "OPENAI_API_KEY",
+          description: "Operator-entered Paperclip description",
+        }),
+      ],
     });
   });
 

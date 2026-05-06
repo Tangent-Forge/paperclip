@@ -357,6 +357,113 @@ describe("ImportFromVaultDialog", () => {
     });
   });
 
+  it("submits the operator-entered review description", async () => {
+    const externalRef = "arn:aws:secretsmanager:us-east-1:1:secret:prod/openai-XYZ";
+    mockSecretsApi.remoteImportPreview.mockResolvedValueOnce(
+      makePreview([
+        makeCandidate({
+          externalRef,
+          remoteName: "prod/openai",
+          name: "OpenAI API key",
+          key: "openai-api-key",
+          providerMetadata: {
+            description: "Raw AWS description should not seed the review field",
+          },
+        }),
+      ]),
+    );
+    mockSecretsApi.remoteImport.mockResolvedValueOnce({
+      providerConfigId: awsVault.id,
+      provider: "aws_secrets_manager",
+      importedCount: 1,
+      skippedCount: 0,
+      errorCount: 0,
+      results: [
+        {
+          externalRef,
+          name: "OpenAI API key",
+          key: "openai-api-key",
+          status: "imported",
+          reason: null,
+          secretId: "secret-openai",
+          conflicts: [],
+        },
+      ],
+    });
+
+    const { queryClient } = makeWrapper();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ImportFromVaultDialog
+            open
+            onOpenChange={vi.fn()}
+            companyId="company-1"
+            providerConfigs={[awsVault]}
+            existingSecrets={[]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const row = document.querySelector(
+      `[data-testid="vault-row-${externalRef}"]`,
+    ) as HTMLElement | null;
+    await act(async () => {
+      row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const continueBtn = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("Continue"),
+    );
+    await act(async () => {
+      continueBtn!.click();
+    });
+    await flush();
+
+    const descriptionInput = document.querySelector(
+      `[data-testid="review-description-${externalRef}"]`,
+    ) as HTMLInputElement | null;
+    expect(descriptionInput?.value).toBe("");
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      valueSetter?.call(descriptionInput, "Operator-entered OpenAI key");
+      descriptionInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    const importBtn = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.startsWith("Import "),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      importBtn!.click();
+    });
+    await flush();
+    await flush();
+
+    expect(mockSecretsApi.remoteImport).toHaveBeenCalledWith("company-1", {
+      providerConfigId: awsVault.id,
+      secrets: [
+        expect.objectContaining({
+          externalRef,
+          description: "Operator-entered OpenAI key",
+          providerMetadata: null,
+        }),
+      ],
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders mixed import results (created/skipped/failed) and shows error reason", async () => {
     mockSecretsApi.remoteImportPreview.mockResolvedValueOnce(
       makePreview([

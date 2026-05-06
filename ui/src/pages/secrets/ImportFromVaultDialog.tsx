@@ -234,17 +234,28 @@ function isThrottlingError(error: unknown): boolean {
 }
 
 function buildDraft(candidate: RemoteSecretImportCandidate): DraftSelection {
-  const meta = candidate.providerMetadata ?? {};
-  const description =
-    typeof (meta as Record<string, unknown>).description === "string"
-      ? ((meta as Record<string, unknown>).description as string)
-      : "";
   return {
     candidate,
     name: candidate.name,
     key: candidate.key,
-    description,
+    description: "",
   };
+}
+
+function safeImportProviderMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadata) return null;
+  const safe: Record<string, unknown> = {};
+  for (const key of ["createdDate", "lastAccessedDate", "lastChangedDate", "deletedDate"]) {
+    const value = metadata[key];
+    if (typeof value === "string" || value === null) safe[key] = value;
+  }
+  for (const key of ["hasDescription", "hasKmsKey", "tagCount"]) {
+    const value = metadata[key];
+    if (typeof value === "boolean" || typeof value === "number") safe[key] = value;
+  }
+  return Object.keys(safe).length > 0 ? safe : null;
 }
 
 function validateDraftRow(
@@ -610,8 +621,9 @@ export function ImportFromVaultDialog({
       externalRef: draft.candidate.externalRef,
       name: draft.name.trim(),
       key: draft.key.trim(),
+      description: draft.description.trim() || null,
       providerVersionRef: draft.candidate.providerVersionRef,
-      providerMetadata: draft.candidate.providerMetadata,
+      providerMetadata: safeImportProviderMetadata(draft.candidate.providerMetadata),
     }));
     importMutation.mutate({ providerConfigId: vaultId, secrets: items });
   }
@@ -999,8 +1011,6 @@ function SelectStep(props: SelectStepProps) {
                     : typeof meta.lastChangedDate === "string"
                       ? meta.lastChangedDate
                       : null;
-                const description =
-                  typeof meta.description === "string" ? meta.description : null;
                 return (
                   <tr
                     key={candidate.externalRef}
@@ -1025,14 +1035,6 @@ function SelectStep(props: SelectStepProps) {
                     </td>
                     <td className="px-2 py-2.5">
                       <div className="text-sm font-medium leading-tight">{candidate.remoteName}</div>
-                      {description && (
-                        <div
-                          className="truncate text-xs text-muted-foreground max-w-[20rem]"
-                          title={description}
-                        >
-                          {description}
-                        </div>
-                      )}
                     </td>
                     <td className="px-2 py-2.5 text-xs">
                       <span
