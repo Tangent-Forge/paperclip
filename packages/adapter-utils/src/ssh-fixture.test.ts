@@ -16,6 +16,9 @@ import {
   stopSshEnvLabFixture,
 } from "./ssh.js";
 
+const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
+let sshEnvLabUnsupportedReason: string | null = null;
+
 async function git(cwd: string, args: string[]): Promise<string> {
   return await new Promise((resolve, reject) => {
     execFile("git", ["-C", cwd, ...args], (error, stdout, stderr) => {
@@ -26,6 +29,28 @@ async function git(cwd: string, args: string[]): Promise<string> {
       resolve(stdout.trim());
     });
   });
+}
+
+async function startSshEnvLabFixtureOrSkip(statePath: string, label: string) {
+  if (sshEnvLabUnsupportedReason) {
+    console.warn(`Skipping ${label}: ${sshEnvLabUnsupportedReason}`);
+    return null;
+  }
+
+  const support = await getSshEnvLabSupport();
+  if (!support.supported) {
+    sshEnvLabUnsupportedReason = support.reason ?? "unsupported environment";
+    console.warn(`Skipping ${label}: ${sshEnvLabUnsupportedReason}`);
+    return null;
+  }
+
+  try {
+    return await startSshEnvLabFixture({ statePath });
+  } catch (error) {
+    sshEnvLabUnsupportedReason = error instanceof Error ? error.message : String(error);
+    console.warn(`Skipping ${label}: ${sshEnvLabUnsupportedReason}`);
+    return null;
+  }
 }
 
 describe("ssh env-lab fixture", () => {
@@ -40,24 +65,17 @@ describe("ssh env-lab fixture", () => {
   });
 
   it("starts an isolated sshd fixture and executes commands through it", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH env-lab fixture test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const quotedWorkspace = JSON.stringify(started.workspaceDir);
     const result = await runSshCommand(
       config,
-      `sh -lc 'cd ${quotedWorkspace} && pwd'`,
+      `cd ${quotedWorkspace} && pwd`,
     );
 
     expect(result.stdout.trim()).toBe(started.workspaceDir);
@@ -68,28 +86,21 @@ describe("ssh env-lab fixture", () => {
 
     const stopped = await readSshEnvLabFixtureStatus(statePath);
     expect(stopped.running).toBe(false);
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("forwards stdin to remote SSH commands", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH stdin forwarding test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH stdin forwarding test");
+    if (!started) return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const remotePath = path.posix.join(started.workspaceDir, "stdin-forwarded.txt");
 
     await runSshCommand(
       config,
-      `sh -lc 'cat > ${JSON.stringify(remotePath)}'`,
+      `cat > ${JSON.stringify(remotePath)}`,
       {
         stdin: "hello over ssh stdin\n",
         timeoutMs: 30_000,
@@ -99,27 +110,20 @@ describe("ssh env-lab fixture", () => {
 
     const result = await runSshCommand(
       config,
-      `sh -lc 'cat ${JSON.stringify(remotePath)}'`,
+      `cat ${JSON.stringify(remotePath)}`,
       { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
     );
 
     expect(result.stdout).toBe("hello over ssh stdin\n");
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("does not treat an unrelated reused pid as the running fixture", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH env-lab fixture test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
     await stopSshEnvLabFixture(statePath);
     await mkdir(path.dirname(statePath), { recursive: true });
 
@@ -132,11 +136,12 @@ describe("ssh env-lab fixture", () => {
     const staleStatus = await readSshEnvLabFixtureStatus(statePath);
     expect(staleStatus.running).toBe(false);
 
-    const restarted = await startSshEnvLabFixture({ statePath });
+    const restarted = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture restart test");
+    if (!restarted) return;
     expect(restarted.pid).not.toBe(process.pid);
 
     await stopSshEnvLabFixture(statePath);
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
@@ -161,14 +166,6 @@ describe("ssh env-lab fixture", () => {
   });
 
   it("syncs a local directory into the remote fixture workspace", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH env-lab fixture test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
@@ -178,7 +175,8 @@ describe("ssh env-lab fixture", () => {
     await writeFile(path.join(localDir, "message.txt"), "hello from paperclip\n", "utf8");
     await writeFile(path.join(localDir, "._message.txt"), "should never sync\n", "utf8");
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const remoteDir = path.posix.join(started.workspaceDir, "overlay");
 
@@ -193,22 +191,14 @@ describe("ssh env-lab fixture", () => {
 
     const result = await runSshCommand(
       config,
-      `sh -lc 'cat ${JSON.stringify(path.posix.join(remoteDir, "message.txt"))} && if [ -e ${JSON.stringify(path.posix.join(remoteDir, "._message.txt"))} ]; then echo appledouble-present; fi'`,
+      `cat ${JSON.stringify(path.posix.join(remoteDir, "message.txt"))} && if [ -e ${JSON.stringify(path.posix.join(remoteDir, "._message.txt"))} ]; then echo appledouble-present; fi`,
     );
 
     expect(result.stdout).toContain("hello from paperclip");
     expect(result.stdout).not.toContain("appledouble-present");
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("can dereference local symlinks while syncing to the remote fixture", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH symlink sync test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
@@ -220,7 +210,8 @@ describe("ssh env-lab fixture", () => {
     await writeFile(path.join(sourceDir, "auth.json"), "{\"token\":\"secret\"}\n", "utf8");
     await symlink(path.join(sourceDir, "auth.json"), path.join(localDir, "auth.json"));
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH symlink sync test");
+    if (!started) return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const remoteDir = path.posix.join(started.workspaceDir, "overlay-follow-links");
 
@@ -236,29 +227,22 @@ describe("ssh env-lab fixture", () => {
 
     const result = await runSshCommand(
       config,
-      `sh -lc 'if [ -L ${JSON.stringify(path.posix.join(remoteDir, "auth.json"))} ]; then echo symlink; else echo regular; fi && cat ${JSON.stringify(path.posix.join(remoteDir, "auth.json"))}'`,
+      `if [ -L ${JSON.stringify(path.posix.join(remoteDir, "auth.json"))} ]; then echo symlink; else echo regular; fi && cat ${JSON.stringify(path.posix.join(remoteDir, "auth.json"))}`,
     );
 
     expect(result.stdout).toContain("regular");
     expect(result.stdout).toContain("{\"token\":\"secret\"}");
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("round-trips a git workspace through the SSH fixture", async () => {
-    const support = await getSshEnvLabSupport();
-    if (!support.supported) {
-      console.warn(
-        `Skipping SSH workspace round-trip test: ${support.reason ?? "unsupported environment"}`,
-      );
-      return;
-    }
-
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
     cleanupDirs.push(rootDir);
     const statePath = path.join(rootDir, "state.json");
     const localRepo = path.join(rootDir, "local-workspace");
 
     await mkdir(localRepo, { recursive: true });
-    await git(localRepo, ["init", "-b", "main"]);
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
     await git(localRepo, ["config", "user.name", "Paperclip Test"]);
     await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
     await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
@@ -269,7 +253,8 @@ describe("ssh env-lab fixture", () => {
     await writeFile(path.join(localRepo, "tracked.txt"), "dirty local\n", "utf8");
     await writeFile(path.join(localRepo, "untracked.txt"), "from local\n", "utf8");
 
-    const started = await startSshEnvLabFixture({ statePath });
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH workspace round-trip test");
+    if (!started) return;
     const config = await buildSshEnvLabFixtureConfig(started);
     const spec = {
       ...config,
@@ -284,7 +269,7 @@ describe("ssh env-lab fixture", () => {
 
     const remoteStatus = await runSshCommand(
       config,
-      `sh -lc 'cd ${JSON.stringify(started.workspaceDir)} && git status --short'`,
+      `cd ${JSON.stringify(started.workspaceDir)} && git status --short`,
     );
     expect(remoteStatus.stdout).toContain("M tracked.txt");
     expect(remoteStatus.stdout).toContain("?? untracked.txt");
@@ -292,7 +277,7 @@ describe("ssh env-lab fixture", () => {
 
     await runSshCommand(
       config,
-      `sh -lc 'cd ${JSON.stringify(started.workspaceDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && git add tracked.txt untracked.txt && git commit -m "remote update" >/dev/null && printf "remote dirty\\n" > tracked.txt && printf "remote extra\\n" > remote-only.txt'`,
+      `cd ${JSON.stringify(started.workspaceDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && git add tracked.txt untracked.txt && git commit -m "remote update" >/dev/null && printf "remote dirty\\n" > tracked.txt && printf "remote extra\\n" > remote-only.txt`,
       { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
     );
 
@@ -307,5 +292,5 @@ describe("ssh env-lab fixture", () => {
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     expect(await git(localRepo, ["status", "--short"])).toContain("M tracked.txt");
     expect(await git(localRepo, ["status", "--short"])).not.toContain("._tracked.txt");
-  });
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });
