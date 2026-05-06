@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
+import { SecretProviderClientError } from "../secrets/types.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -448,6 +449,44 @@ describeEmbeddedPostgres("secretService", () => {
     expect(preview.candidates[2]?.providerMetadata).toBeNull();
   });
 
+  it("sanitizes AWS remote import preview provider errors before crossing the service boundary", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
+
+    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "listSecrets",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await svc.previewRemoteImport(companyId, { providerConfigId: awsVault.id });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: { code: "access_denied" },
+    });
+    expect(JSON.stringify(thrown)).not.toContain("arn:aws");
+    expect(JSON.stringify(thrown)).not.toContain("123456789012");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+  });
+
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -517,6 +556,53 @@ describeEmbeddedPostgres("secretService", () => {
     expect(versions).toHaveLength(1);
     expect(JSON.stringify(versions[0])).not.toContain("runtime-secret");
     expect(JSON.stringify(versions[0])).not.toContain("sk-");
+  });
+
+  it("sanitizes AWS remote import row provider errors", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:DescribeSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
+    vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "linkExternalSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    const result = await svc.importRemoteSecrets(companyId, {
+      providerConfigId: awsVault.id,
+      secrets: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          name: "OpenAI API key",
+          key: "openai-api-key",
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      importedCount: 0,
+      skippedCount: 0,
+      errorCount: 1,
+      results: [
+        expect.objectContaining({
+          status: "error",
+          reason: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        }),
+      ],
+    });
+    expect(JSON.stringify(result)).not.toContain(rawProviderMessage);
+    expect(JSON.stringify(result.results[0]?.reason)).not.toContain("arn:aws");
+    expect(JSON.stringify(result.results[0]?.reason)).not.toContain("123456789012");
   });
 
   it("rejects Paperclip-managed AWS namespace refs during preview and import commit", async () => {

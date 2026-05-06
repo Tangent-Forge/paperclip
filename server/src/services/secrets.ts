@@ -36,7 +36,8 @@ import {
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import {
   checkSecretProviders,
   getSecretProvider,
@@ -44,9 +45,11 @@ import {
 } from "../secrets/provider-registry.js";
 import type {
   PreparedSecretVersion,
+  RemoteSecretListResult,
   SecretProviderHealthCheck,
   SecretProviderVaultRuntimeConfig,
 } from "../secrets/types.js";
+import { isSecretProviderClientError } from "../secrets/types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -56,6 +59,76 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",
   "vault",
 ]);
+
+function remoteProviderHttpError(error: unknown, context: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId: string;
+  operation: string;
+}): HttpError {
+  if (isSecretProviderClientError(error)) {
+    logger.warn(
+      {
+        err: error,
+        companyId: context.companyId,
+        provider: context.provider,
+        providerConfigId: context.providerConfigId,
+        operation: context.operation,
+        providerErrorCode: error.code,
+      },
+      "remote secret provider request failed",
+    );
+    return new HttpError(error.status, error.message, { code: error.code });
+  }
+  if (error instanceof HttpError) return error;
+  logger.warn(
+    {
+      err: error,
+      companyId: context.companyId,
+      provider: context.provider,
+      providerConfigId: context.providerConfigId,
+      operation: context.operation,
+      providerErrorCode: "provider_error",
+    },
+    "remote secret provider request failed",
+  );
+  return new HttpError(502, "Remote secret provider request failed.", { code: "provider_error" });
+}
+
+function remoteImportRowFailureReason(error: unknown, fallback: string, context: {
+  companyId: string;
+  provider: SecretProvider;
+  providerConfigId: string;
+  operation: string;
+}): string {
+  if (isSecretProviderClientError(error)) {
+    logger.warn(
+      {
+        err: error,
+        companyId: context.companyId,
+        provider: context.provider,
+        providerConfigId: context.providerConfigId,
+        operation: context.operation,
+        providerErrorCode: error.code,
+      },
+      "remote secret import row provider failure",
+    );
+    return error.message;
+  }
+  if (error instanceof HttpError && error.status < 500) return error.message;
+  logger.warn(
+    {
+      err: error,
+      companyId: context.companyId,
+      provider: context.provider,
+      providerConfigId: context.providerConfigId,
+      operation: context.operation,
+      providerErrorCode: "provider_error",
+    },
+    "remote secret import row failed",
+  );
+  return fallback;
+}
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
@@ -1038,12 +1111,22 @@ export function secretService(db: Db) {
       if (!provider.listRemoteSecrets) {
         throw unprocessable(`${providerId} provider does not support remote import listing`);
       }
-      const listed = await provider.listRemoteSecrets({
-        providerConfig: runtimeConfig,
-        query: input.query,
-        nextToken: input.nextToken,
-        pageSize: input.pageSize,
-      });
+      let listed: RemoteSecretListResult;
+      try {
+        listed = await provider.listRemoteSecrets({
+          providerConfig: runtimeConfig,
+          query: input.query,
+          nextToken: input.nextToken,
+          pageSize: input.pageSize,
+        });
+      } catch (error) {
+        throw remoteProviderHttpError(error, {
+          companyId,
+          provider: providerId,
+          providerConfigId: providerConfig.id,
+          operation: "remote_import.preview",
+        });
+      }
       const maps = await buildRemoteImportConflictMaps(companyId, providerId);
       const candidates: RemoteSecretImportCandidate[] = [];
       for (const remote of listed.secrets) {
@@ -1069,7 +1152,12 @@ export function secretService(db: Db) {
         } catch (error) {
           conflicts.push({
             type: "provider_guardrail",
-            message: error instanceof Error ? error.message : "Provider rejected this external reference",
+            message: remoteImportRowFailureReason(error, "Provider rejected this external reference", {
+              companyId,
+              provider: providerId,
+              providerConfigId: providerConfig.id,
+              operation: "remote_import.preview.link_external_reference",
+            }),
           });
         }
         conflicts.push(...remoteImportConflictsFor({
@@ -1179,7 +1267,12 @@ export function secretService(db: Db) {
               name,
               key,
               status: "error",
-              reason: error instanceof Error ? error.message : "Provider rejected this external reference",
+              reason: remoteImportRowFailureReason(error, "Provider rejected this external reference", {
+                companyId,
+                provider: providerId,
+                providerConfigId: providerConfig.id,
+                operation: "remote_import.prepare_external_reference",
+              }),
               secretId: null,
               conflicts: [],
             });
@@ -1274,7 +1367,12 @@ export function secretService(db: Db) {
             name,
             key,
             status: "error",
-            reason: error instanceof Error ? error.message : "Import failed",
+            reason: remoteImportRowFailureReason(error, "Import failed", {
+              companyId,
+              provider: providerId,
+              providerConfigId: providerConfig.id,
+              operation: "remote_import.commit",
+            }),
             secretId: null,
             conflicts: [],
           });

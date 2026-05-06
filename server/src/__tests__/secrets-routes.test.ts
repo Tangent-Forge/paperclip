@@ -3,7 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { secretRoutes } from "../routes/secrets.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { unprocessable } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
 
 const mockSecretService = vi.hoisted(() => ({
   listProviders: vi.fn(),
@@ -299,6 +299,31 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("prod/openai");
+  });
+
+  it("returns sanitized remote import preview provider errors", async () => {
+    mockSecretService.previewRemoteImport.mockRejectedValue(
+      new HttpError(
+        403,
+        "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        { code: "access_denied" },
+      ),
+    );
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secrets/remote-import/preview")
+      .send({
+        providerConfigId: "11111111-1111-4111-8111-111111111111",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: { code: "access_denied" },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("arn:aws");
+    expect(JSON.stringify(res.body)).not.toContain("123456789012");
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("imports remote references and logs aggregate row counts", async () => {

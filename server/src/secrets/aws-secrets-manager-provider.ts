@@ -4,10 +4,11 @@ import { Hash } from "@smithy/hash-node";
 import { HttpRequest } from "@smithy/protocol-http";
 import { SignatureV4 } from "@smithy/signature-v4";
 import type { DeploymentMode } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { unprocessable } from "../errors.js";
 import type {
   PreparedSecretVersion,
   RemoteSecretListResult,
+  SecretProviderClientErrorCode,
   SecretProviderHealthCheck,
   SecretProviderModule,
   SecretProviderValidationResult,
@@ -15,6 +16,7 @@ import type {
   SecretProviderWriteContext,
   StoredSecretVersionMaterial,
 } from "./types.js";
+import { SecretProviderClientError } from "./types.js";
 
 const AWS_SECRETS_MANAGER_SCHEME = "aws_secrets_manager_v1";
 const DEFAULT_PREFIX = "paperclip";
@@ -464,15 +466,49 @@ function asAwsSecretsManagerMaterial(value: StoredSecretVersionMaterial): AwsSec
   throw unprocessable("Invalid AWS Secrets Manager material");
 }
 
+function classifyAwsProviderError(message: string): SecretProviderClientErrorCode {
+  if (/ResourceExistsException|AlreadyExists/i.test(message)) return "conflict";
+  if (/ResourceNotFoundException|NotFound/i.test(message)) return "not_found";
+  if (/AccessDeniedException|AccessDenied|UnrecognizedClientException|InvalidClientTokenId|not authorized/i.test(message)) {
+    return "access_denied";
+  }
+  if (/Throttl|TooManyRequests|RequestLimitExceeded|Rate exceeded/i.test(message)) return "throttled";
+  if (/ValidationException|InvalidParameter|InvalidRequest/i.test(message)) return "invalid_request";
+  if (/fetch failed|ECONN|ENOTFOUND|ETIMEDOUT|network|timeout/i.test(message)) return "provider_unavailable";
+  return "provider_error";
+}
+
+function awsProviderSafeMessage(code: SecretProviderClientErrorCode): string {
+  switch (code) {
+    case "access_denied":
+      return "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.";
+    case "throttled":
+      return "AWS Secrets Manager throttled the request. Wait and try again.";
+    case "not_found":
+      return "AWS Secrets Manager could not find the requested secret.";
+    case "conflict":
+      return "AWS Secrets Manager reported that the requested secret already exists.";
+    case "invalid_request":
+      return "AWS Secrets Manager rejected the request.";
+    case "provider_unavailable":
+      return "AWS Secrets Manager is unavailable right now.";
+    case "provider_error":
+    default:
+      return "AWS Secrets Manager request failed.";
+  }
+}
+
 function normalizeAwsError(operation: string, error: unknown): never {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/ResourceExistsException/i.test(message)) {
-    throw conflict(`AWS Secrets Manager ${operation} conflict: ${message}`);
-  }
-  if (/ResourceNotFoundException/i.test(message)) {
-    throw notFound(`AWS Secrets Manager ${operation} failed: ${message}`);
-  }
-  throw unprocessable(`AWS Secrets Manager ${operation} failed: ${message}`);
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const code = classifyAwsProviderError(rawMessage);
+  throw new SecretProviderClientError({
+    code,
+    provider: "aws_secrets_manager",
+    operation,
+    message: awsProviderSafeMessage(code),
+    rawMessage,
+    cause: error,
+  });
 }
 
 class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {

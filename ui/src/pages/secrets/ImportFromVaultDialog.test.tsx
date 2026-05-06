@@ -11,6 +11,7 @@ import type {
   RemoteSecretImportResult,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client";
 
 const mockSecretsApi = vi.hoisted(() => ({
   remoteImportPreview: vi.fn(),
@@ -412,7 +413,7 @@ describe("ImportFromVaultDialog", () => {
           name: "gamma",
           key: "gamma",
           status: "error",
-          reason: "AccessDeniedException for arn:aws:…/c",
+          reason: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
           secretId: null,
           conflicts: [],
         },
@@ -473,7 +474,9 @@ describe("ImportFromVaultDialog", () => {
     expect(document.body.textContent).toContain("1 created");
     expect(document.body.textContent).toContain("1 skipped");
     expect(document.body.textContent).toContain("1 failed");
-    expect(document.body.textContent).toContain("AccessDeniedException");
+    expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
+    expect(document.body.textContent).not.toContain("AccessDeniedException");
+    expect(document.body.textContent).not.toContain("123456789012");
 
     await act(async () => {
       root.unmount();
@@ -536,6 +539,48 @@ describe("ImportFromVaultDialog", () => {
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain("Could not load remote secrets");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders sanitized preview provider errors without raw AWS exception text", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
+    mockSecretsApi.remoteImportPreview.mockRejectedValueOnce(
+      new ApiError(
+        "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        403,
+        { error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", details: { code: "access_denied" } },
+      ),
+    );
+
+    const { queryClient } = makeWrapper();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ImportFromVaultDialog
+            open
+            onOpenChange={vi.fn()}
+            companyId="company-1"
+            providerConfigs={[awsVault]}
+            existingSecrets={[]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const banner = document.querySelector('[data-testid="preview-error-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain("AWS denied list access");
+    expect(banner?.textContent).toContain("missing secretsmanager:ListSecrets");
+    expect(banner?.textContent).not.toContain(rawProviderMessage);
+    expect(banner?.textContent).not.toContain("arn:aws");
+    expect(banner?.textContent).not.toContain("123456789012");
 
     await act(async () => {
       root.unmount();

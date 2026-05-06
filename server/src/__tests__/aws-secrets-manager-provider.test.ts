@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createAwsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
+import { SecretProviderClientError } from "../secrets/types.js";
 
 describe("awsSecretsManagerProvider", () => {
   const previousEnv = {
@@ -396,6 +397,57 @@ describe("awsSecretsManagerProvider", () => {
     expect(JSON.stringify(listed)).not.toContain("SecretString");
     expect(JSON.stringify(listed)).not.toContain("OpenAI API key");
     expect(JSON.stringify(listed)).not.toContain("team");
+  });
+
+  it("redacts AWS provider exception text when remote listing fails", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+      gateway: {
+        async createSecret() {
+          throw new Error("not used");
+        },
+        async putSecretValue() {
+          throw new Error("not used");
+        },
+        async getSecretValue() {
+          throw new Error("not used");
+        },
+        async deleteSecret() {
+          throw new Error("not used");
+        },
+        async listSecrets() {
+          throw new Error(rawProviderMessage);
+        },
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      await provider.listRemoteSecrets?.({});
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SecretProviderClientError);
+    expect(thrown).toMatchObject({
+      code: "access_denied",
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      rawMessage: rawProviderMessage,
+    });
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("123456789012");
   });
 
   it("resolves AWS secret values by provider version reference", async () => {

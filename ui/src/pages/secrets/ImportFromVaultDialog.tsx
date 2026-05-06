@@ -201,8 +201,22 @@ function readableErrorMessage(error: unknown): string {
   return "Unexpected error";
 }
 
+function apiErrorCode(error: ApiError): string | null {
+  const body = error.body;
+  if (!body || typeof body !== "object") return null;
+  const record = body as Record<string, unknown>;
+  if (typeof record.code === "string") return record.code;
+  const details = record.details;
+  if (details && typeof details === "object") {
+    const code = (details as Record<string, unknown>).code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
 function isPermissionError(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
+  if (apiErrorCode(error) === "access_denied") return true;
   if (error.status === 401 || error.status === 403) return true;
   const message = error.message.toLowerCase();
   return (
@@ -214,6 +228,7 @@ function isPermissionError(error: unknown): boolean {
 
 function isThrottlingError(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
+  if (apiErrorCode(error) === "throttled") return true;
   const message = error.message.toLowerCase();
   return message.includes("throttl") || message.includes("toomanyrequests");
 }
@@ -1458,4 +1473,3 @@ function FooterStatus({
   }
   return null;
 }
-

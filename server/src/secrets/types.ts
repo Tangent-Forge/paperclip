@@ -41,6 +41,64 @@ export interface RemoteSecretListResult {
   nextToken?: string | null;
 }
 
+export type SecretProviderClientErrorCode =
+  | "access_denied"
+  | "throttled"
+  | "not_found"
+  | "conflict"
+  | "invalid_request"
+  | "provider_unavailable"
+  | "provider_error";
+
+export interface SecretProviderClientErrorOptions {
+  code: SecretProviderClientErrorCode;
+  provider: SecretProvider;
+  operation: string;
+  message: string;
+  status?: number;
+  rawMessage?: string | null;
+  cause?: unknown;
+}
+
+const SECRET_PROVIDER_CLIENT_ERROR_STATUS: Record<SecretProviderClientErrorCode, number> = {
+  access_denied: 403,
+  throttled: 429,
+  not_found: 404,
+  conflict: 409,
+  invalid_request: 422,
+  provider_unavailable: 503,
+  provider_error: 502,
+};
+
+export class SecretProviderClientError extends Error {
+  readonly code: SecretProviderClientErrorCode;
+  readonly provider: SecretProvider;
+  readonly operation: string;
+  readonly status: number;
+  readonly rawMessage: string | null;
+
+  constructor(options: SecretProviderClientErrorOptions) {
+    super(options.message);
+    this.name = "SecretProviderClientError";
+    this.code = options.code;
+    this.provider = options.provider;
+    this.operation = options.operation;
+    this.status = options.status ?? SECRET_PROVIDER_CLIENT_ERROR_STATUS[options.code];
+    this.rawMessage = options.rawMessage ?? null;
+    if (options.cause !== undefined) {
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  }
+}
+
+export function isSecretProviderClientError(error: unknown): error is SecretProviderClientError {
+  return error instanceof SecretProviderClientError;
+}
+
 export interface SecretProviderRuntimeContext {
   companyId: string;
   secretId: string;
