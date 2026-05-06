@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import {
   companies,
   companySecretBindings,
+  companySecretProviderConfigs,
   companySecretVersions,
   companySecrets,
   createDb,
@@ -35,7 +36,7 @@ describeEmbeddedPostgres("secretService", () => {
     mkdirSync(secretsTmpDir, { recursive: true });
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
     const started = await startEmbeddedPostgresTestDatabase("secrets-service");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
   });
 
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(companySecretProviderConfigs);
     await db.delete(companies);
   });
 
@@ -189,6 +191,68 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.EXTERNAL_SECRET",
       }),
     ).rejects.toThrow(/not bound/i);
+  });
+
+  it("keeps one default provider vault per company provider", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const first = await svc.createProviderConfig(companyId, {
+      provider: "local_encrypted",
+      displayName: "Local primary",
+      isDefault: true,
+      config: {},
+    });
+    const second = await svc.createProviderConfig(companyId, {
+      provider: "local_encrypted",
+      displayName: "Local secondary",
+      isDefault: true,
+      config: {},
+    });
+
+    const rows = await svc.listProviderConfigs(companyId);
+    expect(rows.find((row) => row.id === first.id)?.isDefault).toBe(false);
+    expect(rows.find((row) => row.id === second.id)?.isDefault).toBe(true);
+  });
+
+  it("rejects provider vaults from another company when creating a secret", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const foreignVault = await svc.createProviderConfig(companyB, {
+      provider: "local_encrypted",
+      displayName: "Foreign vault",
+      config: {},
+    });
+
+    await expect(
+      svc.create(companyA, {
+        name: `managed-${randomUUID()}`,
+        provider: "local_encrypted",
+        providerConfigId: foreignVault.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toThrow(/same company/i);
+  });
+
+  it("blocks coming-soon provider vaults from secret selection", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const draftVault = await svc.createProviderConfig(companyId, {
+      provider: "gcp_secret_manager",
+      displayName: "GCP draft",
+      config: { projectId: "paperclip-prod1" },
+    });
+
+    expect(draftVault.status).toBe("coming_soon");
+    await expect(
+      svc.create(companyId, {
+        name: `draft-${randomUUID()}`,
+        provider: "gcp_secret_manager",
+        providerConfigId: draftVault.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toThrow(/coming soon/i);
   });
 
   it("rejects externalRef overrides on managed secrets", async () => {

@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companySecretBindings,
+  companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
   secretAccessEvents,
@@ -11,9 +12,17 @@ import type {
   EnvBinding,
   SecretBindingTargetType,
   SecretProvider,
+  SecretProviderConfigHealthResponse,
+  SecretProviderConfigHealthStatus,
+  SecretProviderConfigStatus,
   SecretVersionSelector,
 } from "@paperclipai/shared";
-import { envBindingSchema } from "@paperclipai/shared";
+import {
+  createSecretProviderConfigSchema,
+  envBindingSchema,
+  secretProviderConfigPayloadSchema,
+  updateSecretProviderConfigSchema,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   checkSecretProviders,
@@ -25,6 +34,10 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
+const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
+  "gcp_secret_manager",
+  "vault",
+]);
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
@@ -87,6 +100,25 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
     secretId: binding.secretId,
     version: binding.version ?? "latest",
   };
+}
+
+function defaultProviderConfigStatus(provider: SecretProvider): SecretProviderConfigStatus {
+  return COMING_SOON_SECRET_PROVIDERS.has(provider) ? "coming_soon" : "ready";
+}
+
+function assertSelectableProviderConfig(config: {
+  provider: string;
+  status: string;
+  companyId: string;
+}, companyId: string, provider: SecretProvider) {
+  if (config.companyId !== companyId) throw unprocessable("Provider vault must belong to same company");
+  if (config.provider !== provider) throw unprocessable("Provider vault must match the secret provider");
+  if (config.status === "coming_soon") {
+    throw unprocessable("Provider vault is locked while coming soon");
+  }
+  if (config.status === "disabled") {
+    throw unprocessable("Provider vault is disabled");
+  }
 }
 
 export function secretService(db: Db) {
@@ -202,6 +234,96 @@ export function secretService(db: Db) {
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     return secret;
+  }
+
+  async function getProviderConfigById(id: string) {
+    return db
+      .select()
+      .from(companySecretProviderConfigs)
+      .where(eq(companySecretProviderConfigs.id, id))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertProviderConfigForSecret(
+    companyId: string,
+    provider: SecretProvider,
+    providerConfigId: string | null | undefined,
+  ) {
+    if (!providerConfigId) return null;
+    const providerConfig = await getProviderConfigById(providerConfigId);
+    if (!providerConfig) throw notFound("Provider vault not found");
+    assertSelectableProviderConfig(providerConfig, companyId, provider);
+    return providerConfig;
+  }
+
+  function validateProviderConfigPayload(
+    provider: SecretProvider,
+    config: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const parsed = secretProviderConfigPayloadSchema.safeParse({ provider, config });
+    if (!parsed.success) {
+      throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+    }
+    return parsed.data.config;
+  }
+
+  function providerConfigHealth(input: {
+    id: string;
+    provider: SecretProvider;
+    status: SecretProviderConfigStatus;
+    config: Record<string, unknown>;
+  }): Omit<SecretProviderConfigHealthResponse, "checkedAt"> {
+    if (input.status === "disabled") {
+      return {
+        configId: input.id,
+        provider: input.provider,
+        status: "disabled",
+        message: "Provider vault is disabled.",
+        details: { code: "disabled", message: "Provider vault is disabled." },
+      };
+    }
+    if (input.status === "coming_soon" || COMING_SOON_SECRET_PROVIDERS.has(input.provider)) {
+      return {
+        configId: input.id,
+        provider: input.provider,
+        status: "coming_soon",
+        message: "Provider vault runtime is locked while coming soon.",
+        details: {
+          code: "runtime_locked",
+          message: "Provider vault runtime is locked while coming soon.",
+          guidance: ["Draft metadata may be saved, but create, rotate, and resolve stay unavailable."],
+        },
+      };
+    }
+    if (input.provider === "aws_secrets_manager" && typeof input.config.region !== "string") {
+      return {
+        configId: input.id,
+        provider: input.provider,
+        status: "warning",
+        message: "AWS Secrets Manager vault is missing region routing metadata.",
+        details: {
+          code: "missing_config",
+          message: "AWS Secrets Manager vault is missing region routing metadata.",
+          missingFields: ["region"],
+        },
+      };
+    }
+    return {
+      configId: input.id,
+      provider: input.provider,
+      status: input.status === "warning" ? "warning" : "ready",
+      message:
+        input.status === "warning"
+          ? "Provider vault is saved but needs operator attention."
+          : "Provider vault metadata is ready.",
+      details: {
+        code: input.status === "warning" ? "needs_attention" : "metadata_ready",
+        message:
+          input.status === "warning"
+            ? "Provider vault is saved but needs operator attention."
+            : "Provider vault metadata is ready.",
+      },
+    };
   }
 
   async function resolveSecretValueInternal(
@@ -347,6 +469,174 @@ export function secretService(db: Db) {
 
     checkProviders: () => checkSecretProviders(),
 
+    listProviderConfigs: (companyId: string) =>
+      db
+        .select()
+        .from(companySecretProviderConfigs)
+        .where(eq(companySecretProviderConfigs.companyId, companyId))
+        .orderBy(desc(companySecretProviderConfigs.createdAt)),
+
+    getProviderConfigById,
+
+    createProviderConfig: async (
+      companyId: string,
+      input: {
+        provider: SecretProvider;
+        displayName: string;
+        status?: SecretProviderConfigStatus;
+        isDefault?: boolean;
+        config?: Record<string, unknown>;
+      },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const parsed = createSecretProviderConfigSchema.safeParse(input);
+      if (!parsed.success) throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+      const status = input.status ?? defaultProviderConfigStatus(input.provider);
+      if ((status === "coming_soon" || status === "disabled") && input.isDefault) {
+        throw unprocessable("Only ready or warning provider vaults can be default");
+      }
+      const normalizedConfig = validateProviderConfigPayload(input.provider, input.config ?? {});
+      return db.transaction(async (tx) => {
+        if (input.isDefault) {
+          await tx
+            .update(companySecretProviderConfigs)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(and(
+              eq(companySecretProviderConfigs.companyId, companyId),
+              eq(companySecretProviderConfigs.provider, input.provider),
+            ));
+        }
+        return tx
+          .insert(companySecretProviderConfigs)
+          .values({
+            companyId,
+            provider: input.provider,
+            displayName: input.displayName.trim(),
+            status,
+            isDefault: input.isDefault ?? false,
+            config: normalizedConfig,
+            disabledAt: status === "disabled" ? new Date() : null,
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      });
+    },
+
+    updateProviderConfig: async (
+      id: string,
+      patch: {
+        displayName?: string;
+        status?: SecretProviderConfigStatus;
+        isDefault?: boolean;
+        config?: Record<string, unknown>;
+      },
+    ) => {
+      const existing = await getProviderConfigById(id);
+      if (!existing) return null;
+      const parsed = updateSecretProviderConfigSchema.safeParse(patch);
+      if (!parsed.success) throw unprocessable("Invalid provider vault config", parsed.error.flatten());
+      const provider = existing.provider as SecretProvider;
+      const status = patch.status ?? (existing.status as SecretProviderConfigStatus);
+      if (COMING_SOON_SECRET_PROVIDERS.has(provider) && status !== "coming_soon" && status !== "disabled") {
+        throw unprocessable(`${provider} provider vaults are locked while coming soon`);
+      }
+      if ((status === "coming_soon" || status === "disabled") && patch.isDefault) {
+        throw unprocessable("Only ready or warning provider vaults can be default");
+      }
+      const normalizedConfig =
+        patch.config === undefined
+          ? existing.config
+          : validateProviderConfigPayload(provider, patch.config);
+      return db.transaction(async (tx) => {
+        if (patch.isDefault) {
+          await tx
+            .update(companySecretProviderConfigs)
+            .set({ isDefault: false, updatedAt: new Date() })
+            .where(and(
+              eq(companySecretProviderConfigs.companyId, existing.companyId),
+              eq(companySecretProviderConfigs.provider, existing.provider),
+            ));
+        }
+        return tx
+          .update(companySecretProviderConfigs)
+          .set({
+            displayName: patch.displayName?.trim() ?? existing.displayName,
+            status,
+            isDefault: status === "disabled" || status === "coming_soon" ? false : patch.isDefault ?? existing.isDefault,
+            config: normalizedConfig,
+            disabledAt: status === "disabled" ? existing.disabledAt ?? new Date() : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySecretProviderConfigs.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
+    },
+
+    disableProviderConfig: async (id: string) => {
+      const existing = await getProviderConfigById(id);
+      if (!existing) return null;
+      return db
+        .update(companySecretProviderConfigs)
+        .set({
+          status: "disabled",
+          isDefault: false,
+          disabledAt: existing.disabledAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(companySecretProviderConfigs.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    setDefaultProviderConfig: async (id: string) => {
+      const existing = await getProviderConfigById(id);
+      if (!existing) return null;
+      if (existing.status === "coming_soon" || existing.status === "disabled") {
+        throw unprocessable("Only ready or warning provider vaults can be default");
+      }
+      return db.transaction(async (tx) => {
+        await tx
+          .update(companySecretProviderConfigs)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(and(
+            eq(companySecretProviderConfigs.companyId, existing.companyId),
+            eq(companySecretProviderConfigs.provider, existing.provider),
+          ));
+        return tx
+          .update(companySecretProviderConfigs)
+          .set({ isDefault: true, updatedAt: new Date() })
+          .where(eq(companySecretProviderConfigs.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
+    },
+
+    checkProviderConfigHealth: async (id: string) => {
+      const existing = await getProviderConfigById(id);
+      if (!existing) return null;
+      const checkedAt = new Date();
+      const health = providerConfigHealth({
+        id: existing.id,
+        provider: existing.provider as SecretProvider,
+        status: existing.status as SecretProviderConfigStatus,
+        config: existing.config ?? {},
+      });
+      await db
+        .update(companySecretProviderConfigs)
+        .set({
+          healthStatus: health.status,
+          healthCheckedAt: checkedAt,
+          healthMessage: health.message,
+          healthDetails: health.details as unknown as Record<string, unknown>,
+          updatedAt: new Date(),
+        })
+        .where(eq(companySecretProviderConfigs.id, id));
+      return { ...health, checkedAt };
+    },
+
     list: (companyId: string) =>
       db
         .select()
@@ -381,6 +671,7 @@ export function secretService(db: Db) {
       input: {
         name: string;
         provider: SecretProvider;
+        providerConfigId?: string | null;
         value?: string | null;
         key?: string | null;
         managedMode?: "paperclip_managed" | "external_reference";
@@ -404,6 +695,7 @@ export function secretService(db: Db) {
 
       const managedMode = input.managedMode ?? "paperclip_managed";
       const provider = getSecretProvider(input.provider);
+      await assertProviderConfigForSecret(companyId, input.provider, input.providerConfigId);
       if (managedMode === "external_reference" && !input.externalRef?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
@@ -444,6 +736,7 @@ export function secretService(db: Db) {
             key,
             name: input.name,
             provider: input.provider,
+            providerConfigId: input.providerConfigId ?? null,
             status: "active",
             managedMode,
             externalRef: prepared.externalRef,
@@ -554,6 +847,7 @@ export function secretService(db: Db) {
         name?: string;
         key?: string;
         status?: "active" | "disabled" | "archived" | "deleted";
+        providerConfigId?: string | null;
         description?: string | null;
         externalRef?: string | null;
         providerMetadata?: Record<string, unknown> | null;
@@ -584,6 +878,13 @@ export function secretService(db: Db) {
       if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
+      if (patch.providerConfigId !== undefined) {
+        await assertProviderConfigForSecret(
+          secret.companyId,
+          secret.provider as SecretProvider,
+          patch.providerConfigId,
+        );
+      }
 
       return db
         .update(companySecrets)
@@ -591,6 +892,8 @@ export function secretService(db: Db) {
           key: nextKey,
           name: patch.name ?? secret.name,
           status: patch.status ?? secret.status,
+          providerConfigId:
+            patch.providerConfigId === undefined ? secret.providerConfigId : patch.providerConfigId,
           description:
             patch.description === undefined ? secret.description : patch.description,
           externalRef:

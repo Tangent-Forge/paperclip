@@ -3,11 +3,22 @@ import type {
   SecretBindingTargetType,
   SecretManagedMode,
   SecretProvider,
+  SecretProviderConfigHealthStatus,
+  SecretProviderConfigStatus,
   SecretStatus,
   SecretVersionStatus,
 } from "../constants.js";
 
-export type { SecretAccessOutcome, SecretBindingTargetType, SecretManagedMode, SecretProvider, SecretStatus, SecretVersionStatus };
+export type {
+  SecretAccessOutcome,
+  SecretBindingTargetType,
+  SecretManagedMode,
+  SecretProvider,
+  SecretProviderConfigHealthStatus,
+  SecretProviderConfigStatus,
+  SecretStatus,
+  SecretVersionStatus,
+};
 
 export type SecretVersionSelector = number | "latest";
 
@@ -56,6 +67,74 @@ export interface SecretProviderDescriptor {
   supportsManagedValues?: boolean;
   supportsExternalReferences?: boolean;
   configured?: boolean;
+}
+
+export interface LocalEncryptedProviderConfig {
+  backupReminderAcknowledged?: boolean;
+}
+
+export interface AwsSecretsManagerProviderConfig {
+  region: string;
+  namespace?: string | null;
+  secretNamePrefix?: string | null;
+  kmsKeyId?: string | null;
+  ownerTag?: string | null;
+  environmentTag?: string | null;
+}
+
+export interface GcpSecretManagerProviderConfig {
+  projectId?: string | null;
+  location?: string | null;
+  namespace?: string | null;
+  secretNamePrefix?: string | null;
+}
+
+export interface VaultProviderConfig {
+  address?: string | null;
+  namespace?: string | null;
+  mountPath?: string | null;
+  secretPathPrefix?: string | null;
+}
+
+export type SecretProviderConfigPayload =
+  | LocalEncryptedProviderConfig
+  | AwsSecretsManagerProviderConfig
+  | GcpSecretManagerProviderConfig
+  | VaultProviderConfig;
+
+export interface SecretProviderConfigHealthDetails {
+  code: string;
+  message: string;
+  missingFields?: string[];
+  guidance?: string[];
+}
+
+export interface CompanySecretProviderConfig {
+  id: string;
+  companyId: string;
+  provider: SecretProvider;
+  displayName: string;
+  status: SecretProviderConfigStatus;
+  isDefault: boolean;
+  config: SecretProviderConfigPayload;
+  healthStatus: SecretProviderConfigHealthStatus | null;
+  healthCheckedAt: Date | null;
+  healthMessage: string | null;
+  healthDetails: SecretProviderConfigHealthDetails | null;
+  disabledAt: Date | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SecretProviderConfigHealthResponse {
+  configId: string;
+  provider: SecretProvider;
+  status: SecretProviderConfigHealthStatus;
+  message: string;
+  details: SecretProviderConfigHealthDetails;
+  checkedAt: Date;
 }
 
 export interface CompanySecretVersion {

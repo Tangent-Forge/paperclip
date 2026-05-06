@@ -1,6 +1,7 @@
 import { pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
+import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 
 export const companySecrets = pgTable(
   "company_secrets",
@@ -13,7 +14,7 @@ export const companySecrets = pgTable(
     status: text("status").notNull().default("active"),
     managedMode: text("managed_mode").notNull().default("paperclip_managed"),
     externalRef: text("external_ref"),
-    providerConfigId: text("provider_config_id"),
+    providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
     providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
     latestVersion: integer("latest_version").notNull().default(1),
     description: text("description"),
@@ -28,6 +29,7 @@ export const companySecrets = pgTable(
   (table) => ({
     companyIdx: index("company_secrets_company_idx").on(table.companyId),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
+    providerConfigIdx: index("company_secrets_provider_config_idx").on(table.providerConfigId),
     companyNameUq: uniqueIndex("company_secrets_company_name_uq").on(table.companyId, table.name),
     companyKeyUq: uniqueIndex("company_secrets_company_key_uq").on(table.companyId, table.key),
   }),
