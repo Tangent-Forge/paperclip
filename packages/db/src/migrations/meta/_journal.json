@@ -584,10 +584,10 @@
       "breakpoints": true
     },
     {
-      "idx": 82,
+      "idx": 83,
       "version": "7",
       "when": 1778074536410,
-      "tag": "0082_company_secret_provider_configs",
+      "tag": "0083_company_secret_provider_configs",
       "breakpoints": true
     }
   ]
