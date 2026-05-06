@@ -735,149 +735,144 @@ export function Secrets() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-4">
-        <div className="flex items-center gap-2">
-          <KeyRound className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Secrets</h1>
-        </div>
-        <div className="flex flex-1 items-center gap-2 justify-end">
-          {activeTab === "secrets" ? (
-            <>
-              <div className="relative w-48 sm:w-64 md:w-80">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search by name, key, ref"
-                  className="pl-7 text-xs sm:text-sm"
-                  aria-label="Search secrets"
-                  data-page-search-target="true"
-                />
-              </div>
-              <SecretsFiltersPopover
-                statusFilter={statusFilter}
-                providerFilter={providerFilter}
-                providers={providers}
-                activeFilterCount={activeSecretFilterCount}
-                onStatusChange={setStatusFilter}
-                onProviderChange={setProviderFilter}
-              />
-              <Button onClick={() => setCreateOpen(true)} size="sm">
-                <Plus className="h-3.5 w-3.5 mr-1" /> New secret
-              </Button>
-            </>
-          ) : (
-            <Button onClick={() => openCreateVault()} size="sm">
-              <Plus className="h-3.5 w-3.5 mr-1" /> New vault
-            </Button>
-          )}
-        </div>
-      </header>
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <KeyRound className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">Secrets</h1>
+      </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SecretsTab)} className="flex min-h-0 flex-1 flex-col">
-        <div className="border-b border-border px-6 py-2">
-          <PageTabBar
-            items={[
-              { value: "secrets", label: "Secrets" },
-              { value: "vaults", label: "Provider vaults" },
-            ]}
-            align="start"
-            value={activeTab}
-            onValueChange={(value) => setActiveTab(value as SecretsTab)}
-          />
-        </div>
-        <TabsContent value="secrets" className="min-h-0 flex-1 overflow-y-auto">
-          {secretsQuery.isError ? (
-            <div className="p-6 text-sm text-destructive flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
-              {(secretsQuery.error as Error).message}
-              <Button variant="ghost" size="sm" onClick={() => secretsQuery.refetch()}>
-                Retry
-              </Button>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as SecretsTab)}
+        className="flex min-h-0 flex-1 flex-col gap-4"
+      >
+        <PageTabBar
+          items={[
+            { value: "secrets", label: "Secrets" },
+            { value: "vaults", label: "Provider vaults" },
+          ]}
+          align="start"
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as SecretsTab)}
+        />
+
+        <TabsContent value="secrets" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-48 sm:w-64 md:w-80">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search by name, key, ref"
+                className="pl-7 text-xs sm:text-sm"
+                aria-label="Search secrets"
+                data-page-search-target="true"
+              />
             </div>
-          ) : secrets.length === 0 && !secretsQuery.isPending ? (
-            <EmptyState
-              icon={KeyRound}
-              message="No secrets yet. Create your first managed secret or link an external reference."
-              action="New secret"
-              onAction={() => setCreateOpen(true)}
+            <SecretsFiltersPopover
+              statusFilter={statusFilter}
+              providerFilter={providerFilter}
+              providers={providers}
+              activeFilterCount={activeSecretFilterCount}
+              onStatusChange={setStatusFilter}
+              onProviderChange={setProviderFilter}
             />
-          ) : filtered.length === 0 ? (
-            <EmptyState icon={Search} message="No secrets match your filters." />
-          ) : (
-            <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-6 py-2 text-left font-medium">Name</th>
-                <th className="px-2 py-2 text-left font-medium">Mode</th>
-                <th className="px-2 py-2 text-left font-medium">Provider</th>
-                <th className="px-2 py-2 text-left font-medium">Status</th>
-                <th className="px-2 py-2 text-left font-medium">Version</th>
-                <th className="px-2 py-2 text-left font-medium">Last rotated</th>
-                <th className="px-2 py-2 text-left font-medium">Last resolved</th>
-                <th className="px-2 py-2 text-left font-medium">Reference</th>
-                <th className="px-6 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((secret) => (
-                <tr
-                  key={secret.id}
-                  className={cn(
-                    "border-b border-border/60 hover:bg-accent/40 cursor-pointer",
-                    selectedSecretId === secret.id && "bg-accent/60",
-                  )}
-                  onClick={() => setSelectedSecretId(secret.id)}
-                >
-                  <td className="px-6 py-2.5">
-                    <div className="font-medium text-foreground">{secret.name}</div>
-                  </td>
-                  <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                    {modeLabel(secret.managedMode)}
-                  </td>
-                  <td className="px-2 py-2.5 text-xs">
-                    <div>{providerLabel(providers, secret.provider)}</div>
-                  </td>
-                  <td className="px-2 py-2.5">
-                    <span className={cn("text-xs font-medium", statusTextTone(secret.status))}>
-                      {secret.status}
-                    </span>
-                  </td>
-                  <td className="px-2 py-2.5 text-xs font-mono">v{secret.latestVersion}</td>
-                  <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                    {formatRelative(secret.lastRotatedAt)}
-                  </td>
-                  <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                    {formatRelative(secret.lastResolvedAt)}
-                  </td>
-                  <td className="px-2 py-2.5 text-xs">
-                    {secret.managedMode === "external_reference" ? (
-                      <span className="inline-flex items-center gap-1 font-mono text-muted-foreground">
-                        <Link2 className="h-3 w-3" />
-                        {secret.externalRef ?? "—"}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">Owned</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-2.5 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelectedSecretId(secret.id);
-                      }}
-                    >
-                      Open
-                    </Button>
-                  </td>
+            <Button onClick={() => setCreateOpen(true)} size="sm" className="ml-auto">
+              <Plus className="h-3.5 w-3.5 mr-1" /> New secret
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {secretsQuery.isError ? (
+              <div className="text-sm text-destructive flex items-center gap-2 py-4">
+                <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
+                {(secretsQuery.error as Error).message}
+                <Button variant="ghost" size="sm" onClick={() => secretsQuery.refetch()}>
+                  Retry
+                </Button>
+              </div>
+            ) : secrets.length === 0 && !secretsQuery.isPending ? (
+              <EmptyState
+                icon={KeyRound}
+                message="No secrets yet. Create your first managed secret or link an external reference."
+                action="New secret"
+                onAction={() => setCreateOpen(true)}
+              />
+            ) : filtered.length === 0 ? (
+              <EmptyState icon={Search} message="No secrets match your filters." />
+            ) : (
+              <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Name</th>
+                  <th className="px-2 py-2 text-left font-medium">Mode</th>
+                  <th className="px-2 py-2 text-left font-medium">Provider</th>
+                  <th className="px-2 py-2 text-left font-medium">Status</th>
+                  <th className="px-2 py-2 text-left font-medium">Version</th>
+                  <th className="px-2 py-2 text-left font-medium">Last rotated</th>
+                  <th className="px-2 py-2 text-left font-medium">Last resolved</th>
+                  <th className="px-2 py-2 text-left font-medium">Reference</th>
+                  <th className="px-3 py-2"></th>
                 </tr>
-              ))}
-            </tbody>
-            </table>
-          )}
+              </thead>
+              <tbody>
+                {filtered.map((secret) => (
+                  <tr
+                    key={secret.id}
+                    className={cn(
+                      "border-b border-border/60 hover:bg-accent/40 cursor-pointer",
+                      selectedSecretId === secret.id && "bg-accent/60",
+                    )}
+                    onClick={() => setSelectedSecretId(secret.id)}
+                  >
+                    <td className="px-3 py-2.5">
+                      <div className="font-medium text-foreground">{secret.name}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
+                      {modeLabel(secret.managedMode)}
+                    </td>
+                    <td className="px-2 py-2.5 text-xs">
+                      <div>{providerLabel(providers, secret.provider)}</div>
+                    </td>
+                    <td className="px-2 py-2.5">
+                      <span className={cn("text-xs font-medium", statusTextTone(secret.status))}>
+                        {secret.status}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2.5 text-xs font-mono">v{secret.latestVersion}</td>
+                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
+                      {formatRelative(secret.lastRotatedAt)}
+                    </td>
+                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
+                      {formatRelative(secret.lastResolvedAt)}
+                    </td>
+                    <td className="px-2 py-2.5 text-xs">
+                      {secret.managedMode === "external_reference" ? (
+                        <span className="inline-flex items-center gap-1 font-mono text-muted-foreground">
+                          <Link2 className="h-3 w-3" />
+                          {secret.externalRef ?? "—"}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Owned</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedSecretId(secret.id);
+                        }}
+                      >
+                        Open
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              </table>
+            )}
+          </div>
         </TabsContent>
         <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
           <ProviderVaultsTab
@@ -1624,7 +1619,7 @@ export function ProviderVaultsTab({
 }) {
   if (loading) {
     return (
-      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+      <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
         Loading provider vaults
       </div>
@@ -1633,7 +1628,7 @@ export function ProviderVaultsTab({
 
   if (error) {
     return (
-      <div className="p-6 text-sm text-destructive flex items-center gap-2">
+      <div className="py-4 text-sm text-destructive flex items-center gap-2">
         <AlertCircle className="h-4 w-4" /> Failed to load provider vaults: {(error as Error).message}
         <Button variant="ghost" size="sm" onClick={onRetry}>
           Retry
@@ -1652,9 +1647,9 @@ export function ProviderVaultsTab({
   }));
 
   return (
-    <div className="flex min-h-full gap-6 p-6">
+    <div className="flex min-h-full gap-6">
       <aside className="hidden w-56 shrink-0 md:block">
-        <nav className="sticky top-6 space-y-1">
+        <nav className="sticky top-0 space-y-1">
           {providerRows.map(({ id, provider, Icon }) => (
             <a
               key={id}
