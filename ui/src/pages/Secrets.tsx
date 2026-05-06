@@ -7,6 +7,9 @@ import {
   Archive,
   Ban,
   CheckCircle2,
+  Cloud,
+  Database,
+  Edit3,
   ExternalLink,
   KeyRound,
   Link2,
@@ -14,22 +17,32 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
+  Star,
   Trash2,
   Wifi,
 } from "lucide-react";
 import type {
   CompanySecret,
   CompanySecretBinding,
+  CompanySecretProviderConfig,
   SecretAccessEvent,
   SecretManagedMode,
   SecretProvider,
+  SecretProviderConfigStatus,
   SecretProviderDescriptor,
   SecretStatus,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
-import { secretsApi, type CreateSecretInput, type SecretProviderHealthResponse } from "../api/secrets";
+import {
+  secretsApi,
+  type CreateSecretInput,
+  type CreateSecretProviderConfigInput,
+  type SecretProviderHealthResponse,
+  type UpdateSecretProviderConfigInput,
+} from "../api/secrets";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
@@ -56,6 +69,86 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
 
 type CreateMode = "managed" | "external";
+type SecretsTab = "secrets" | "vaults";
+
+type ProviderVaultForm = {
+  provider: SecretProvider;
+  displayName: string;
+  status: SecretProviderConfigStatus;
+  isDefault: boolean;
+  backupReminderAcknowledged: boolean;
+  region: string;
+  namespace: string;
+  secretNamePrefix: string;
+  kmsKeyId: string;
+  ownerTag: string;
+  environmentTag: string;
+  projectId: string;
+  location: string;
+  address: string;
+  mountPath: string;
+  secretPathPrefix: string;
+};
+
+const PROVIDER_ORDER: SecretProvider[] = [
+  "local_encrypted",
+  "aws_secrets_manager",
+  "gcp_secret_manager",
+  "vault",
+];
+
+function defaultProviderVaultStatus(provider: SecretProvider): SecretProviderConfigStatus {
+  return provider === "gcp_secret_manager" || provider === "vault" ? "coming_soon" : "ready";
+}
+
+function emptyProviderVaultForm(provider: SecretProvider = "local_encrypted"): ProviderVaultForm {
+  return {
+    provider,
+    displayName: "",
+    status: defaultProviderVaultStatus(provider),
+    isDefault: false,
+    backupReminderAcknowledged: false,
+    region: "",
+    namespace: "",
+    secretNamePrefix: "",
+    kmsKeyId: "",
+    ownerTag: "",
+    environmentTag: "",
+    projectId: "",
+    location: "",
+    address: "",
+    mountPath: "",
+    secretPathPrefix: "",
+  };
+}
+
+function providerConfigValue(config: CompanySecretProviderConfig["config"], key: string) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return "";
+  const value = (config as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : "";
+}
+
+function providerVaultFormFromConfig(config: CompanySecretProviderConfig): ProviderVaultForm {
+  return {
+    ...emptyProviderVaultForm(config.provider),
+    displayName: config.displayName,
+    status: config.status,
+    isDefault: config.isDefault,
+    backupReminderAcknowledged:
+      Boolean((config.config as Record<string, unknown> | undefined)?.backupReminderAcknowledged),
+    region: providerConfigValue(config.config, "region"),
+    namespace: providerConfigValue(config.config, "namespace"),
+    secretNamePrefix: providerConfigValue(config.config, "secretNamePrefix"),
+    kmsKeyId: providerConfigValue(config.config, "kmsKeyId"),
+    ownerTag: providerConfigValue(config.config, "ownerTag"),
+    environmentTag: providerConfigValue(config.config, "environmentTag"),
+    projectId: providerConfigValue(config.config, "projectId"),
+    location: providerConfigValue(config.config, "location"),
+    address: providerConfigValue(config.config, "address"),
+    mountPath: providerConfigValue(config.config, "mountPath"),
+    secretPathPrefix: providerConfigValue(config.config, "secretPathPrefix"),
+  };
+}
 
 function formatRelative(value: Date | string | null | undefined): string {
   if (!value) return "—";
@@ -138,7 +231,10 @@ export function getCreateProviderBlockReason(
     return `${provider.label} does not support linked external references.`;
   }
   if (provider.configured === false) {
-    return `${provider.label} is not configured in this deployment.`;
+    const healthEntry = healthEntryForProvider(health, provider.id);
+    return healthEntry?.message
+      ? `${provider.label} is not configured in this deployment. ${healthEntry.message}`
+      : `${provider.label} is not configured in this deployment.`;
   }
   const healthEntry = healthEntryForProvider(health, provider.id);
   if (healthEntry?.status === "error") {
@@ -163,6 +259,70 @@ function detailString(details: Record<string, unknown> | undefined, key: string)
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+export function getProviderConfigBlockReason(
+  config: CompanySecretProviderConfig | null | undefined,
+) {
+  if (!config) return null;
+  if (config.status === "disabled") return "This provider vault is disabled.";
+  if (config.status === "coming_soon") return "This provider vault is saved as draft metadata only.";
+  if (config.healthStatus === "error") {
+    return config.healthMessage ?? "This provider vault health check failed.";
+  }
+  return null;
+}
+
+export function getDefaultProviderConfigId(
+  configs: CompanySecretProviderConfig[],
+  provider: SecretProvider,
+) {
+  const providerConfigs = configs.filter((config) => config.provider === provider);
+  const selectable = providerConfigs.filter((config) => !getProviderConfigBlockReason(config));
+  return (
+    selectable.find((config) => config.isDefault)?.id ??
+    selectable[0]?.id ??
+    providerConfigs.find((config) => config.isDefault)?.id ??
+    ""
+  );
+}
+
+function providerVaultLabel(configs: CompanySecretProviderConfig[], id: string | null | undefined) {
+  if (!id) return "Deployment default";
+  return configs.find((config) => config.id === id)?.displayName ?? "Unknown vault";
+}
+
+function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unknown> {
+  const compact = (value: string) => value.trim() || null;
+  switch (form.provider) {
+    case "local_encrypted":
+      return { backupReminderAcknowledged: form.backupReminderAcknowledged };
+    case "aws_secrets_manager":
+      return {
+        region: form.region.trim(),
+        namespace: compact(form.namespace),
+        secretNamePrefix: compact(form.secretNamePrefix),
+        kmsKeyId: compact(form.kmsKeyId),
+        ownerTag: compact(form.ownerTag),
+        environmentTag: compact(form.environmentTag),
+      };
+    case "gcp_secret_manager":
+      return {
+        projectId: compact(form.projectId),
+        location: compact(form.location),
+        namespace: compact(form.namespace),
+        secretNamePrefix: compact(form.secretNamePrefix),
+      };
+    case "vault":
+      return {
+        address: compact(form.address),
+        namespace: compact(form.namespace),
+        mountPath: compact(form.mountPath),
+        secretPathPrefix: compact(form.secretPathPrefix),
+      };
+    default:
+      return {};
+  }
+}
+
 export function getAwsManagedPathPreview(input: {
   provider: SecretProviderDescriptor | null | undefined;
   health: SecretProviderHealthResponse | null;
@@ -182,6 +342,7 @@ export function Secrets() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
+  const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
@@ -195,13 +356,19 @@ export function Secrets() {
     description: "",
     externalRef: "",
     provider: "local_encrypted" as SecretProvider,
+    providerConfigId: "",
   });
   const [createError, setCreateError] = useState<string | null>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
+  const [rotateProviderConfigId, setRotateProviderConfigId] = useState("");
   const [rotateError, setRotateError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<CompanySecret | null>(null);
+  const [vaultDialogOpen, setVaultDialogOpen] = useState(false);
+  const [editingVault, setEditingVault] = useState<CompanySecretProviderConfig | null>(null);
+  const [vaultForm, setVaultForm] = useState<ProviderVaultForm>(() => emptyProviderVaultForm());
+  const [vaultError, setVaultError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Secrets" }]);
@@ -234,8 +401,18 @@ export function Secrets() {
     retry: false,
   });
 
+  const providerConfigsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.providerConfigs(selectedCompanyId)
+      : ["secret-provider-configs", "__disabled__"],
+    queryFn: () => secretsApi.providerConfigs(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
+  });
+
   const secrets = secretsQuery.data ?? [];
   const providers = providersQuery.data ?? [];
+  const providerConfigs = providerConfigsQuery.data ?? [];
   const selectedSecret = useMemo(
     () => secrets.find((secret) => secret.id === selectedSecretId) ?? null,
     [secrets, selectedSecretId],
@@ -244,11 +421,28 @@ export function Secrets() {
     () => providers.find((provider) => provider.id === createForm.provider) ?? null,
     [providers, createForm.provider],
   );
+  const createProviderConfigs = useMemo(
+    () => providerConfigs.filter((config) => config.provider === createForm.provider),
+    [createForm.provider, providerConfigs],
+  );
+  const selectedCreateProviderConfig = useMemo(
+    () => providerConfigs.find((config) => config.id === createForm.providerConfigId) ?? null,
+    [createForm.providerConfigId, providerConfigs],
+  );
+  const selectedRotateProviderConfigs = useMemo(
+    () => providerConfigs.filter((config) => config.provider === selectedSecret?.provider),
+    [providerConfigs, selectedSecret?.provider],
+  );
+  const selectedRotateProviderConfig = useMemo(
+    () => providerConfigs.find((config) => config.id === rotateProviderConfigId) ?? null,
+    [providerConfigs, rotateProviderConfigId],
+  );
   const createProviderBlockReason = getCreateProviderBlockReason(
     selectedCreateProvider,
     createMode,
     providerHealthQuery.data ?? null,
-  );
+  ) ?? getProviderConfigBlockReason(selectedCreateProviderConfig);
+  const rotateProviderBlockReason = getProviderConfigBlockReason(selectedRotateProviderConfig);
   const createProviderHealthText = providerHealthText(
     selectedCreateProvider,
     providerHealthQuery.data ?? null,
@@ -291,6 +485,7 @@ export function Secrets() {
   function invalidateAll(extraIds: string[] = []) {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(selectedCompanyId) });
     for (const id of extraIds) {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.usage(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.accessEvents(id) });
@@ -302,6 +497,7 @@ export function Secrets() {
       const input: CreateSecretInput = {
         name: createForm.name.trim(),
         provider: createForm.provider,
+        providerConfigId: createForm.providerConfigId || null,
         managedMode: createMode === "external" ? "external_reference" : "paperclip_managed",
         description: createForm.description.trim() || null,
       };
@@ -316,7 +512,15 @@ export function Secrets() {
     onSuccess: (created) => {
       pushToast({ title: "Secret created", body: created.name, tone: "success" });
       setCreateOpen(false);
-      setCreateForm({ name: "", key: "", value: "", description: "", externalRef: "", provider: createForm.provider });
+      setCreateForm({
+        name: "",
+        key: "",
+        value: "",
+        description: "",
+        externalRef: "",
+        provider: createForm.provider,
+        providerConfigId: getDefaultProviderConfigId(providerConfigs, createForm.provider),
+      });
       setCreateError(null);
       setSelectedSecretId(created.id);
       invalidateAll([created.id]);
@@ -332,15 +536,20 @@ export function Secrets() {
       if (selectedSecret.managedMode === "external_reference") {
         return secretsApi.rotate(selectedSecret.id, {
           externalRef: rotateExternalRef.trim() || selectedSecret.externalRef || undefined,
+          providerConfigId: rotateProviderConfigId || null,
         });
       }
-      return secretsApi.rotate(selectedSecret.id, { value: rotateValue });
+      return secretsApi.rotate(selectedSecret.id, {
+        value: rotateValue,
+        providerConfigId: rotateProviderConfigId || null,
+      });
     },
     onSuccess: (updated) => {
       pushToast({ title: "Rotated", body: `${updated.name} → v${updated.latestVersion}`, tone: "success" });
       setRotateOpen(false);
       setRotateValue("");
       setRotateExternalRef("");
+      setRotateProviderConfigId("");
       setRotateError(null);
       invalidateAll([updated.id]);
     },
@@ -392,6 +601,80 @@ export function Secrets() {
     },
   });
 
+  const saveVaultMutation = useMutation({
+    mutationFn: () => {
+      const data: CreateSecretProviderConfigInput | UpdateSecretProviderConfigInput = {
+        displayName: vaultForm.displayName.trim(),
+        status: vaultForm.status,
+        isDefault: vaultForm.isDefault,
+        config: buildProviderVaultConfig(vaultForm),
+      };
+      if (editingVault) {
+        return secretsApi.updateProviderConfig(editingVault.id, data);
+      }
+      return secretsApi.createProviderConfig(selectedCompanyId!, {
+        ...(data as UpdateSecretProviderConfigInput),
+        provider: vaultForm.provider,
+      } as CreateSecretProviderConfigInput);
+    },
+    onSuccess: (saved) => {
+      pushToast({ title: editingVault ? "Provider vault updated" : "Provider vault created", body: saved.displayName, tone: "success" });
+      setVaultDialogOpen(false);
+      setEditingVault(null);
+      setVaultForm(emptyProviderVaultForm());
+      setVaultError(null);
+      invalidateAll();
+    },
+    onError: (error) => {
+      setVaultError(error instanceof ApiError ? error.message : (error as Error).message);
+    },
+  });
+
+  const disableVaultMutation = useMutation({
+    mutationFn: (id: string) => secretsApi.disableProviderConfig(id),
+    onSuccess: (updated) => {
+      pushToast({ title: "Provider vault disabled", body: updated.displayName, tone: "info" });
+      invalidateAll();
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Disable failed",
+        body: error instanceof Error ? error.message : "Try again",
+        tone: "error",
+      });
+    },
+  });
+
+  const defaultVaultMutation = useMutation({
+    mutationFn: (id: string) => secretsApi.setDefaultProviderConfig(id),
+    onSuccess: (updated) => {
+      pushToast({ title: "Default vault set", body: updated.displayName, tone: "success" });
+      invalidateAll();
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Default update failed",
+        body: error instanceof Error ? error.message : "Try again",
+        tone: "error",
+      });
+    },
+  });
+
+  const healthVaultMutation = useMutation({
+    mutationFn: (id: string) => secretsApi.checkProviderConfigHealth(id),
+    onSuccess: (health) => {
+      pushToast({ title: "Health checked", body: health.message, tone: health.status === "error" ? "error" : "info" });
+      invalidateAll();
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Health check failed",
+        body: error instanceof Error ? error.message : "Try again",
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
     if (!createOpen || providers.length === 0) return;
     const currentBlockReason = getCreateProviderBlockReason(
@@ -405,9 +688,44 @@ export function Secrets() {
         !getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
     );
     if (replacement && replacement.id !== createForm.provider) {
-      setCreateForm((current) => ({ ...current, provider: replacement.id }));
+      setCreateForm((current) => ({
+        ...current,
+        provider: replacement.id,
+        providerConfigId: getDefaultProviderConfigId(providerConfigs, replacement.id),
+      }));
     }
-  }, [createForm.provider, createMode, createOpen, providerHealthQuery.data, providers]);
+  }, [createForm.provider, createMode, createOpen, providerConfigs, providerHealthQuery.data, providers]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const current = providerConfigs.find((config) => config.id === createForm.providerConfigId);
+    if (current?.provider === createForm.provider) return;
+    setCreateForm((form) => ({
+      ...form,
+      providerConfigId: getDefaultProviderConfigId(providerConfigs, form.provider),
+    }));
+  }, [createForm.provider, createForm.providerConfigId, createOpen, providerConfigs]);
+
+  useEffect(() => {
+    if (!rotateOpen || !selectedSecret) return;
+    setRotateProviderConfigId(
+      selectedSecret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
+    );
+  }, [providerConfigs, rotateOpen, selectedSecret]);
+
+  function openCreateVault(provider: SecretProvider = "local_encrypted") {
+    setEditingVault(null);
+    setVaultForm(emptyProviderVaultForm(provider));
+    setVaultError(null);
+    setVaultDialogOpen(true);
+  }
+
+  function openEditVault(config: CompanySecretProviderConfig) {
+    setEditingVault(config);
+    setVaultForm(providerVaultFormFromConfig(config));
+    setVaultError(null);
+    setVaultDialogOpen(true);
+  }
 
   if (!selectedCompanyId) {
     return (
@@ -415,7 +733,6 @@ export function Secrets() {
     );
   }
 
-  const activeProviders = providers.length;
   const activeSecrets = secrets.filter((s) => s.status === "active").length;
 
   return (
@@ -425,44 +742,52 @@ export function Secrets() {
           <KeyRound className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">Secrets</h1>
           <span className="text-xs text-muted-foreground">
-            {activeSecrets}/{secrets.length} active · {activeProviders} provider{activeProviders === 1 ? "" : "s"}
+            {activeSecrets}/{secrets.length} active · {providerConfigs.length} vault{providerConfigs.length === 1 ? "" : "s"}
           </span>
         </div>
         <div className="flex flex-1 items-center gap-2 justify-end">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by name, key, ref"
-              className="pl-7 h-8 w-64"
-            />
-          </div>
-          <select
-            className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value as SecretStatus | "all")}
-          >
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
-            <option value="archived">Archived</option>
-          </select>
-          <select
-            className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
-            value={providerFilter}
-            onChange={(event) => setProviderFilter(event.target.value as SecretProvider | "all")}
-          >
-            <option value="all">All providers</option>
-            {providers.map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {provider.label}
-              </option>
-            ))}
-          </select>
-          <Button onClick={() => setCreateOpen(true)} size="sm">
-            <Plus className="h-3.5 w-3.5 mr-1" /> New secret
-          </Button>
+          {activeTab === "secrets" ? (
+            <>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search by name, key, ref"
+                  className="pl-7 h-8 w-64"
+                />
+              </div>
+              <select
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as SecretStatus | "all")}
+              >
+                <option value="all">All statuses</option>
+                <option value="active">Active</option>
+                <option value="disabled">Disabled</option>
+                <option value="archived">Archived</option>
+              </select>
+              <select
+                className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
+                value={providerFilter}
+                onChange={(event) => setProviderFilter(event.target.value as SecretProvider | "all")}
+              >
+                <option value="all">All providers</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+              <Button onClick={() => setCreateOpen(true)} size="sm">
+                <Plus className="h-3.5 w-3.5 mr-1" /> New secret
+              </Button>
+            </>
+          ) : (
+            <Button onClick={() => openCreateVault()} size="sm">
+              <Plus className="h-3.5 w-3.5 mr-1" /> New vault
+            </Button>
+          )}
         </div>
       </header>
 
@@ -473,26 +798,33 @@ export function Secrets() {
         error={providersQuery.error ?? providerHealthQuery.error}
       />
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        {secretsQuery.isError ? (
-          <div className="p-6 text-sm text-destructive flex items-center gap-2">
-            <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
-            {(secretsQuery.error as Error).message}
-            <Button variant="ghost" size="sm" onClick={() => secretsQuery.refetch()}>
-              Retry
-            </Button>
-          </div>
-        ) : secrets.length === 0 && !secretsQuery.isPending ? (
-          <EmptyState
-            icon={KeyRound}
-            message="No secrets yet. Create your first managed secret or link an external reference."
-            action="New secret"
-            onAction={() => setCreateOpen(true)}
-          />
-        ) : filtered.length === 0 ? (
-          <EmptyState icon={Search} message="No secrets match your filters." />
-        ) : (
-          <table className="w-full text-sm">
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SecretsTab)} className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b border-border px-6 py-2">
+          <TabsList>
+            <TabsTrigger value="secrets">Secrets</TabsTrigger>
+            <TabsTrigger value="vaults">Provider vaults</TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="secrets" className="min-h-0 flex-1 overflow-y-auto">
+          {secretsQuery.isError ? (
+            <div className="p-6 text-sm text-destructive flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
+              {(secretsQuery.error as Error).message}
+              <Button variant="ghost" size="sm" onClick={() => secretsQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
+          ) : secrets.length === 0 && !secretsQuery.isPending ? (
+            <EmptyState
+              icon={KeyRound}
+              message="No secrets yet. Create your first managed secret or link an external reference."
+              action="New secret"
+              onAction={() => setCreateOpen(true)}
+            />
+          ) : filtered.length === 0 ? (
+            <EmptyState icon={Search} message="No secrets match your filters." />
+          ) : (
+            <table className="w-full text-sm">
             <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-6 py-2 text-left font-medium">Name</th>
@@ -525,7 +857,12 @@ export function Secrets() {
                       {modeLabel(secret.managedMode)}
                     </Badge>
                   </td>
-                  <td className="px-2 py-2.5 text-xs">{providerLabel(providers, secret.provider)}</td>
+                  <td className="px-2 py-2.5 text-xs">
+                    <div>{providerLabel(providers, secret.provider)}</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {providerVaultLabel(providerConfigs, secret.providerConfigId)}
+                    </div>
+                  </td>
                   <td className="px-2 py-2.5">
                     <Badge variant="outline" className={cn("font-medium", statusBadgeTone(secret.status))}>
                       {secret.status}
@@ -563,9 +900,30 @@ export function Secrets() {
                 </tr>
               ))}
             </tbody>
-          </table>
-        )}
-      </div>
+            </table>
+          )}
+        </TabsContent>
+        <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
+          <ProviderVaultsTab
+            providers={providers}
+            providerConfigs={providerConfigs}
+            loading={providerConfigsQuery.isPending}
+            error={providerConfigsQuery.error}
+            onRetry={() => providerConfigsQuery.refetch()}
+            onCreate={openCreateVault}
+            onEdit={openEditVault}
+            onDisable={(config) => disableVaultMutation.mutate(config.id)}
+            onSetDefault={(config) => defaultVaultMutation.mutate(config.id)}
+            onHealthCheck={(config) => healthVaultMutation.mutate(config.id)}
+            pendingActionId={
+              disableVaultMutation.variables ??
+              defaultVaultMutation.variables ??
+              healthVaultMutation.variables ??
+              null
+            }
+          />
+        </TabsContent>
+      </Tabs>
 
       <Sheet open={Boolean(selectedSecret)} onOpenChange={(open) => !open && setSelectedSecretId(null)}>
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
@@ -595,6 +953,10 @@ export function Secrets() {
                     setRotateOpen(true);
                     setRotateValue("");
                     setRotateExternalRef("");
+                    setRotateProviderConfigId(
+                      selectedSecret.providerConfigId ??
+                        getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
+                    );
                     setRotateError(null);
                   }}
                 >
@@ -658,7 +1020,7 @@ export function Secrets() {
                 </TabsList>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
-                    <SecretDetailsTab secret={selectedSecret} />
+                    <SecretDetailsTab secret={selectedSecret} providerConfigs={providerConfigs} />
                   </TabsContent>
                   <TabsContent value="usage">
                     <SecretUsageTab loading={usageQuery.isPending} bindings={usageQuery.data?.bindings ?? []} />
@@ -723,7 +1085,14 @@ export function Secrets() {
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
                 value={createForm.provider}
                 onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, provider: event.target.value as SecretProvider }))
+                  setCreateForm((current) => {
+                    const provider = event.target.value as SecretProvider;
+                    return {
+                      ...current,
+                      provider,
+                      providerConfigId: getDefaultProviderConfigId(providerConfigs, provider),
+                    };
+                  })
                 }
               >
                 {providers.map((provider) => (
@@ -751,6 +1120,36 @@ export function Secrets() {
               ) : createProviderHealthText ? (
                 <p className="mt-1 text-[11px] text-muted-foreground">{createProviderHealthText}</p>
               ) : null}
+            </div>
+            <div>
+              <label className="text-xs font-medium" htmlFor="new-secret-vault">Provider vault</label>
+              <select
+                id="new-secret-vault"
+                className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+                value={createForm.providerConfigId}
+                onChange={(event) =>
+                  setCreateForm((current) => ({ ...current, providerConfigId: event.target.value }))
+                }
+              >
+                <option value="">Deployment default</option>
+                {createProviderConfigs.map((config) => {
+                  const blockReason = getProviderConfigBlockReason(config);
+                  return (
+                    <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
+                      {config.displayName}
+                      {config.isDefault ? " (default)" : ""}
+                      {blockReason ? ` (${blockReason})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedCreateProviderConfig ? (
+                <ProviderVaultInlineWarning config={selectedCreateProviderConfig} />
+              ) : (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Existing deployment-level provider settings stay available for backwards compatibility.
+                </p>
+              )}
             </div>
             {createMode === "managed" ? (
               <>
@@ -836,6 +1235,118 @@ export function Secrets() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={vaultDialogOpen} onOpenChange={setVaultDialogOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingVault ? "Edit provider vault" : "Create provider vault"}</DialogTitle>
+            <DialogDescription>
+              Save only non-sensitive routing metadata. Credentials stay in the runtime environment or provider identity.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-xs font-medium" htmlFor="vault-provider">Provider</label>
+                <select
+                  id="vault-provider"
+                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none disabled:opacity-60"
+                  value={vaultForm.provider}
+                  disabled={Boolean(editingVault)}
+                  onChange={(event) => {
+                    const provider = event.target.value as SecretProvider;
+                    setVaultForm(emptyProviderVaultForm(provider));
+                  }}
+                >
+                  {PROVIDER_ORDER.map((provider) => (
+                    <option key={provider} value={provider}>
+                      {providerLabel(providers, provider)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium" htmlFor="vault-name">Display name</label>
+                <Input
+                  id="vault-name"
+                  value={vaultForm.displayName}
+                  onChange={(event) =>
+                    setVaultForm((current) => ({ ...current, displayName: event.target.value }))
+                  }
+                  placeholder="Production local vault"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium" htmlFor="vault-status">Status</label>
+                <select
+                  id="vault-status"
+                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+                  value={vaultForm.status}
+                  onChange={(event) => {
+                    const status = event.target.value as SecretProviderConfigStatus;
+                    setVaultForm((current) => ({
+                      ...current,
+                      status,
+                      isDefault:
+                        status === "coming_soon" || status === "disabled" ? false : current.isDefault,
+                    }));
+                  }}
+                >
+                  <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                    Ready
+                  </option>
+                  <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                    Warning
+                  </option>
+                  <option value="coming_soon">Coming soon</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 pt-6 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border"
+                  checked={vaultForm.isDefault}
+                  disabled={vaultForm.status === "coming_soon" || vaultForm.status === "disabled"}
+                  onChange={(event) =>
+                    setVaultForm((current) => ({ ...current, isDefault: event.target.checked }))
+                  }
+                />
+                Default for {providerLabel(providers, vaultForm.provider)}
+              </label>
+            </div>
+
+            <ProviderVaultFields form={vaultForm} onChange={setVaultForm} />
+
+            {vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" ? (
+              <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-700 dark:text-sky-300">
+                This provider can save draft routing metadata, but runtime writes and resolution stay disabled until
+                the provider module is implemented and reviewed.
+              </div>
+            ) : null}
+            {vaultError ? <p className="text-xs text-destructive">{vaultError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVaultDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setVaultError(null);
+                saveVaultMutation.mutate();
+              }}
+              disabled={
+                saveVaultMutation.isPending ||
+                !vaultForm.displayName.trim() ||
+                (vaultForm.provider === "aws_secrets_manager" && !vaultForm.region.trim())
+              }
+            >
+              {saveVaultMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+              {editingVault ? "Save vault" : "Create vault"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={rotateOpen} onOpenChange={setRotateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -848,6 +1359,34 @@ export function Secrets() {
                 : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
             </DialogDescription>
           </DialogHeader>
+          <div>
+            <label className="text-xs font-medium" htmlFor="rotate-secret-vault">Provider vault</label>
+            <select
+              id="rotate-secret-vault"
+              className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+              value={rotateProviderConfigId}
+              onChange={(event) => setRotateProviderConfigId(event.target.value)}
+            >
+              <option value="">Deployment default</option>
+              {selectedRotateProviderConfigs.map((config) => {
+                const blockReason = getProviderConfigBlockReason(config);
+                return (
+                  <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
+                    {config.displayName}
+                    {config.isDefault ? " (default)" : ""}
+                    {blockReason ? ` (${blockReason})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+            {selectedRotateProviderConfig ? (
+              <ProviderVaultInlineWarning config={selectedRotateProviderConfig} />
+            ) : (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Rotating with the deployment default preserves current fallback behavior.
+              </p>
+            )}
+          </div>
           {selectedSecret?.managedMode === "external_reference" ? (
             <div>
               <label className="text-xs font-medium" htmlFor="rotate-ref">External reference</label>
@@ -887,6 +1426,7 @@ export function Secrets() {
               }}
               disabled={
                 rotateMutation.isPending ||
+                Boolean(rotateProviderBlockReason) ||
                 (selectedSecret?.managedMode === "external_reference"
                   ? !rotateExternalRef.trim() && !selectedSecret?.externalRef
                   : !rotateValue)
@@ -996,7 +1536,343 @@ function ProviderHealthBar({
   );
 }
 
-function SecretDetailsTab({ secret }: { secret: CompanySecret }) {
+function providerConfigStatusTone(status: SecretProviderConfigStatus) {
+  switch (status) {
+    case "ready":
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "warning":
+      return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "coming_soon":
+      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+    case "disabled":
+      return "border-muted bg-muted text-muted-foreground";
+    default:
+      return "border-border bg-muted text-muted-foreground";
+  }
+}
+
+function providerFamilyIcon(provider: SecretProvider) {
+  switch (provider) {
+    case "local_encrypted":
+      return Database;
+    case "aws_secrets_manager":
+      return Cloud;
+    case "gcp_secret_manager":
+      return ShieldCheck;
+    case "vault":
+      return KeyRound;
+    default:
+      return KeyRound;
+  }
+}
+
+function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderConfig }) {
+  const blockReason = getProviderConfigBlockReason(config);
+  const message = blockReason ?? config.healthMessage;
+  if (!message) {
+    return (
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {config.isDefault ? "Default vault" : "Vault"} · {config.status.replace("_", " ")}
+      </p>
+    );
+  }
+  const warning = config.status === "warning" || config.healthStatus === "warning";
+  return (
+    <p className={cn("mt-1 flex items-center gap-1 text-[11px]", warning ? "text-amber-600 dark:text-amber-400" : "text-destructive")}>
+      {warning ? <AlertTriangle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+      {message}
+    </p>
+  );
+}
+
+function ProviderVaultsTab({
+  providers,
+  providerConfigs,
+  loading,
+  error,
+  onRetry,
+  onCreate,
+  onEdit,
+  onDisable,
+  onSetDefault,
+  onHealthCheck,
+  pendingActionId,
+}: {
+  providers: SecretProviderDescriptor[];
+  providerConfigs: CompanySecretProviderConfig[];
+  loading: boolean;
+  error: unknown;
+  onRetry: () => void;
+  onCreate: (provider: SecretProvider) => void;
+  onEdit: (config: CompanySecretProviderConfig) => void;
+  onDisable: (config: CompanySecretProviderConfig) => void;
+  onSetDefault: (config: CompanySecretProviderConfig) => void;
+  onHealthCheck: (config: CompanySecretProviderConfig) => void;
+  pendingActionId: string | null;
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading provider vaults
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 text-sm text-destructive flex items-center gap-2">
+        <AlertCircle className="h-4 w-4" /> Failed to load provider vaults: {(error as Error).message}
+        <Button variant="ghost" size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  const providerMap = new Map(providers.map((provider) => [provider.id, provider]));
+
+  return (
+    <div className="space-y-5 p-6">
+      {PROVIDER_ORDER.map((providerId) => {
+        const provider = providerMap.get(providerId);
+        const configs = providerConfigs.filter((config) => config.provider === providerId);
+        const Icon = providerFamilyIcon(providerId);
+        const isComingSoonFamily = providerId === "gcp_secret_manager" || providerId === "vault";
+        return (
+          <section key={providerId} className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Icon className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">{provider?.label ?? providerId.replaceAll("_", " ")}</h2>
+              {provider?.supportsManagedValues ? <CapabilityBadge label="Managed writes" /> : null}
+              {provider?.supportsExternalReferences ? <CapabilityBadge label="External refs" /> : null}
+              {isComingSoonFamily ? (
+                <Badge variant="outline" className={cn("font-medium", providerConfigStatusTone("coming_soon"))}>
+                  coming soon
+                </Badge>
+              ) : null}
+              <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(providerId)}>
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Add vault
+              </Button>
+            </div>
+            {configs.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+                {isComingSoonFamily
+                  ? "No draft vaults saved. You can capture non-sensitive routing metadata before runtime support lands."
+                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+              </div>
+            ) : (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {configs.map((config) => (
+                  <ProviderVaultCard
+                    key={config.id}
+                    config={config}
+                    pending={pendingActionId === config.id}
+                    onEdit={() => onEdit(config)}
+                    onDisable={() => onDisable(config)}
+                    onSetDefault={() => onSetDefault(config)}
+                    onHealthCheck={() => onHealthCheck(config)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function CapabilityBadge({ label }: { label: string }) {
+  return (
+    <Badge variant="outline" className="border-border bg-background text-[11px] font-medium text-muted-foreground">
+      {label}
+    </Badge>
+  );
+}
+
+function ProviderVaultCard({
+  config,
+  pending,
+  onEdit,
+  onDisable,
+  onSetDefault,
+  onHealthCheck,
+}: {
+  config: CompanySecretProviderConfig;
+  pending: boolean;
+  onEdit: () => void;
+  onDisable: () => void;
+  onSetDefault: () => void;
+  onHealthCheck: () => void;
+}) {
+  const blockReason = getProviderConfigBlockReason(config);
+  const details = config.healthDetails;
+  return (
+    <div className="rounded-md border border-border bg-background p-4">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-medium leading-snug">{config.displayName}</h3>
+            {config.isDefault ? (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                <Star className="h-3 w-3 fill-current" />
+                Default
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className={cn("font-medium", providerConfigStatusTone(config.status))}>
+              {config.status.replace("_", " ")}
+            </Badge>
+            {config.healthStatus ? (
+              <span className="text-xs text-muted-foreground">
+                Health {config.healthStatus.replace("_", " ")} · {formatRelative(config.healthCheckedAt)}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">Health not checked</span>
+            )}
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onEdit}>
+          <Edit3 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      {config.healthMessage || blockReason ? (
+        <div className={cn("mt-3 rounded-md p-2 text-xs", blockReason ? "bg-destructive/5 text-destructive" : "bg-muted/40 text-muted-foreground")}>
+          {blockReason ?? config.healthMessage}
+          {details?.guidance?.length ? (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {details.guidance.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" onClick={onHealthCheck} disabled={pending}>
+          {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
+          Check health
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onSetDefault}
+          disabled={pending || Boolean(blockReason) || config.isDefault}
+        >
+          <Star className="h-3.5 w-3.5 mr-1" />
+          Make default
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={onDisable}
+          disabled={pending || config.status === "disabled"}
+        >
+          <Ban className="h-3.5 w-3.5 mr-1" />
+          Disable
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ProviderVaultFields({
+  form,
+  onChange,
+}: {
+  form: ProviderVaultForm;
+  onChange: React.Dispatch<React.SetStateAction<ProviderVaultForm>>;
+}) {
+  const setField = (key: keyof ProviderVaultForm, value: string | boolean) => {
+    onChange((current) => ({ ...current, [key]: value }));
+  };
+
+  if (form.provider === "local_encrypted") {
+    return (
+      <label className="flex items-start gap-2 rounded-md border border-border bg-muted/20 p-3 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 rounded border-border"
+          checked={form.backupReminderAcknowledged}
+          onChange={(event) => setField("backupReminderAcknowledged", event.target.checked)}
+        />
+        <span>
+          I understand backup and restore require both the database metadata and the local encrypted master key file.
+        </span>
+      </label>
+    );
+  }
+
+  if (form.provider === "aws_secrets_manager") {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        <TextField label="AWS region" value={form.region} onChange={(value) => setField("region", value)} placeholder="us-east-1" required />
+        <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
+        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+        <TextField label="KMS key id" value={form.kmsKeyId} onChange={(value) => setField("kmsKeyId", value)} placeholder="alias/paperclip-secrets" />
+        <TextField label="Owner tag" value={form.ownerTag} onChange={(value) => setField("ownerTag", value)} placeholder="platform" />
+        <TextField label="Environment tag" value={form.environmentTag} onChange={(value) => setField("environmentTag", value)} placeholder="prod" />
+      </div>
+    );
+  }
+
+  if (form.provider === "gcp_secret_manager") {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        <TextField label="Project id" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" />
+        <TextField label="Location" value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
+        <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
+        <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <TextField label="Address" value={form.address} onChange={(value) => setField("address", value)} placeholder="https://vault.example.com" />
+      <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
+      <TextField label="Mount path" value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
+      <TextField label="Secret path prefix" value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />
+    </div>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  required,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  required?: boolean;
+}) {
+  const id = `provider-vault-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  return (
+    <div>
+      <label className="text-xs font-medium" htmlFor={id}>
+        {label}
+        {required ? null : <span className="text-muted-foreground/70"> (optional)</span>}
+      </label>
+      <Input id={id} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+    </div>
+  );
+}
+
+function SecretDetailsTab({
+  secret,
+  providerConfigs,
+}: {
+  secret: CompanySecret;
+  providerConfigs: CompanySecretProviderConfig[];
+}) {
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
       <DetailRow label="Description">
@@ -1004,6 +1880,7 @@ function SecretDetailsTab({ secret }: { secret: CompanySecret }) {
       </DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{secret.provider.replaceAll("_", " ")}</DetailRow>
+      <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>
       <DetailRow label="Latest version">v{secret.latestVersion}</DetailRow>
       <DetailRow label="Created">{formatRelative(secret.createdAt)}</DetailRow>
       <DetailRow label="Updated">{formatRelative(secret.updatedAt)}</DetailRow>

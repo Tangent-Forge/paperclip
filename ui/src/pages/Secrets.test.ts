@@ -5,6 +5,8 @@ import type { SecretProviderDescriptor } from "@paperclipai/shared";
 import {
   getAwsManagedPathPreview,
   getCreateProviderBlockReason,
+  getDefaultProviderConfigId,
+  getProviderConfigBlockReason,
 } from "./Secrets";
 import type { SecretProviderHealthResponse } from "../api/secrets";
 
@@ -53,6 +55,29 @@ describe("Secrets page provider helpers", () => {
     ).toBe("AWS Secrets Manager is not configured in this deployment.");
   });
 
+  it("uses provider health copy when an unconfigured provider reports missing bootstrap inputs", () => {
+    const health: SecretProviderHealthResponse = {
+      providers: [
+        {
+          provider: "aws_secrets_manager",
+          status: "warn",
+          message:
+            "AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
+        },
+      ],
+    };
+
+    expect(
+      getCreateProviderBlockReason(
+        { ...awsProvider, configured: false },
+        "managed",
+        health,
+      ),
+    ).toBe(
+      "AWS Secrets Manager is not configured in this deployment. AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
+    );
+  });
+
   it("blocks provider modes the backend does not support", () => {
     expect(
       getCreateProviderBlockReason(
@@ -68,5 +93,37 @@ describe("Secrets page provider helpers", () => {
         null,
       ),
     ).toBe("Local encrypted (default) does not support linked external references.");
+  });
+
+  it("chooses the ready default provider vault for a provider", () => {
+    expect(
+      getDefaultProviderConfigId(
+        [
+          {
+            id: "draft",
+            provider: "aws_secrets_manager",
+            status: "disabled",
+            isDefault: true,
+          },
+          {
+            id: "prod",
+            provider: "aws_secrets_manager",
+            status: "ready",
+            isDefault: true,
+          },
+        ] as never,
+        "aws_secrets_manager",
+      ),
+    ).toBe("prod");
+  });
+
+  it("explains why coming-soon provider vaults cannot be selected", () => {
+    expect(
+      getProviderConfigBlockReason({
+        id: "vault-draft",
+        provider: "vault",
+        status: "coming_soon",
+      } as never),
+    ).toBe("This provider vault is saved as draft metadata only.");
   });
 });

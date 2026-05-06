@@ -1,9 +1,12 @@
 import type {
   CompanySecret,
   CompanySecretBinding,
+  CompanySecretProviderConfig,
   SecretAccessEvent,
   SecretManagedMode,
   SecretProvider,
+  SecretProviderConfigStatus,
+  SecretProviderConfigHealthResponse,
   SecretProviderDescriptor,
   SecretStatus,
 } from "@paperclipai/shared";
@@ -23,6 +26,7 @@ export interface CreateSecretInput {
   description?: string | null;
   externalRef?: string | null;
   providerVersionRef?: string | null;
+  providerConfigId?: string | null;
   providerMetadata?: Record<string, unknown> | null;
 }
 
@@ -50,6 +54,22 @@ export interface RotateSecretInput {
   value?: string | null;
   externalRef?: string | null;
   providerVersionRef?: string | null;
+  providerConfigId?: string | null;
+}
+
+export interface CreateSecretProviderConfigInput {
+  provider: SecretProvider;
+  displayName: string;
+  status?: SecretProviderConfigStatus;
+  isDefault?: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface UpdateSecretProviderConfigInput {
+  displayName?: string;
+  status?: SecretProviderConfigStatus;
+  isDefault?: boolean;
+  config?: Record<string, unknown>;
 }
 
 export const secretsApi = {
@@ -58,6 +78,18 @@ export const secretsApi = {
     api.get<SecretProviderDescriptor[]>(`/companies/${companyId}/secret-providers`),
   providerHealth: (companyId: string) =>
     api.get<SecretProviderHealthResponse>(`/companies/${companyId}/secret-providers/health`),
+  providerConfigs: (companyId: string) =>
+    api.get<CompanySecretProviderConfig[]>(`/companies/${companyId}/secret-provider-configs`),
+  createProviderConfig: (companyId: string, data: CreateSecretProviderConfigInput) =>
+    api.post<CompanySecretProviderConfig>(`/companies/${companyId}/secret-provider-configs`, data),
+  updateProviderConfig: (id: string, data: UpdateSecretProviderConfigInput) =>
+    api.patch<CompanySecretProviderConfig>(`/secret-provider-configs/${id}`, data),
+  disableProviderConfig: (id: string) =>
+    api.delete<CompanySecretProviderConfig>(`/secret-provider-configs/${id}`),
+  setDefaultProviderConfig: (id: string) =>
+    api.post<CompanySecretProviderConfig>(`/secret-provider-configs/${id}/default`, {}),
+  checkProviderConfigHealth: (id: string) =>
+    api.post<SecretProviderConfigHealthResponse>(`/secret-provider-configs/${id}/health`, {}),
   create: (companyId: string, data: CreateSecretInput) =>
     api.post<CompanySecret>(`/companies/${companyId}/secrets`, data),
   update: (id: string, data: UpdateSecretInput) =>
