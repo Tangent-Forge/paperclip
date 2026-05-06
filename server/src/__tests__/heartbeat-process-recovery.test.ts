@@ -2151,12 +2151,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Nested recovery: suppressed");
-    expect(comments[0]?.body).toContain("already a `stranded_issue_recovery` issue");
-    expect(comments[0]?.body).toContain(`Original source issue: [${issuePrefix}-2]`);
+    expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
+    expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recoveryIssues[0]?.identifier}]`);
     expect(comments[0]?.body).toContain("Next action:");
-    expect(comments[0]?.body).not.toContain("Recovery issue: [");
   });
 
   it("assigns open unassigned blockers back to their creator agent", async () => {

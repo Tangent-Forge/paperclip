@@ -8363,8 +8363,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
+        return {
+          kind: "blocked_recovery_in_place" as const,
+          issue,
+          previousStatus: issue.status,
+        };
+      }
+
       const shouldBlockImmediately =
-        issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery ||
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
@@ -8460,6 +8467,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
         comment: promotionResult.comment,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "blocked_recovery_in_place") {
+      await recovery.escalateStrandedRecoveryIssueInPlace({
+        issue: promotionResult.issue,
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        latestRun: run,
       });
       return;
     }
