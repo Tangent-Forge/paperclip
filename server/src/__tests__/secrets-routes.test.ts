@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { secretRoutes } from "../routes/secrets.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { unprocessable } from "../errors.js";
 
 const mockSecretService = vi.hoisted(() => ({
   listProviders: vi.fn(),
@@ -14,7 +15,9 @@ const mockSecretService = vi.hoisted(() => ({
   disableProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
 }));
@@ -356,5 +359,36 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("prod/openai");
+  });
+
+  it("surfaces update-route externalRef retarget rejection without logging raw refs", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "OpenAI API key",
+      key: "openai-api-key",
+      provider: "aws_secrets_manager",
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/original",
+    });
+    mockSecretService.update.mockRejectedValue(
+      unprocessable("External reference secrets cannot be retargeted through generic update"),
+    );
+
+    const res = await request(createApp())
+      .patch("/api/secrets/22222222-2222-4222-8222-222222222222")
+      .send({
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/repointed",
+      });
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.update).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/repointed",
+      }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("shared/repointed");
   });
 });

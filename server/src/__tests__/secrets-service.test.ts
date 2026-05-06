@@ -206,17 +206,23 @@ describeEmbeddedPostgres("secretService", () => {
   it("stores external references without requiring or persisting secret values", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
 
     const secret = await svc.create(companyId, {
       name: `external-${randomUUID()}`,
       provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
       managedMode: "external_reference",
-      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/test",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/test",
       providerVersionRef: "version-1",
     });
 
     expect(secret.managedMode).toBe("external_reference");
-    expect(secret.externalRef).toBe("arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/test");
+    expect(secret.externalRef).toBe("arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/test");
 
     const versions = await db
       .select()
@@ -439,6 +445,7 @@ describeEmbeddedPostgres("secretService", () => {
       name: "prod/ready",
       key: "prod-ready",
     });
+    expect(preview.candidates[2]?.providerMetadata).toBeNull();
   });
 
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {
@@ -500,6 +507,7 @@ describeEmbeddedPostgres("secretService", () => {
       managedMode: "external_reference",
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
       createdByUserId: "user-1",
+      providerMetadata: null,
     });
 
     const versions = await db
@@ -509,6 +517,112 @@ describeEmbeddedPostgres("secretService", () => {
     expect(versions).toHaveLength(1);
     expect(JSON.stringify(versions[0])).not.toContain("runtime-secret");
     expect(JSON.stringify(versions[0])).not.toContain("sk-");
+  });
+
+  it("rejects Paperclip-managed AWS namespace refs during preview and import commit", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+
+    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+      secrets: [
+        {
+          externalRef:
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-b/openai",
+          name: "paperclip/prod-use1/company-b/openai",
+          providerVersionRef: null,
+          metadata: {
+            arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-b/openai",
+            description: "must not leak",
+            tags: [{ Key: "paperclip:company-id", Value: "company-b" }],
+          },
+        },
+      ],
+    });
+
+    const preview = await svc.previewRemoteImport(companyId, {
+      providerConfigId: awsVault.id,
+    });
+
+    expect(preview.candidates[0]).toMatchObject({
+      status: "conflict",
+      importable: false,
+      conflicts: [expect.objectContaining({ type: "provider_guardrail" })],
+      providerMetadata: null,
+    });
+    expect(JSON.stringify(preview)).not.toContain("must not leak");
+    expect(JSON.stringify(preview)).not.toContain("paperclip:company-id");
+
+    const result = await svc.importRemoteSecrets(companyId, {
+      providerConfigId: awsVault.id,
+      secrets: [
+        {
+          externalRef:
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-b/openai",
+          name: "Foreign managed secret",
+          key: "foreign-managed-secret",
+          providerMetadata: {
+            description: "client-submitted metadata must not persist",
+            tags: [{ Key: "paperclip:company-id", Value: "company-b" }],
+          },
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      importedCount: 0,
+      skippedCount: 0,
+      errorCount: 1,
+      results: [expect.objectContaining({ status: "error" })],
+    });
+    expect(result.results[0]?.reason).toMatch(/Paperclip-managed namespace/i);
+    const imported = await db.select().from(companySecrets).where(eq(companySecrets.key, "foreign-managed-secret"));
+    expect(imported).toHaveLength(0);
+  });
+
+  it("skips duplicate AWS remote imports for the same provider vault and canonical ref", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+
+    const first = await svc.importRemoteSecrets(companyId, {
+      providerConfigId: awsVault.id,
+      secrets: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          name: "OpenAI API key",
+          key: "openai-api-key",
+        },
+      ],
+    });
+    const second = await svc.importRemoteSecrets(companyId, {
+      providerConfigId: awsVault.id,
+      secrets: [
+        {
+          externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
+          name: "OpenAI API key duplicate",
+          key: "openai-api-key-duplicate",
+        },
+      ],
+    });
+
+    expect(first.importedCount).toBe(1);
+    expect(second).toMatchObject({
+      importedCount: 0,
+      skippedCount: 1,
+      errorCount: 0,
+      results: [expect.objectContaining({ reason: "exact_reference_duplicate" })],
+    });
+    const imported = await db.select().from(companySecrets).where(eq(companySecrets.providerConfigId, awsVault.id));
+    expect(imported).toHaveLength(1);
   });
 
   it("rejects remote import for disabled or cross-company provider vaults", async () => {
@@ -556,6 +670,34 @@ describeEmbeddedPostgres("secretService", () => {
         externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-b/openai-api-key",
       }),
     ).rejects.toThrow(/Managed secrets cannot override externalRef/i);
+  });
+
+  it("rejects generic update retargeting for external reference secrets", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/original",
+    });
+
+    await expect(
+      svc.update(secret.id, {
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/repointed",
+      }),
+    ).rejects.toThrow(/cannot be retargeted/i);
+
+    const persisted = await svc.getById(secret.id);
+    expect(persisted?.externalRef).toBe(
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/original",
+    );
   });
 
   it("passes managed AWS secret context into provider delete during removal", async () => {

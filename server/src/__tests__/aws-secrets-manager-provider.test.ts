@@ -269,7 +269,18 @@ describe("awsSecretsManagerProvider", () => {
   });
 
   it("stores linked external references as metadata-only provider material", async () => {
-    const provider = createAwsSecretsManagerProvider();
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+    });
 
     const prepared = await provider.linkExternalSecret({
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
@@ -281,6 +292,29 @@ describe("awsSecretsManagerProvider", () => {
     );
     expect(prepared.providerVersionRef).toBe("linked-version-7");
     expect(prepared.valueSha256).toBeTruthy();
+  });
+
+  it("rejects linked external references under the Paperclip-managed namespace", async () => {
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+    });
+
+    await expect(
+      provider.linkExternalSecret({
+        externalRef:
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+        providerVersionRef: "linked-version-7",
+      }),
+    ).rejects.toThrow(/Paperclip-managed namespace/i);
   });
 
   it("lists remote AWS secrets with metadata only and never resolves plaintext", async () => {
@@ -352,15 +386,16 @@ describe("awsSecretsManagerProvider", () => {
           name: "prod/openai",
           providerVersionRef: null,
           metadata: expect.objectContaining({
-            arn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
-            name: "prod/openai",
-            description: "OpenAI API key",
             createdDate: "2026-05-06T00:00:00.000Z",
+            hasDescription: true,
+            tagCount: 1,
           }),
         },
       ],
     });
     expect(JSON.stringify(listed)).not.toContain("SecretString");
+    expect(JSON.stringify(listed)).not.toContain("OpenAI API key");
+    expect(JSON.stringify(listed)).not.toContain("team");
   });
 
   it("resolves AWS secret values by provider version reference", async () => {

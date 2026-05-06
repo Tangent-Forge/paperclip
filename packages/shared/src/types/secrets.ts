@@ -198,7 +198,7 @@ export interface SecretAccessEvent {
 export type RemoteSecretImportCandidateStatus = "ready" | "duplicate" | "conflict";
 
 export interface RemoteSecretImportConflict {
-  type: "exact_reference" | "name" | "key";
+  type: "exact_reference" | "name" | "key" | "provider_guardrail";
   message: string;
   existingSecretId?: string;
 }

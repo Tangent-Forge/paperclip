@@ -337,6 +337,32 @@ function isManagedSecretRefForContext(
   return new RegExp(`^${escapeRegExp(expectedName)}(?:-[A-Za-z0-9]{6})?$`).test(actualName);
 }
 
+function isManagedSecretNamespaceRef(
+  config: AwsSecretsManagerConfig,
+  externalRef: string | null | undefined,
+) {
+  if (!externalRef?.trim()) return false;
+  const namespacePrefix = [
+    sanitizePathSegment(config.prefix),
+    sanitizePathSegment(config.deploymentId),
+  ]
+    .filter(Boolean)
+    .join("/");
+  if (!namespacePrefix) return false;
+  const actualName = extractAwsSecretName(externalRef);
+  return actualName === namespacePrefix || actualName.startsWith(`${namespacePrefix}/`);
+}
+
+function assertNotManagedNamespaceExternalRef(
+  config: AwsSecretsManagerConfig,
+  externalRef: string,
+) {
+  if (!isManagedSecretNamespaceRef(config, externalRef)) return;
+  throw unprocessable(
+    "AWS Paperclip-managed namespace secrets cannot be imported as external references",
+  );
+}
+
 function resolveManagedSecretRef(input: {
   config: AwsSecretsManagerConfig;
   context: ManagedSecretNamespaceContext | undefined;
@@ -414,15 +440,13 @@ function serializeAwsDate(value: string | number | Date | undefined): string | n
 
 function createRemoteSecretMetadata(entry: AwsSecretsManagerListSecretEntry): Record<string, unknown> {
   return {
-    arn: entry.ARN ?? null,
-    name: entry.Name ?? null,
-    description: entry.Description ?? null,
-    kmsKeyId: entry.KmsKeyId ?? null,
     createdDate: serializeAwsDate(entry.CreatedDate),
     lastAccessedDate: serializeAwsDate(entry.LastAccessedDate),
     lastChangedDate: serializeAwsDate(entry.LastChangedDate),
     deletedDate: serializeAwsDate(entry.DeletedDate),
-    tags: entry.Tags ?? [],
+    hasDescription: Boolean(entry.Description),
+    hasKmsKey: Boolean(entry.KmsKeyId),
+    tagCount: Array.isArray(entry.Tags) ? entry.Tags.length : 0,
   };
 }
 
@@ -740,6 +764,8 @@ export function createAwsSecretsManagerProvider(
       }
     },
     async linkExternalSecret(input) {
+      const config = resolveConfig(input.providerConfig);
+      assertNotManagedNamespaceExternalRef(config, input.externalRef);
       return createExternalReferenceMaterial(input.externalRef, input.providerVersionRef ?? null);
     },
     async listRemoteSecrets(input): Promise<RemoteSecretListResult> {

@@ -42,7 +42,11 @@ import {
   getSecretProvider,
   listSecretProviders,
 } from "../secrets/provider-registry.js";
-import type { SecretProviderHealthCheck, SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
+import type {
+  PreparedSecretVersion,
+  SecretProviderHealthCheck,
+  SecretProviderVaultRuntimeConfig,
+} from "../secrets/types.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -689,29 +693,61 @@ export function secretService(db: Db) {
         name: companySecrets.name,
         key: companySecrets.key,
         provider: companySecrets.provider,
+        providerConfigId: companySecrets.providerConfigId,
         externalRef: companySecrets.externalRef,
       })
       .from(companySecrets)
       .where(eq(companySecrets.companyId, companyId));
     return {
-      byExternalRef: new Map(
+      byProviderConfigExternalRef: new Map(
         existingSecrets
-          .filter((secret) => secret.provider === provider && typeof secret.externalRef === "string" && secret.externalRef.trim())
-          .map((secret) => [secret.externalRef!.trim(), secret]),
+          .filter((secret) =>
+            secret.provider === provider &&
+            typeof secret.externalRef === "string" &&
+            secret.externalRef.trim()
+          )
+          .map((secret) => [
+            remoteImportExternalRefKey(secret.providerConfigId, secret.externalRef!),
+            secret,
+          ]),
       ),
       byName: new Map(existingSecrets.map((secret) => [secret.name, secret])),
       byKey: new Map(existingSecrets.map((secret) => [secret.key, secret])),
     };
   }
 
+  function remoteImportExternalRefKey(providerConfigId: string | null | undefined, externalRef: string) {
+    return `${providerConfigId ?? "default"}\0${externalRef.trim()}`;
+  }
+
+  function sanitizeRemoteProviderMetadata(
+    provider: SecretProvider,
+    metadata: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> | null {
+    if (!metadata || provider !== "aws_secrets_manager") return null;
+    const safe: Record<string, unknown> = {};
+    for (const key of ["createdDate", "lastAccessedDate", "lastChangedDate", "deletedDate"]) {
+      const value = metadata[key];
+      if (typeof value === "string" || value === null) safe[key] = value;
+    }
+    for (const key of ["hasDescription", "hasKmsKey", "tagCount"]) {
+      const value = metadata[key];
+      if (typeof value === "boolean" || typeof value === "number") safe[key] = value;
+    }
+    return Object.keys(safe).length > 0 ? safe : null;
+  }
+
   function remoteImportConflictsFor(input: {
+    providerConfigId: string | null;
     externalRef: string;
     name: string;
     key: string;
     maps: Awaited<ReturnType<typeof buildRemoteImportConflictMaps>>;
   }): RemoteSecretImportConflict[] {
     const conflicts: RemoteSecretImportConflict[] = [];
-    const duplicate = input.maps.byExternalRef.get(input.externalRef);
+    const duplicate = input.maps.byProviderConfigExternalRef.get(
+      remoteImportExternalRefKey(input.providerConfigId, input.externalRef),
+    );
     if (duplicate) {
       conflicts.push({
         type: "exact_reference",
@@ -1009,26 +1045,54 @@ export function secretService(db: Db) {
         pageSize: input.pageSize,
       });
       const maps = await buildRemoteImportConflictMaps(companyId, providerId);
-      const candidates: RemoteSecretImportCandidate[] = listed.secrets.map((remote) => {
+      const candidates: RemoteSecretImportCandidate[] = [];
+      for (const remote of listed.secrets) {
         const externalRef = remote.externalRef.trim();
         const remoteName = remote.name.trim() || deriveSecretNameFromExternalRef(externalRef);
         const name = remoteName || deriveSecretNameFromExternalRef(externalRef);
         const key = normalizeSecretKey(name);
-        const conflicts = remoteImportConflictsFor({ externalRef, name, key, maps });
+        let canonicalExternalRef = externalRef;
+        const conflicts: RemoteSecretImportConflict[] = [];
+        try {
+          const prepared = await provider.linkExternalSecret({
+            externalRef,
+            providerVersionRef: remote.providerVersionRef ?? null,
+            providerConfig: runtimeConfig,
+            context: {
+              companyId,
+              secretKey: key || "remote-import-preview",
+              secretName: name,
+              version: 1,
+            },
+          });
+          canonicalExternalRef = prepared.externalRef ?? externalRef;
+        } catch (error) {
+          conflicts.push({
+            type: "provider_guardrail",
+            message: error instanceof Error ? error.message : "Provider rejected this external reference",
+          });
+        }
+        conflicts.push(...remoteImportConflictsFor({
+          providerConfigId: providerConfig.id,
+          externalRef: canonicalExternalRef,
+          name,
+          key,
+          maps,
+        }));
         const hasDuplicate = conflicts.some((conflict) => conflict.type === "exact_reference");
         const hasConflict = conflicts.length > 0;
-        return {
+        candidates.push({
           externalRef,
           remoteName,
           name,
           key,
           providerVersionRef: remote.providerVersionRef ?? null,
-          providerMetadata: remote.metadata ?? null,
+          providerMetadata: sanitizeRemoteProviderMetadata(providerId, remote.metadata),
           status: hasDuplicate ? "duplicate" : hasConflict ? "conflict" : "ready",
           importable: !hasConflict,
           conflicts,
-        };
-      });
+        });
+      }
       return {
         providerConfigId: providerConfig.id,
         provider: providerId,
@@ -1066,7 +1130,14 @@ export function secretService(db: Db) {
         const externalRef = selection.externalRef.trim();
         const name = selection.name?.trim() || deriveSecretNameFromExternalRef(externalRef);
         const key = normalizeSecretKey(selection.key?.trim() || name);
-        const conflicts = remoteImportConflictsFor({ externalRef, name, key, maps });
+        let prepared: PreparedSecretVersion | undefined;
+        const conflicts = remoteImportConflictsFor({
+          providerConfigId: providerConfig.id,
+          externalRef,
+          name,
+          key,
+          maps,
+        });
         if (!key) {
           results.push({
             externalRef,
@@ -1078,6 +1149,42 @@ export function secretService(db: Db) {
             conflicts,
           });
           continue;
+        }
+        if (conflicts.length === 0) {
+          try {
+            prepared = await provider.linkExternalSecret({
+              externalRef,
+              providerVersionRef: selection.providerVersionRef ?? null,
+              providerConfig: runtimeConfig,
+              context: {
+                companyId,
+                secretKey: key,
+                secretName: name,
+                version: 1,
+              },
+            });
+            const canonicalDuplicate = maps.byProviderConfigExternalRef.get(
+              remoteImportExternalRefKey(providerConfig.id, prepared.externalRef ?? externalRef),
+            );
+            if (canonicalDuplicate) {
+              conflicts.push({
+                type: "exact_reference",
+                existingSecretId: canonicalDuplicate.id,
+                message: "An existing secret already links this exact provider reference.",
+              });
+            }
+          } catch (error) {
+            results.push({
+              externalRef,
+              name,
+              key,
+              status: "error",
+              reason: error instanceof Error ? error.message : "Provider rejected this external reference",
+              secretId: null,
+              conflicts: [],
+            });
+            continue;
+          }
         }
         if (conflicts.length > 0) {
           results.push({
@@ -1095,17 +1202,23 @@ export function secretService(db: Db) {
         }
 
         try {
-          const prepared = await provider.linkExternalSecret({
-            externalRef,
-            providerVersionRef: selection.providerVersionRef ?? null,
-            providerConfig: runtimeConfig,
-            context: {
-              companyId,
-              secretKey: key,
-              secretName: name,
-              version: 1,
-            },
-          });
+          if (!prepared) {
+            prepared = await provider.linkExternalSecret({
+              externalRef,
+              providerVersionRef: selection.providerVersionRef ?? null,
+              providerConfig: runtimeConfig,
+              context: {
+                companyId,
+                secretKey: key,
+                secretName: name,
+                version: 1,
+              },
+            });
+          }
+          if (!prepared) {
+            throw unprocessable("Provider rejected this external reference");
+          }
+          const preparedSecret = prepared;
           const secret = await db.transaction(async (tx) => {
             const inserted = await tx
               .insert(companySecrets)
@@ -1117,8 +1230,8 @@ export function secretService(db: Db) {
                 providerConfigId: providerConfig.id,
                 status: "active",
                 managedMode: "external_reference",
-                externalRef: prepared.externalRef,
-                providerMetadata: selection.providerMetadata ?? null,
+                externalRef: preparedSecret.externalRef,
+                providerMetadata: null,
                 latestVersion: 1,
                 description: null,
                 lastRotatedAt: new Date(),
@@ -1130,17 +1243,20 @@ export function secretService(db: Db) {
             await tx.insert(companySecretVersions).values({
               secretId: inserted.id,
               version: 1,
-              material: prepared.material,
-              valueSha256: prepared.valueSha256,
-              fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
-              providerVersionRef: prepared.providerVersionRef ?? null,
+              material: preparedSecret.material,
+              valueSha256: preparedSecret.valueSha256,
+              fingerprintSha256: preparedSecret.fingerprintSha256 ?? preparedSecret.valueSha256,
+              providerVersionRef: preparedSecret.providerVersionRef ?? null,
               status: "current",
               createdByAgentId: actor?.agentId ?? null,
               createdByUserId: actor?.userId ?? null,
             });
             return inserted;
           });
-          maps.byExternalRef.set(externalRef, secret);
+          maps.byProviderConfigExternalRef.set(
+            remoteImportExternalRefKey(providerConfig.id, preparedSecret.externalRef ?? externalRef),
+            secret,
+          );
           maps.byName.set(name, secret);
           maps.byKey.set(key, secret);
           results.push({
@@ -1412,6 +1528,24 @@ export function secretService(db: Db) {
       const deleting = patch.status === "deleted";
       if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
         throw unprocessable("Managed secrets cannot override externalRef");
+      }
+      if (
+        secret.managedMode === "external_reference" &&
+        patch.externalRef !== undefined &&
+        patch.externalRef !== secret.externalRef
+      ) {
+        throw unprocessable(
+          "External reference secrets cannot be retargeted through generic update",
+        );
+      }
+      if (
+        secret.managedMode === "external_reference" &&
+        patch.providerConfigId !== undefined &&
+        patch.providerConfigId !== secret.providerConfigId
+      ) {
+        throw unprocessable(
+          "External reference secrets cannot change provider vault through generic update",
+        );
       }
       if (patch.providerConfigId !== undefined) {
         await assertProviderConfigForSecret(
