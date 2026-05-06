@@ -20,7 +20,8 @@ import {
   ShieldCheck,
   Star,
   Trash2,
-  Wifi,
+  X,
+  Filter,
 } from "lucide-react";
 import type {
   CompanySecret,
@@ -49,6 +50,8 @@ import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Sheet,
   SheetContent,
@@ -67,6 +70,7 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
+import { PageTabBar } from "../components/PageTabBar";
 
 type CreateMode = "managed" | "external";
 type SecretsTab = "secrets" | "vaults";
@@ -468,6 +472,7 @@ export function Secrets() {
       );
     });
   }, [secrets, search, statusFilter, providerFilter]);
+  const activeSecretFilterCount = (statusFilter === "active" ? 0 : 1) + (providerFilter === "all" ? 0 : 1);
 
   const usageQuery = useQuery({
     queryKey: selectedSecret ? queryKeys.secrets.usage(selectedSecret.id) : ["secrets", "usage", "__disabled__"],
@@ -733,52 +738,35 @@ export function Secrets() {
     );
   }
 
-  const activeSecrets = secrets.filter((s) => s.status === "active").length;
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-4">
         <div className="flex items-center gap-2">
           <KeyRound className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">Secrets</h1>
-          <span className="text-xs text-muted-foreground">
-            {activeSecrets}/{secrets.length} active · {providerConfigs.length} vault{providerConfigs.length === 1 ? "" : "s"}
-          </span>
         </div>
         <div className="flex flex-1 items-center gap-2 justify-end">
           {activeTab === "secrets" ? (
             <>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <div className="relative w-48 sm:w-64 md:w-80">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Search by name, key, ref"
-                  className="pl-7 h-8 w-64"
+                  className="pl-7 text-xs sm:text-sm"
+                  aria-label="Search secrets"
+                  data-page-search-target="true"
                 />
               </div>
-              <select
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value as SecretStatus | "all")}
-              >
-                <option value="all">All statuses</option>
-                <option value="active">Active</option>
-                <option value="disabled">Disabled</option>
-                <option value="archived">Archived</option>
-              </select>
-              <select
-                className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none"
-                value={providerFilter}
-                onChange={(event) => setProviderFilter(event.target.value as SecretProvider | "all")}
-              >
-                <option value="all">All providers</option>
-                {providers.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
+              <SecretsFiltersPopover
+                statusFilter={statusFilter}
+                providerFilter={providerFilter}
+                providers={providers}
+                activeFilterCount={activeSecretFilterCount}
+                onStatusChange={setStatusFilter}
+                onProviderChange={setProviderFilter}
+              />
               <Button onClick={() => setCreateOpen(true)} size="sm">
                 <Plus className="h-3.5 w-3.5 mr-1" /> New secret
               </Button>
@@ -791,19 +779,17 @@ export function Secrets() {
         </div>
       </header>
 
-      <ProviderHealthBar
-        providers={providers}
-        health={providerHealthQuery.data ?? null}
-        loading={providersQuery.isPending}
-        error={providersQuery.error ?? providerHealthQuery.error}
-      />
-
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as SecretsTab)} className="flex min-h-0 flex-1 flex-col">
         <div className="border-b border-border px-6 py-2">
-          <TabsList>
-            <TabsTrigger value="secrets">Secrets</TabsTrigger>
-            <TabsTrigger value="vaults">Provider vaults</TabsTrigger>
-          </TabsList>
+          <PageTabBar
+            items={[
+              { value: "secrets", label: "Secrets" },
+              { value: "vaults", label: "Provider vaults" },
+            ]}
+            align="start"
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as SecretsTab)}
+          />
         </div>
         <TabsContent value="secrets" className="min-h-0 flex-1 overflow-y-auto">
           {secretsQuery.isError ? (
@@ -1464,75 +1450,110 @@ export function Secrets() {
   );
 }
 
-function ProviderHealthBar({
+function SecretsFiltersPopover({
+  statusFilter,
+  providerFilter,
   providers,
-  health,
-  loading,
-  error,
+  activeFilterCount,
+  onStatusChange,
+  onProviderChange,
 }: {
+  statusFilter: SecretStatus | "all";
+  providerFilter: SecretProvider | "all";
   providers: SecretProviderDescriptor[];
-  health: SecretProviderHealthResponse | null;
-  loading: boolean;
-  error: unknown;
+  activeFilterCount: number;
+  onStatusChange: (value: SecretStatus | "all") => void;
+  onProviderChange: (value: SecretProvider | "all") => void;
 }) {
-  if (loading || providers.length === 0) return null;
+  const resetFilters = () => {
+    onStatusChange("active");
+    onProviderChange("all");
+  };
 
-  const healthMap = new Map(health?.providers.map((entry) => [entry.provider, entry]) ?? []);
-  const worstStatus = (() => {
-    if (error) return "error" as const;
-    let worst: "ok" | "warn" | "error" = "ok";
-    for (const entry of healthMap.values()) {
-      if (entry.status === "error") return "error" as const;
-      if (entry.status === "warn") worst = "warn";
-    }
-    return worst;
-  })();
-
-  const tone =
-    worstStatus === "error"
-      ? "border-destructive/40 bg-destructive/5 text-destructive"
-      : worstStatus === "warn"
-        ? "border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300"
-        : "border-border bg-muted/30 text-muted-foreground";
-  const dot = (status: "ok" | "warn" | "error") =>
-    status === "error" ? "bg-destructive" : status === "warn" ? "bg-amber-500" : "bg-emerald-500";
-  const message = error
-    ? "Provider health check failed."
-    : worstStatus === "error"
-      ? "One or more providers reported errors."
-      : worstStatus === "warn"
-        ? "Provider warnings detected — review setup."
-        : `Connected to ${providers.length} provider${providers.length === 1 ? "" : "s"}`;
+  const statusOptions: Array<{ value: SecretStatus | "all"; label: string }> = [
+    { value: "active", label: "Active" },
+    { value: "all", label: "All statuses" },
+    { value: "disabled", label: "Disabled" },
+    { value: "archived", label: "Archived" },
+  ];
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-2 border-b px-6 py-1.5 text-[11px]", tone)}>
-      <Wifi className="h-3 w-3" />
-      <span>{message}</span>
-      <span>·</span>
-      <span className="flex flex-wrap items-center gap-2">
-        {providers.map((provider) => {
-          const entry = healthMap.get(provider.id);
-          const status = entry?.status ?? "ok";
-          const warningCount = entry?.warnings?.length ?? 0;
-          return (
-            <span
-              key={provider.id}
-              className="inline-flex items-center gap-1"
-              title={entry?.message ?? provider.label}
-            >
-              <span className={cn("h-1.5 w-1.5 rounded-full", dot(status))} />
-              {provider.label}
-              {warningCount > 0 ? (
-                <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="h-2.5 w-2.5" />
-                  {warningCount} warning{warningCount === 1 ? "" : "s"}
-                </span>
-              ) : null}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="icon"
+          className={cn("relative h-8 w-8 shrink-0", activeFilterCount > 0 && "text-blue-600 dark:text-blue-400")}
+          title={activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
+        >
+          <Filter className="h-3.5 w-3.5" />
+          {activeFilterCount > 0 ? (
+            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+              {activeFilterCount}
             </span>
-          );
-        })}
-      </span>
-    </div>
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-[min(520px,calc(100vw-2rem))] max-h-[min(80vh,34rem)] overflow-y-auto overscroll-contain p-0"
+      >
+        <div className="space-y-3 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">Filters</span>
+            {activeFilterCount > 0 ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                onClick={resetFilters}
+              >
+                <X className="h-3 w-3" />
+                Clear
+              </button>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Status</span>
+              <div className="space-y-0.5">
+                {statusOptions.map((option) => (
+                  <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                    <Checkbox
+                      checked={statusFilter === option.value}
+                      onCheckedChange={() => onStatusChange(option.value)}
+                    />
+                    <span className="text-sm">{option.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Provider</span>
+              <div className="max-h-48 space-y-0.5 overflow-y-auto pr-1">
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
+                    checked={providerFilter === "all"}
+                    onCheckedChange={() => onProviderChange("all")}
+                  />
+                  <span className="text-sm">All providers</span>
+                </label>
+                {providers.map((provider) => (
+                  <label key={provider.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                    <Checkbox
+                      checked={providerFilter === provider.id}
+                      onCheckedChange={() => onProviderChange(provider.id)}
+                    />
+                    <span className="text-sm">{provider.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1585,7 +1606,7 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
   );
 }
 
-function ProviderVaultsTab({
+export function ProviderVaultsTab({
   providers,
   providerConfigs,
   loading,
@@ -1631,27 +1652,38 @@ function ProviderVaultsTab({
   }
 
   const providerMap = new Map(providers.map((provider) => [provider.id, provider]));
+  const providerRows = PROVIDER_ORDER.map((providerId) => ({
+    id: providerId,
+    provider: providerMap.get(providerId),
+    Icon: providerFamilyIcon(providerId),
+    isComingSoonFamily: providerId === "gcp_secret_manager" || providerId === "vault",
+    configs: providerConfigs.filter((config) => config.provider === providerId),
+  }));
 
   return (
-    <div className="space-y-5 p-6">
-      {PROVIDER_ORDER.map((providerId) => {
-        const provider = providerMap.get(providerId);
-        const configs = providerConfigs.filter((config) => config.provider === providerId);
-        const Icon = providerFamilyIcon(providerId);
-        const isComingSoonFamily = providerId === "gcp_secret_manager" || providerId === "vault";
-        return (
-          <section key={providerId} className="space-y-2">
+    <div className="flex min-h-full gap-6 p-6">
+      <aside className="hidden w-56 shrink-0 md:block">
+        <nav className="sticky top-6 space-y-1">
+          {providerRows.map(({ id, provider, Icon }) => (
+            <a
+              key={id}
+              href={`#provider-vaults-${id}`}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            >
+              <Icon className="h-4 w-4" />
+              <span className="truncate">{provider?.label ?? id.replaceAll("_", " ")}</span>
+            </a>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="min-w-0 flex-1 space-y-6">
+        {providerRows.map(({ id, provider, Icon, isComingSoonFamily, configs }) => (
+          <section key={id} id={`provider-vaults-${id}`} className="scroll-mt-6 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Icon className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">{provider?.label ?? providerId.replaceAll("_", " ")}</h2>
-              {provider?.supportsManagedValues ? <CapabilityBadge label="Managed writes" /> : null}
-              {provider?.supportsExternalReferences ? <CapabilityBadge label="External refs" /> : null}
-              {isComingSoonFamily ? (
-                <Badge variant="outline" className={cn("font-medium", providerConfigStatusTone("coming_soon"))}>
-                  coming soon
-                </Badge>
-              ) : null}
-              <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(providerId)}>
+              <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
+              <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(id)}>
                 <Plus className="h-3.5 w-3.5 mr-1" />
                 Add vault
               </Button>
@@ -1663,7 +1695,7 @@ function ProviderVaultsTab({
                   : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (
-              <div className="grid gap-3 lg:grid-cols-2">
+              <div className="space-y-3">
                 {configs.map((config) => (
                   <ProviderVaultCard
                     key={config.id}
@@ -1678,17 +1710,9 @@ function ProviderVaultsTab({
               </div>
             )}
           </section>
-        );
-      })}
+        ))}
+      </div>
     </div>
-  );
-}
-
-function CapabilityBadge({ label }: { label: string }) {
-  return (
-    <Badge variant="outline" className="border-border bg-background text-[11px] font-medium text-muted-foreground">
-      {label}
-    </Badge>
   );
 }
 
