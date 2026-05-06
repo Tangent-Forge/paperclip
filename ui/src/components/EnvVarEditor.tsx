@@ -315,7 +315,8 @@ export function EnvVarEditor({
         );
       })()}
       <p className="text-[11px] text-muted-foreground/60">
-        PAPERCLIP_* variables are injected automatically at runtime.
+        Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Secret to resolve a stored
+        value at run start. PAPERCLIP_* variables are injected automatically.
       </p>
     </div>
   );

@@ -177,6 +177,8 @@ describe("Secrets page layout", () => {
     await flushReact();
 
     expect(container.querySelector('input[data-page-search-target="true"][aria-label="Search secrets"]')).not.toBeNull();
+    expect(container.textContent).toContain("Use secrets by binding them to runtime environment variables.");
+    expect(container.textContent).toContain("GH_TOKEN");
     expect(container.querySelectorAll("select")).toHaveLength(0);
     expect(container.textContent).not.toContain("Provider warnings detected");
     expect(container.textContent).not.toContain("2/2 active");

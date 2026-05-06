@@ -27,6 +27,30 @@ you bind to an agent as exposed to that agent. Limit blast radius with bindings
 provider supports them, and rotation when an agent transcript or downstream
 system might have captured a value.
 
+## Using Secrets In Runs
+
+Creating a company secret does not automatically create an environment variable.
+You use a secret by binding it into an agent, project, environment, or plugin
+configuration field that supports secret references.
+
+For agent and project environment variables:
+
+1. Create or link the secret in `Company Settings > Secrets`.
+2. Open the agent's `Environment variables` field, or the project's `Env`
+   field.
+3. Add the environment variable key the process expects, such as `GH_TOKEN` or
+   `OPENAI_API_KEY`.
+4. Set the row source to `Secret`, select the stored secret, and choose either
+   `latest` or a pinned version.
+
+At runtime, Paperclip resolves the selected secret server-side and injects the
+resolved value under the env key from the binding row. The stored secret name
+can be human-readable; the binding key is what the agent process receives.
+
+Project env applies to every issue run in that project. When a project env key
+matches an agent env key, the project value wins before Paperclip injects its
+own `PAPERCLIP_*` runtime variables.
+
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:
