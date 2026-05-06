@@ -2,6 +2,8 @@ import type {
   CompanySecret,
   CompanySecretUsageBinding,
   CompanySecretProviderConfig,
+  RemoteSecretImportPreviewResult,
+  RemoteSecretImportResult,
   SecretAccessEvent,
   SecretManagedMode,
   SecretProvider,
@@ -72,6 +74,26 @@ export interface UpdateSecretProviderConfigInput {
   config?: Record<string, unknown>;
 }
 
+export interface RemoteImportPreviewInput {
+  providerConfigId: string;
+  query?: string | null;
+  nextToken?: string | null;
+  pageSize?: number;
+}
+
+export interface RemoteImportSelectionInput {
+  externalRef: string;
+  name?: string | null;
+  key?: string | null;
+  providerVersionRef?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface RemoteImportInput {
+  providerConfigId: string;
+  secrets: RemoteImportSelectionInput[];
+}
+
 export const secretsApi = {
   list: (companyId: string) => api.get<CompanySecret[]>(`/companies/${companyId}/secrets`),
   providers: (companyId: string) =>
@@ -105,4 +127,11 @@ export const secretsApi = {
   remove: (id: string) => api.delete<{ ok: true }>(`/secrets/${id}`),
   usage: (id: string) => api.get<SecretUsageResponse>(`/secrets/${id}/usage`),
   accessEvents: (id: string) => api.get<SecretAccessEvent[]>(`/secrets/${id}/access-events`),
+  remoteImportPreview: (companyId: string, data: RemoteImportPreviewInput) =>
+    api.post<RemoteSecretImportPreviewResult>(
+      `/companies/${companyId}/secrets/remote-import/preview`,
+      data,
+    ),
+  remoteImport: (companyId: string, data: RemoteImportInput) =>
+    api.post<RemoteSecretImportResult>(`/companies/${companyId}/secrets/remote-import`, data),
 };

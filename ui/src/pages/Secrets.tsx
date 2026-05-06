@@ -73,6 +73,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
+import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 
 type CreateMode = "managed" | "external";
 type SecretsTab = "secrets" | "vaults";
@@ -351,6 +352,7 @@ export function Secrets() {
   const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("managed");
   const [createForm, setCreateForm] = useState({
     name: "",
@@ -793,7 +795,13 @@ export function Secrets() {
               onStatusChange={setStatusFilter}
               onProviderChange={setProviderFilter}
             />
-            <Button onClick={() => setCreateOpen(true)} size="sm" className="ml-auto">
+            <ImportFromVaultButton
+              providerConfigs={providerConfigs}
+              onClick={() => setImportOpen(true)}
+              onManageVaults={() => setActiveTab("vaults")}
+              className="ml-auto"
+            />
+            <Button onClick={() => setCreateOpen(true)} size="sm">
               <Plus className="h-3.5 w-3.5 mr-1" /> New secret
             </Button>
           </div>
@@ -1059,6 +1067,23 @@ export function Secrets() {
           />
         </DialogContent>
       </Dialog>
+
+      {selectedCompanyId && (
+        <ImportFromVaultDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          companyId={selectedCompanyId}
+          providerConfigs={providerConfigs}
+          existingSecrets={secrets}
+          onManageVaults={() => {
+            setImportOpen(false);
+            setActiveTab("vaults");
+          }}
+          onImportComplete={() => {
+            void secretsQuery.refetch();
+          }}
+        />
+      )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-lg">
@@ -1662,6 +1687,55 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
       {warning ? <AlertTriangle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
       {message}
     </p>
+  );
+}
+
+interface ImportFromVaultButtonProps {
+  providerConfigs: CompanySecretProviderConfig[];
+  onClick: () => void;
+  onManageVaults: () => void;
+  className?: string;
+}
+
+function ImportFromVaultButton({
+  providerConfigs,
+  onClick,
+  onManageVaults,
+  className,
+}: ImportFromVaultButtonProps) {
+  const awsConfigs = providerConfigs.filter(
+    (config) => config.provider === "aws_secrets_manager",
+  );
+  const eligible = awsConfigs.filter(
+    (config) => config.status === "ready" || config.status === "warning",
+  );
+
+  if (awsConfigs.length === 0) return null;
+
+  if (eligible.length === 0) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onManageVaults}
+        className={cn("text-xs text-muted-foreground", className)}
+        title="Configure an AWS provider vault to enable remote import"
+      >
+        <Cloud className="h-3.5 w-3.5 mr-1" /> AWS vault disabled — manage
+      </Button>
+    );
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={onClick}
+      className={className}
+      data-testid="import-from-vault-button"
+    >
+      <Cloud className="h-3.5 w-3.5 mr-1" /> Import from vault
+    </Button>
   );
 }
 
