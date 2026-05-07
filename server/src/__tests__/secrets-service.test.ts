@@ -291,7 +291,7 @@ describeEmbeddedPostgres("secretService", () => {
       value: "first-value",
     });
 
-    await svc.update(secret.id, { status: "deleted" });
+    await svc.remove(secret.id);
     const listed = await svc.list(companyId);
     const recreated = await svc.create(companyId, {
       name: secretName,
@@ -902,6 +902,23 @@ describeEmbeddedPostgres("secretService", () => {
     expect(persisted?.externalRef).toBe(
       "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/original",
     );
+  });
+
+  it("rejects generic soft deletion for managed secrets", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `managed-delete-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(svc.update(secret.id, { status: "deleted" })).rejects.toThrow(
+      /DELETE \/secrets\/:id/i,
+    );
+
+    const persisted = await svc.getById(secret.id);
+    expect(persisted?.status).toBe("active");
   });
 
   it("passes managed AWS secret context into provider delete during removal", async () => {

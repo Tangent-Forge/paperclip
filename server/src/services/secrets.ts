@@ -1655,6 +1655,9 @@ export function secretService(db: Db) {
         }
       }
       const deleting = patch.status === "deleted";
+      if (deleting && secret.managedMode === "paperclip_managed") {
+        throw unprocessable("Managed secrets must be deleted through DELETE /secrets/:id");
+      }
       if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
