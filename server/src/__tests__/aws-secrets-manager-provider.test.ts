@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAwsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 
@@ -9,9 +9,13 @@ describe("awsSecretsManagerProvider", () => {
     AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION,
     PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID: process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID,
     PAPERCLIP_SECRETS_AWS_KMS_KEY_ID: process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+    AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
   };
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) {
         delete process.env[key];
@@ -162,6 +166,55 @@ describe("awsSecretsManagerProvider", () => {
     expect(calls[0]?.input).not.toHaveProperty("KmsKeyId");
     expect(JSON.stringify(prepared)).not.toContain("super-secret-value");
     expect(prepared.externalRef).toContain("clip/prod-us-west/company-1/openai-api-key");
+  });
+
+  it("signs AWS Secrets Manager JSON requests with default runtime credentials", async () => {
+    process.env.AWS_ACCESS_KEY_ID = "AKIA_TEST_ACCESS";
+    process.env.AWS_SECRET_ACCESS_KEY = "test-secret-key";
+    process.env.AWS_SESSION_TOKEN = "test-session-token";
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/openai-api-key",
+          VersionId: "aws-version-1",
+        }),
+        { status: 200 },
+      ),
+    );
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+    });
+
+    await provider.createSecret({
+      value: "super-secret-value",
+      context: {
+        companyId: "company-1",
+        secretKey: "openai-api-key",
+        secretName: "OpenAI API Key",
+        version: 1,
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const headers = init?.headers as Record<string, string>;
+    expect(String(url)).toBe("https://secretsmanager.us-east-1.amazonaws.com/");
+    expect(headers["x-amz-target"]).toBe("secretsmanager.CreateSecret");
+    expect(headers["x-amz-security-token"]).toBe("test-session-token");
+    expect(headers.authorization).toContain("Credential=AKIA_TEST_ACCESS/");
+    expect(headers.authorization).toContain("/us-east-1/secretsmanager/aws4_request");
+    expect(headers.authorization).toContain("SignedHeaders=");
+    expect(headers.authorization).toContain("Signature=");
   });
 
   it("creates new AWS secret versions against a namespace-valid existing secret reference", async () => {

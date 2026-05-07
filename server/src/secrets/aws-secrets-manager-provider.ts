@@ -1,8 +1,5 @@
-import { createHash } from "node:crypto";
-import { defaultProvider as defaultAwsCredentialsProvider } from "@aws-sdk/credential-provider-node";
-import { Hash } from "@smithy/hash-node";
-import { HttpRequest } from "@smithy/protocol-http";
-import { SignatureV4 } from "@smithy/signature-v4";
+import { createHash, createHmac } from "node:crypto";
+import { S3Client } from "@aws-sdk/client-s3";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import type {
@@ -63,6 +60,12 @@ interface AwsSecretsManagerListSecretEntry {
   Tags?: AwsSecretsManagerTag[];
 }
 
+interface AwsCredentialIdentity {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
 type ManagedSecretNamespaceContext = Pick<SecretProviderWriteContext, "companyId" | "secretKey">;
 
 interface AwsSecretsManagerGateway {
@@ -115,6 +118,96 @@ interface AwsSecretsManagerGateway {
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function hmac(key: string | Buffer, value: string) {
+  return createHmac("sha256", key).update(value).digest();
+}
+
+function awsDateParts(now = new Date()) {
+  const iso = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  return {
+    amzDate: iso,
+    dateStamp: iso.slice(0, 8),
+  };
+}
+
+function canonicalHeaderValue(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function signAwsSecretsManagerRequest(input: {
+  endpoint: URL;
+  region: string;
+  operation: string;
+  body: string;
+  credentials: AwsCredentialIdentity;
+}) {
+  const { amzDate, dateStamp } = awsDateParts();
+  const payloadHash = sha256Hex(input.body);
+  const headers: Record<string, string> = {
+    "content-type": "application/x-amz-json-1.1",
+    host: input.endpoint.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate,
+    "x-amz-target": `secretsmanager.${input.operation}`,
+  };
+  if (input.credentials.sessionToken) {
+    headers["x-amz-security-token"] = input.credentials.sessionToken;
+  }
+
+  const sortedHeaderNames = Object.keys(headers).sort();
+  const canonicalHeaders = sortedHeaderNames
+    .map((name) => `${name}:${canonicalHeaderValue(headers[name] ?? "")}\n`)
+    .join("");
+  const signedHeaders = sortedHeaderNames.join(";");
+  const canonicalRequest = [
+    "POST",
+    input.endpoint.pathname || "/",
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+  const credentialScope = `${dateStamp}/${input.region}/secretsmanager/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest),
+  ].join("\n");
+  const dateKey = hmac(`AWS4${input.credentials.secretAccessKey}`, dateStamp);
+  const regionKey = hmac(dateKey, input.region);
+  const serviceKey = hmac(regionKey, "secretsmanager");
+  const signingKey = hmac(serviceKey, "aws4_request");
+  const signature = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
+
+  return {
+    ...headers,
+    authorization:
+      `AWS4-HMAC-SHA256 Credential=${input.credentials.accessKeyId}/${credentialScope}, ` +
+      `SignedHeaders=${signedHeaders}, Signature=${signature}`,
+  };
+}
+
+async function loadAwsCredentials(region: string): Promise<AwsCredentialIdentity> {
+  const client = new S3Client({ region });
+  try {
+    const credentialSource = client.config.credentials;
+    const credentials = typeof credentialSource === "function"
+      ? await credentialSource()
+      : await credentialSource;
+    if (!credentials?.accessKeyId || !credentials.secretAccessKey) {
+      throw new Error("AWS SDK default credential provider chain did not return credentials");
+    }
+    return {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    };
+  } finally {
+    client.destroy();
+  }
 }
 
 function configuredAwsSecretsManagerDescriptor() {
@@ -513,16 +606,9 @@ function normalizeAwsError(operation: string, error: unknown): never {
 
 class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
   private readonly endpoint: URL;
-  private readonly signer: SignatureV4;
 
   constructor(private readonly config: AwsSecretsManagerConfig) {
     this.endpoint = new URL(config.endpoint);
-    this.signer = new SignatureV4({
-      credentials: defaultAwsCredentialsProvider(),
-      region: config.region,
-      service: "secretsmanager",
-      sha256: Hash.bind(null, "sha256"),
-    });
   }
 
   createSecret(input: {
@@ -587,23 +673,17 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
 
   private async call<T>(operation: string, payload: Record<string, unknown>): Promise<T> {
     const body = JSON.stringify(payload);
-    const request = new HttpRequest({
-      protocol: this.endpoint.protocol,
-      hostname: this.endpoint.hostname,
-      port: this.endpoint.port ? Number(this.endpoint.port) : undefined,
-      method: "POST",
-      path: this.endpoint.pathname || "/",
-      headers: {
-        "content-type": "application/x-amz-json-1.1",
-        host: this.endpoint.host,
-        "x-amz-target": `secretsmanager.${operation}`,
-      },
+    const credentials = await loadAwsCredentials(this.config.region);
+    const headers = signAwsSecretsManagerRequest({
+      endpoint: this.endpoint,
+      region: this.config.region,
+      operation,
       body,
+      credentials,
     });
-    const signed = await this.signer.sign(request);
     const response = await fetch(this.endpoint, {
       method: "POST",
-      headers: signed.headers as Record<string, string>,
+      headers,
       body,
     });
     const text = await response.text();
