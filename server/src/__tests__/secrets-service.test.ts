@@ -306,6 +306,59 @@ describeEmbeddedPostgres("secretService", () => {
     expect(recreated.key).toBe("reusable-key");
   });
 
+  it("allows re-importing a remote secret after the prior external reference is soft-deleted", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/reimportable";
+    const deleted = await svc.create(companyId, {
+      name: "Deleted external",
+      key: "deleted-external",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+
+    await svc.update(deleted.id, { status: "deleted" });
+    vi.spyOn(awsSecretsManagerProvider, "listRemoteSecrets").mockResolvedValue({
+      secrets: [
+        {
+          externalRef,
+          name: "prod/reimportable",
+          providerVersionRef: null,
+          metadata: { arn: externalRef },
+        },
+      ],
+    });
+
+    const preview = await svc.previewRemoteImport(companyId, {
+      providerConfigId: awsVault.id,
+    });
+    const result = await svc.importRemoteSecrets(companyId, {
+      providerConfigId: awsVault.id,
+      secrets: [
+        {
+          externalRef,
+          name: "Reimported external",
+          key: "reimported-external",
+        },
+      ],
+    });
+
+    expect(preview.candidates[0]).toMatchObject({
+      status: "ready",
+      importable: true,
+      conflicts: [],
+    });
+    expect(result).toMatchObject({ importedCount: 1, skippedCount: 0, errorCount: 0 });
+  });
+
   it("rejects provider vaults from another company when creating a secret", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");
@@ -410,6 +463,28 @@ describeEmbeddedPostgres("secretService", () => {
       providerVersionRef: "aws-version-2",
     }));
     expect(JSON.stringify(resolveSpy.mock.calls[0]?.[0])).not.toContain("resolved-secret");
+  });
+
+  it("rejects rotation for non-active secrets", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `disabled-rotation-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await svc.update(secret.id, { status: "disabled" });
+    await expect(svc.rotate(secret.id, { value: "rotated-runtime-secret" })).rejects.toThrow(
+      /non-active/i,
+    );
+
+    const stored = await db
+      .select({ latestVersion: companySecrets.latestVersion })
+      .from(companySecrets)
+      .where(eq(companySecrets.id, secret.id))
+      .then((rows) => rows[0]);
+    expect(stored?.latestVersion).toBe(1);
   });
 
   it("previews AWS remote import candidates with duplicate and collision enrichment", async () => {

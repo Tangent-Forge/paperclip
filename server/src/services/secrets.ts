@@ -772,6 +772,7 @@ export function secretService(db: Db) {
         provider: companySecrets.provider,
         providerConfigId: companySecrets.providerConfigId,
         externalRef: companySecrets.externalRef,
+        status: companySecrets.status,
       })
       .from(companySecrets)
       .where(eq(companySecrets.companyId, companyId));
@@ -780,6 +781,7 @@ export function secretService(db: Db) {
         existingSecrets
           .filter((secret) =>
             secret.provider === provider &&
+            secret.status !== "deleted" &&
             typeof secret.externalRef === "string" &&
             secret.externalRef.trim()
           )
@@ -1535,6 +1537,7 @@ export function secretService(db: Db) {
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
+      if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
       const providerId = secret.provider as SecretProvider;
       const provider = getSecretProvider(providerId);
       const providerConfigId =
