@@ -480,6 +480,12 @@ CLI configuration support:
 - `pnpm paperclipai doctor` validates secrets adapter configuration, can create a missing local key file with `--repair`, and reports missing AWS Secrets Manager bootstrap env when that provider is selected.
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
+Per-company provider vaults are configured in the board UI under
+`Company Settings → Secrets → Provider vaults`, backed by
+`/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
+vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
+for the operator model.
+
 Migration helper for existing inline env secrets:
 
 ```sh

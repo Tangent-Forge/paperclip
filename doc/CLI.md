@@ -161,6 +161,14 @@ For AWS-backed secrets, `secrets doctor` reports missing non-secret provider
 env and the expected AWS SDK runtime credential source; do not store AWS
 bootstrap credentials in Paperclip secrets.
 
+Per-company provider vaults (multiple vault instances per provider, default
+vault selection, coming-soon GCP/Vault) are configured from the board UI under
+`Company Settings → Secrets → Provider vaults` or through
+`/api/companies/{companyId}/secret-provider-configs`. There is no CLI surface
+for vault management today. See the
+[secrets deploy guide](../docs/deploy/secrets.md#provider-vaults) and
+[API reference](../docs/api/secrets.md#provider-vaults) for the contract.
+
 ## Approval Commands
 
 ```sh

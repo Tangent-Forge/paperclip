@@ -82,6 +82,13 @@ pnpm paperclipai configure --section secrets
 pnpm paperclipai configure --section storage
 ```
 
+`--section secrets` updates the deployment-level provider used as the fallback
+for secrets that do not target a specific company vault. Per-company provider
+vaults (named instances, default vault selection, multiple vaults per provider,
+coming-soon GCP/Vault) live in the board UI under
+`Company Settings → Secrets → Provider vaults` and the
+`/api/companies/{companyId}/secret-provider-configs` API.
+
 ## `paperclipai env`
 
 Show resolved environment configuration:

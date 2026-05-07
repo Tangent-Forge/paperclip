@@ -8,6 +8,16 @@ Operational contract for the hosted `aws_secrets_manager` secret provider used b
 - Source of truth for secret values is AWS Secrets Manager, not Postgres.
 - Paperclip stores only metadata needed for ownership, bindings, version selection, audit, and runtime resolution.
 - AWS provider bootstrap credentials are deployment/runtime credentials, not Paperclip-managed company secrets.
+- Remote import for existing AWS secrets is metadata-only. Preview/import uses
+  AWS inventory metadata and creates Paperclip external references; it does not
+  copy plaintext into Paperclip.
+- Per-company AWS provider vaults (named instances of `aws_secrets_manager`
+  with their own region, namespace, prefix, KMS key id, and tags) are managed
+  in the board UI under `Company Settings → Secrets → Provider vaults`. See
+  [Provider Vaults](../docs/deploy/secrets.md#provider-vaults) for the operator
+  model and [Provider Vaults API](../docs/api/secrets.md#provider-vaults) for
+  the routes. The bootstrap trust model in this document still applies — vault
+  config carries non-sensitive routing metadata only, never AWS credentials.
 
 ## Bootstrap Trust Model
 
@@ -168,6 +178,64 @@ Operational expectation:
 - Paperclip-managed secrets may be deleted only by Paperclip or an operator with equivalent break-glass access.
 - External references may resolve through Paperclip runtime, but Paperclip should not delete the external secret resource.
 
+## Remote Import Inventory IAM
+
+Remote import preview needs one additional AWS permission:
+
+```json
+{
+  "Sid": "PaperclipRemoteSecretInventory",
+  "Effect": "Allow",
+  "Action": "secretsmanager:ListSecrets",
+  "Resource": "*"
+}
+```
+
+This is intentionally separate from the managed create/rotate/delete policy.
+AWS treats `ListSecrets` as an account/Region inventory action; do not document
+secret ARNs, names, tags, or AWS request filters as an IAM boundary for it. Use
+`Resource: "*"` and decide whether inventory exposure is acceptable for the AWS
+account and Region behind each provider vault.
+
+Remote import preview/import must not call:
+
+- `secretsmanager:GetSecretValue`
+- `secretsmanager:BatchGetSecretValue`
+- `kms:Decrypt`
+
+Those permissions are only needed later when a bound runtime resolves an
+imported external reference. For imported refs, scope read permissions to the
+operator-approved external prefixes that Paperclip is allowed to consume:
+
+```json
+{
+  "Sid": "PaperclipResolveImportedExternalReferences",
+  "Effect": "Allow",
+  "Action": "secretsmanager:GetSecretValue",
+  "Resource": [
+    "arn:aws:secretsmanager:<region>:<account-id>:secret:<approved-external-prefix>/*"
+  ]
+}
+```
+
+If selected external secrets use customer-managed KMS keys, also grant
+`kms:Decrypt` and `kms:DescribeKey` on those keys. Keep managed write/delete
+permissions scoped to `paperclip/<deployment-id>/*`; do not broaden them for
+remote import.
+
+Safe scoping guidance:
+
+- Prefer one Paperclip runtime role per environment/account.
+- Point provider vaults at the intended AWS account and Region instead of a
+  broad central admin role.
+- Enable `ListSecrets` only in accounts where inventory exposure is acceptable.
+- Keep preview/import board-only; agent API keys must not call these routes.
+- Treat AWS tag/name filters as search UX only, not permission enforcement.
+
+Paperclip also blocks importing refs under its own managed namespace as
+external references. Use the Paperclip-managed flow for
+`paperclip/{deploymentId}/{companyId}/{secretKey}` resources.
+
 ## Existing AWS Secrets
 
 V1 keeps existing AWS Secrets Manager entries as **linked external references**, not adopted
@@ -237,6 +305,7 @@ Symptoms:
 
 - Secret create/rotate/resolve operations fail with AWS provider errors.
 - Agent runs fail before adapter invocation on required secret resolution.
+- Remote import preview fails to list AWS inventory.
 
 Immediate actions:
 
@@ -245,6 +314,21 @@ Immediate actions:
 3. Check for accidental prefix, region, deployment id, or KMS key config drift.
 4. Retry a single resolution after AWS service health is green.
 5. If outage persists, pause high-risk runs that require secret access rather than churning retries.
+
+Remote import-specific actions:
+
+- Missing list permission: add `secretsmanager:ListSecrets` with
+  `Resource: "*"` only when inventory import is approved for that vault's
+  AWS account and Region.
+- Throttling: narrow the search, wait briefly, and retry with backoff. Avoid
+  full-account enumeration.
+- Invalid or stale cursor: refresh the preview and discard the old
+  `NextToken`.
+- Large account: load pages intentionally, keep one in-flight preview request
+  per vault/search, and do not run background full-account crawls.
+- Runtime read failure after import: verify `GetSecretValue` and KMS decrypt
+  on the selected external secret. Visibility in `ListSecrets` does not prove
+  read permission.
 
 ## Incident Response Runbook
 
@@ -258,7 +342,9 @@ Response steps:
 
 1. Stop or pause affected Paperclip runs.
 2. Audit recent Paperclip secret access events for impacted secret ids and consumers.
-3. Audit AWS CloudTrail for `GetSecretValue`, `PutSecretValue`, and `DeleteSecret` calls on the deployment prefix.
+3. Audit AWS CloudTrail for `ListSecrets`, `GetSecretValue`,
+   `PutSecretValue`, and `DeleteSecret` calls on the relevant vault account,
+   Region, deployment prefix, and approved external prefixes.
 4. Rotate impacted secrets in AWS through Paperclip-managed versioning.
 5. Re-scope IAM and KMS policies before resuming normal traffic.
 6. If a value may have reached an agent transcript or external system, treat it as exposed and rotate immediately.

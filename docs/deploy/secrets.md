@@ -128,11 +128,215 @@ For hosted Paperclip Cloud on AWS, see the AWS Secrets Manager operational
 contract — required env vars, IAM/KMS scoping, naming and tag conventions, and
 backup/rotation/incident runbooks — in `doc/SECRETS-AWS-PROVIDER.md`.
 
+## Provider Vaults
+
+A *provider vault* is a named, company-scoped configuration that points secret
+material at one of the supported provider backends. Each company can configure
+multiple vaults, including more than one vault per provider family, and pick a
+default vault per family for new secret operations. Existing secrets created
+before any vault was configured continue to resolve through the deployment-level
+default provider — no migration is required.
+
+### Where to configure
+
+Open `Company Settings → Secrets` in the board UI and switch to the
+`Provider vaults` tab. From there you can:
+
+- Create a vault for any supported provider family.
+- Edit the non-secret config of an existing vault.
+- Set one ready vault per provider family as the company default.
+- Disable a vault (a soft delete that keeps audit history).
+- Run a health check against a vault and read the latest result inline.
+
+The same operations are exposed under
+`/api/companies/{companyId}/secret-provider-configs` for automation. See the
+[secrets API reference](/api/secrets#provider-vaults) for the full route table.
+
+### Custody Of Provider Credentials
+
+Provider vaults intentionally store only **non-sensitive** configuration:
+region, project id, namespace, prefix, KMS key id, mount path, address, and
+similar routing metadata. The API, UI, and activity log never accept, return,
+or display provider credential values. Submitting fields with names like
+`accessKeyId`, `secretAccessKey`, `token`, `password`, `serviceAccountJson`,
+`privateKey`, `keyFile`, `unsealKey`, or any common credential alias is rejected
+at validation time.
+
+That keeps the bootstrap rule from the AWS provider applicable to every
+provider family: **provider credentials live in deployment infrastructure
+identity, not in Paperclip company secrets**. Allowed credential sources are
+workload identity attached to the Paperclip server (instance profile, IRSA, ECS
+task role), `AWS_PROFILE` / SSO / shared config for local runs, an orchestrator
+secret store that boots the server, or short-lived shell credentials for local
+development. Do not paste long-lived API keys into the vault config.
+
+### Vault Status
+
+Each vault carries a status that drives what the runtime can do with it:
+
+| Status        | Meaning                                                                                       |
+|---------------|-----------------------------------------------------------------------------------------------|
+| `ready`       | Selectable for create/rotate/resolve. Eligible to be the default.                             |
+| `warning`     | Saved config exists but health needs attention (for example missing AWS env). Still selectable. |
+| `coming_soon` | Visible and editable as draft metadata, but locked out of all runtime operations.            |
+| `disabled`    | Soft-deleted. Hidden from the secret create/rotate flow.                                      |
+
+`gcp_secret_manager` and `vault` are pinned to `coming_soon` until their
+runtime modules ship. The settings UI lets you save draft configuration for
+those providers (and surfaces them on the vault list), but secret create,
+rotate, and resolve calls that target a coming-soon vault fail with a clear
+runtime-locked error.
+
+### Default Vault Behavior
+
+A company can mark **one** ready (or warning) vault per provider family as the
+default. The secret create and rotate dialogs preselect the default vault for
+the chosen provider so operators don't have to remember which vault to pick.
+Coming-soon and disabled vaults cannot be marked default; attempting to do so
+returns a validation error. Setting a new default automatically clears the
+previous default for that provider.
+
+If a secret is created without any `providerConfigId` (no vaults exist yet, or
+the operator clears the selector), runtime resolution falls back to the
+deployment-level provider configuration — the same path existing installs use.
+This keeps secrets created before any provider vault was configured working
+without migration. Picking the default in the UI is an explicit selection, not
+a runtime fallback: the create call still sends an explicit `providerConfigId`.
+
+### Multiple Vaults Per Provider
+
+Multiple vaults from the same provider family are first-class. Common patterns:
+
+- Two AWS vaults pointing at different regions or KMS keys for environment
+  separation.
+- A staging Vault address alongside a production address.
+- A dedicated GCP project for a single product line while the rest of the
+  company uses another.
+
+Each vault has its own display name, status, default flag, and health record.
+Operators choose the vault explicitly when creating or rotating a secret; the
+default vault is preselected to avoid accidental routing to the wrong account.
+
+### Per-Vault Health Checks
+
+`POST /api/secret-provider-configs/{id}/health` runs a provider-specific health
+probe and stores the result on the vault row. The settings UI exposes the same
+action and renders the result inline. Health responses include a status,
+operator-facing message, and structured guidance (such as missing env var
+names, expected credential sources, and backup reminders). They never include
+provider credentials or secret values. Coming-soon vaults always return a
+`runtime_locked` health code and never call into provider modules.
+
+### Provider-Specific Notes
+
+**Local encrypted vaults** wrap the existing `local_encrypted` provider. The
+master key path and rotation guidance described above still applies. A local
+vault config is mostly bookkeeping plus an explicit acknowledgement that the
+key file is backed up alongside the database.
+
+**AWS Secrets Manager vaults** read the per-vault `region`, `namespace`,
+`secretNamePrefix`, `kmsKeyId`, `ownerTag`, and `environmentTag` to route
+managed writes and external-reference reads. The vault config supplements (and
+can override) the deployment-level `PAPERCLIP_SECRETS_AWS_*` env. Bootstrap
+credentials still come from the AWS SDK default credential chain — see
+`doc/SECRETS-AWS-PROVIDER.md` for the full IAM and KMS contract.
+
+**GCP Secret Manager** and **HashiCorp Vault** vaults are coming soon. You can
+save draft `projectId`, `location`, `namespace`, `address`, and `mountPath`
+metadata so the company is ready to flip them on when the provider modules
+ship. Vault `address` values must be origin-only `http(s)://host[:port]` URLs;
+addresses with embedded credentials, paths, query strings, or fragments are
+rejected.
+
+### Remote Import From AWS Vaults
+
+AWS provider vaults can import existing AWS Secrets Manager entries as
+Paperclip `external_reference` secrets. This is a metadata-only link: Paperclip
+stores the AWS ARN/path, a fingerprint/version reference, and binding metadata.
+It does not read, copy, store, log, or display the remote plaintext secret
+value during preview or import.
+
+Operator flow in the board UI:
+
+1. Open `Company Settings -> Secrets`.
+2. Confirm at least one AWS provider vault is `ready` or `warning`.
+3. In the `Secrets` tab, choose `Import from vault`.
+4. Select an AWS vault, search the remote inventory, and load more pages as
+   needed.
+5. Check the rows to import, review/edit the Paperclip name and key, then
+   submit.
+6. Review the result summary for created, skipped, and failed rows.
+
+The preview list is intentionally paged and search-first. AWS accounts can have
+large per-Region inventories, and `ListSecrets` returns opaque `NextToken`
+cursors. Do not expect Paperclip to crawl a whole account in the background;
+load pages deliberately and retry throttled requests with backoff.
+
+Remote import exposes AWS secret metadata visible to the Paperclip runtime
+role, including names/ARNs and safe derived fields such as dates, whether a
+description or KMS key exists, and tag count. Treat names, ARNs, tags, and
+search text as operational metadata that may be sensitive. The API and activity
+log must not store raw descriptions, tags, plaintext values, provider
+credentials, or raw AWS error blobs.
+
+Required AWS posture:
+
+- Preview needs optional `secretsmanager:ListSecrets` permission on
+  `Resource: "*"`. AWS does not support constraining `ListSecrets` to
+  individual secret ARNs or tags as an IAM boundary.
+- Preview/import must not call `secretsmanager:GetSecretValue`,
+  `secretsmanager:BatchGetSecretValue`, or KMS decrypt.
+- Runtime resolution of an imported reference still needs
+  `secretsmanager:GetSecretValue` on the selected external ARN/path and KMS
+  decrypt when that secret uses a customer-managed key.
+- Keep managed create/rotate/delete permissions scoped to the Paperclip
+  deployment prefix. Do not broaden managed write/delete permissions just
+  because import inventory is enabled.
+
+Safe scoping comes from deployment posture rather than AWS list filtering:
+dedicated Paperclip runtime roles per environment/account, AWS vaults pointed at
+the intended account and Region, import-enabled roles only where inventory
+exposure is acceptable, and board-only access to the import routes. Tags and
+name filters are search aids, not a permission model.
+
+If import preview fails:
+
+- `AccessDenied` or `not authorized`: the runtime role is missing
+  `secretsmanager:ListSecrets`; add the optional inventory statement only if
+  remote import should be enabled for that vault.
+- Throttling: retry after a short delay and narrow the search before loading
+  more pages.
+- Invalid cursor: refresh the preview; AWS `NextToken` values are opaque and
+  can expire or become stale.
+- Runtime resolution failure after import: verify `GetSecretValue` and KMS
+  decrypt scope for the selected external secret. Being visible in inventory is
+  not proof that the runtime role can read the value.
+
+### Backup And Restore
+
+Each provider family has a different backup story:
+
+- `local_encrypted`: back up the local master key file and the Paperclip
+  database together. Either alone is not enough to restore the encrypted
+  values, and the vault row only records the path and acknowledgement, not the
+  key bytes.
+- `aws_secrets_manager`: back up Paperclip's database for vault metadata
+  (vault id, region, prefix, KMS key id, default flag, bindings, version
+  pointers). The actual secret values live in AWS Secrets Manager under the
+  configured prefix; restore by pointing the same Paperclip company at the
+  same AWS namespace and confirming the runtime role still has
+  `GetSecretValue` plus KMS decrypt. The full restore checklist lives in
+  `doc/SECRETS-AWS-PROVIDER.md`.
+- `gcp_secret_manager` and `vault`: while these are coming soon, only the
+  draft vault config exists in Paperclip. Database backups capture it. There
+  is nothing to restore on the provider side until runtime support lands.
+
 ### AWS Provider Bootstrap Boundary
 
 The AWS Secrets Manager provider cannot bootstrap itself from Paperclip
 `company_secrets`. Its initial AWS access must be present before the server can
-create or resolve AWS-backed company secrets.
+create or resolve AWS-backed company secrets, regardless of whether you use the
+deployment-level default or a per-company vault.
 
 For Paperclip Cloud, provision the server runtime IAM role/workload identity,
 KMS key, deployment prefix, and non-secret `PAPERCLIP_SECRETS_AWS_*` environment
