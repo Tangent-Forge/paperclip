@@ -11,6 +11,9 @@ patchedDependencies:
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
     path: patches/embedded-postgres@18.1.0-beta.16.patch
+  hermes-paperclip-adapter@0.2.0:
+    hash: cl73czofpwmbl62puseheegdhe
+    path: patches/hermes-paperclip-adapter@0.2.0.patch
 
 importers:
 
@@ -197,6 +200,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/adapters/janitor-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/adapters/openclaw-gateway:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -303,6 +319,22 @@ importers:
       vitest:
         specifier: ^3.0.5
         version: 3.2.4(@types/debug@4.1.12)(@types/node@24.12.0)(jiti@2.6.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(lightningcss@1.30.2)(tsx@4.21.0)
+
+  packages/mcp-server-gumroad:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
 
   packages/plugins/create-paperclip-plugin:
     dependencies:
@@ -524,6 +556,9 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+      '@paperclipai/adapter-janitor-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/janitor-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -577,7 +612,7 @@ importers:
         version: 5.2.1
       hermes-paperclip-adapter:
         specifier: ^0.2.0
-        version: 0.2.0
+        version: 0.2.0(patch_hash=cl73czofpwmbl62puseheegdhe)
       jsdom:
         specifier: ^28.1.0
         version: 28.1.0(@noble/hashes@2.0.1)
@@ -719,7 +754,7 @@ importers:
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       hermes-paperclip-adapter:
         specifier: ^0.2.0
-        version: 0.2.0
+        version: 0.2.0(patch_hash=cl73czofpwmbl62puseheegdhe)
       lexical:
         specifier: 0.35.0
         version: 0.35.0
@@ -11567,7 +11602,7 @@ snapshots:
 
   help-me@5.0.0: {}
 
-  hermes-paperclip-adapter@0.2.0:
+  hermes-paperclip-adapter@0.2.0(patch_hash=cl73czofpwmbl62puseheegdhe):
     dependencies:
       '@paperclipai/adapter-utils': 2026.325.0
       picocolors: 1.1.1

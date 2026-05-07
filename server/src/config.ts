@@ -43,6 +43,11 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
 
+const CWD_ENV_LOCAL_PATH = resolve(process.cwd(), ".env.local");
+if (existsSync(CWD_ENV_LOCAL_PATH)) {
+  loadDotenv({ path: CWD_ENV_LOCAL_PATH, override: false, quiet: true });
+}
+
 maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;

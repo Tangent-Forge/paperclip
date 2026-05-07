@@ -4,6 +4,15 @@ import type {
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
+import {
+  execute as janitorExecute,
+  testEnvironment as janitorTestEnvironment,
+} from "@paperclipai/adapter-janitor-local/server";
+import {
+  agentConfigurationDoc as janitorAgentConfigurationDoc,
+  models as janitorModels,
+  modelProfiles as janitorModelProfiles,
+} from "@paperclipai/adapter-janitor-local";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
@@ -450,6 +459,18 @@ const builtinFallbacks = new Map<string, ServerAdapterModule>();
 // external.  Persisted across reloads via the same disabled-adapters store.
 const pausedOverrides = new Set<string>();
 
+const janitorLocalAdapter: ServerAdapterModule = {
+  type: "janitor_local",
+  execute: janitorExecute,
+  testEnvironment: janitorTestEnvironment,
+  models: janitorModels,
+  modelProfiles: janitorModelProfiles,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: janitorAgentConfigurationDoc,
+};
+
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
@@ -461,6 +482,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    janitorLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
