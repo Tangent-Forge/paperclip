@@ -83,6 +83,10 @@ interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMateri
   triggerId: string;
 }
 
+function routineWebhookSecretConfigPath(secretId: string) {
+  return `webhookSecret:${secretId}`;
+}
+
 function assertTimeZone(timeZone: string) {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
@@ -1009,7 +1013,7 @@ export function routineService(
         secretId: secret.id,
         targetType: "routine",
         targetId: routineId,
-        configPath: "webhookSecret",
+        configPath: routineWebhookSecretConfigPath(secret.id),
       });
 
       return secret;
@@ -1034,7 +1038,7 @@ export function routineService(
       consumerId: trigger.routineId,
       actorType: "system",
       actorId: null,
-      configPath: "webhookSecret",
+      configPath: routineWebhookSecretConfigPath(trigger.secretId),
     });
     return value;
   }
