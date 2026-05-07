@@ -21,6 +21,8 @@ const DEFAULT_OWNER_TAG = "paperclip";
 const DEFAULT_VERSION_STAGE = "AWSCURRENT";
 const DEFAULT_DELETE_RECOVERY_WINDOW_DAYS = 30;
 const AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS = 30_000;
+const AWS_CREDENTIAL_CACHE_TTL_MS = 5 * 60_000;
+const AWS_CREDENTIAL_EXPIRATION_SKEW_MS = 60_000;
 const AWS_RUNTIME_CREDENTIAL_WARNING =
   "AWS bootstrap credentials must be available to the Paperclip server runtime through the AWS SDK default credential provider chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials.";
 const AWS_CREDENTIAL_CUSTODY_WARNING =
@@ -67,7 +69,16 @@ interface AwsCredentialIdentity {
   sessionToken?: string;
 }
 
+interface CachedAwsCredentialProvider {
+  client: S3Client;
+  credentials: AwsCredentialIdentity | null;
+  expiresAt: number;
+  pending: Promise<AwsCredentialIdentity> | null;
+}
+
 type ManagedSecretNamespaceContext = Pick<SecretProviderWriteContext, "companyId" | "secretKey">;
+
+const awsCredentialProviders = new Map<string, CachedAwsCredentialProvider>();
 
 interface AwsSecretsManagerGateway {
   createSecret(input: {
@@ -192,23 +203,46 @@ function signAwsSecretsManagerRequest(input: {
 }
 
 async function loadAwsCredentials(region: string): Promise<AwsCredentialIdentity> {
-  const client = new S3Client({ region });
-  try {
-    const credentialSource = client.config.credentials;
+  const now = Date.now();
+  let cached = awsCredentialProviders.get(region);
+  if (!cached) {
+    cached = {
+      client: new S3Client({ region }),
+      credentials: null,
+      expiresAt: 0,
+      pending: null,
+    };
+    awsCredentialProviders.set(region, cached);
+  }
+
+  if (cached.credentials && cached.expiresAt > now) return cached.credentials;
+  if (cached.pending) return cached.pending;
+
+  cached.pending = (async () => {
+    const credentialSource = cached.client.config.credentials;
     const credentials = typeof credentialSource === "function"
       ? await credentialSource()
       : await credentialSource;
     if (!credentials?.accessKeyId || !credentials.secretAccessKey) {
       throw new Error("AWS SDK default credential provider chain did not return credentials");
     }
-    return {
+    const resolved = {
       accessKeyId: credentials.accessKeyId,
       secretAccessKey: credentials.secretAccessKey,
       sessionToken: credentials.sessionToken,
     };
-  } finally {
-    client.destroy();
-  }
+    const expiration = (credentials as { expiration?: Date }).expiration?.getTime();
+    cached.credentials = resolved;
+    cached.expiresAt = Math.min(
+      now + AWS_CREDENTIAL_CACHE_TTL_MS,
+      expiration ? expiration - AWS_CREDENTIAL_EXPIRATION_SKEW_MS : Number.POSITIVE_INFINITY,
+    );
+    return resolved;
+  })().finally(() => {
+    if (cached) cached.pending = null;
+  });
+
+  return cached.pending;
 }
 
 function configuredAwsSecretsManagerDescriptor() {
