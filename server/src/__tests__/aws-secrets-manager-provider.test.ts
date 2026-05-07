@@ -215,6 +215,7 @@ describe("awsSecretsManagerProvider", () => {
     expect(headers.authorization).toContain("/us-east-1/secretsmanager/aws4_request");
     expect(headers.authorization).toContain("SignedHeaders=");
     expect(headers.authorization).toContain("Signature=");
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("creates new AWS secret versions against a namespace-valid existing secret reference", async () => {

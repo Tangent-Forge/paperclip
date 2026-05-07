@@ -265,6 +265,47 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows.find((row) => row.id === second.id)?.isDefault).toBe(true);
   });
 
+  it("does not set a disabled provider vault as default", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const vault = await svc.createProviderConfig(companyId, {
+      provider: "local_encrypted",
+      displayName: "Local disabled",
+      config: {},
+    });
+
+    await svc.disableProviderConfig(vault.id);
+    await expect(svc.setDefaultProviderConfig(vault.id)).rejects.toThrow(
+      /ready or warning/i,
+    );
+  });
+
+  it("hides soft-deleted secrets and allows name/key reuse", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secretName = `reusable-${randomUUID()}`;
+    const secret = await svc.create(companyId, {
+      name: secretName,
+      key: "reusable-key",
+      provider: "local_encrypted",
+      value: "first-value",
+    });
+
+    await svc.update(secret.id, { status: "deleted" });
+    const listed = await svc.list(companyId);
+    const recreated = await svc.create(companyId, {
+      name: secretName,
+      key: "reusable-key",
+      provider: "local_encrypted",
+      value: "second-value",
+    });
+
+    expect(listed.map((row) => row.id)).not.toContain(secret.id);
+    expect(recreated.id).not.toBe(secret.id);
+    expect(recreated.name).toBe(secretName);
+    expect(recreated.key).toBe("reusable-key");
+  });
+
   it("rejects provider vaults from another company when creating a secret", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");
@@ -852,6 +893,63 @@ describeEmbeddedPostgres("secretService", () => {
       mode: "delete",
       providerConfig: null,
     });
+    expect(persisted).toBeNull();
+  });
+
+  it("removes DB rows even when the attached provider vault is disabled", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const vault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS disabled later",
+      config: {
+        region: "us-east-1",
+        namespace: "prod",
+      },
+    });
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/openai-api-key";
+    const secret = await db
+      .insert(companySecrets)
+      .values({
+        companyId,
+        key: "openai-api-key",
+        name: "OpenAI API Key",
+        provider: "aws_secrets_manager",
+        providerConfigId: vault.id,
+        managedMode: "paperclip_managed",
+        externalRef,
+        latestVersion: 1,
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    await db.insert(companySecretVersions).values({
+      secretId: secret.id,
+      version: 1,
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      providerVersionRef: "aws-version-1",
+      status: "current",
+    });
+    await svc.disableProviderConfig(vault.id);
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+
+    await expect(svc.remove(secret.id)).resolves.toMatchObject({ id: secret.id });
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.id, secret.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(deleteSpy).not.toHaveBeenCalled();
     expect(persisted).toBeNull();
   });
 

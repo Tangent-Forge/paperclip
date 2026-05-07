@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -237,7 +237,11 @@ export function secretService(db: Db) {
     return db
       .select()
       .from(companySecrets)
-      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.name, name)))
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        eq(companySecrets.name, name),
+        ne(companySecrets.status, "deleted"),
+      ))
       .then((rows) => rows[0] ?? null);
   }
 
@@ -990,19 +994,33 @@ export function secretService(db: Db) {
         throw unprocessable("Only ready or warning provider vaults can be default");
       }
       return db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(companySecretProviderConfigs)
+          .where(eq(companySecretProviderConfigs.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) return null;
+        if (current.status === "coming_soon" || current.status === "disabled") {
+          throw unprocessable("Only ready or warning provider vaults can be default");
+        }
         await tx
           .update(companySecretProviderConfigs)
           .set({ isDefault: false, updatedAt: new Date() })
           .where(and(
-            eq(companySecretProviderConfigs.companyId, existing.companyId),
-            eq(companySecretProviderConfigs.provider, existing.provider),
+            eq(companySecretProviderConfigs.companyId, current.companyId),
+            eq(companySecretProviderConfigs.provider, current.provider),
           ));
-        return tx
+        const updated = await tx
           .update(companySecretProviderConfigs)
           .set({ isDefault: true, updatedAt: new Date() })
-          .where(eq(companySecretProviderConfigs.id, id))
+          .where(and(
+            eq(companySecretProviderConfigs.id, id),
+            notInArray(companySecretProviderConfigs.status, ["coming_soon", "disabled"]),
+          ))
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (!updated) throw unprocessable("Only ready or warning provider vaults can be default");
+        return updated;
       });
     },
 
@@ -1043,7 +1061,7 @@ export function secretService(db: Db) {
         db
           .select()
           .from(companySecrets)
-          .where(eq(companySecrets.companyId, companyId))
+          .where(and(eq(companySecrets.companyId, companyId), ne(companySecrets.status, "deleted")))
           .orderBy(desc(companySecrets.createdAt)),
         db
           .select({
@@ -1418,7 +1436,11 @@ export function secretService(db: Db) {
       const duplicateKey = await db
         .select()
         .from(companySecrets)
-        .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.key, key)))
+        .where(and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.key, key),
+          ne(companySecrets.status, "deleted"),
+        ))
         .then((rows) => rows[0] ?? null);
       if (duplicateKey) throw conflict(`Secret key already exists: ${key}`);
 
@@ -1619,7 +1641,11 @@ export function secretService(db: Db) {
         const duplicateKey = await db
           .select()
           .from(companySecrets)
-          .where(and(eq(companySecrets.companyId, secret.companyId), eq(companySecrets.key, nextKey)))
+          .where(and(
+            eq(companySecrets.companyId, secret.companyId),
+            eq(companySecrets.key, nextKey),
+            ne(companySecrets.status, "deleted"),
+          ))
           .then((rows) => rows[0] ?? null);
         if (duplicateKey && duplicateKey.id !== secret.id) {
           throw conflict(`Secret key already exists: ${nextKey}`);
@@ -1658,8 +1684,8 @@ export function secretService(db: Db) {
       return db
         .update(companySecrets)
         .set({
-          key: nextKey,
-          name: patch.name ?? secret.name,
+          key: deleting ? `${secret.key}__deleted__${secret.id}` : nextKey,
+          name: deleting ? `${secret.name}__deleted__${secret.id}` : patch.name ?? secret.name,
           status: patch.status ?? secret.status,
           providerConfigId:
             patch.providerConfigId === undefined ? secret.providerConfigId : patch.providerConfigId,
@@ -1830,23 +1856,35 @@ export function secretService(db: Db) {
       const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
       const providerId = secret.provider as SecretProvider;
       const provider = getSecretProvider(providerId);
-      const providerConfig = await getSelectableRuntimeProviderConfig({
-        companyId: secret.companyId,
-        provider: providerId,
-        providerConfigId: secret.providerConfigId,
-      });
-      await provider.deleteOrArchive({
-        material: versionRow?.material as Record<string, unknown> | undefined,
-        externalRef: secret.externalRef,
-        providerConfig,
-        context: {
-          companyId: secret.companyId,
-          secretKey: secret.key,
-          secretName: secret.name,
-          version: secret.latestVersion,
-        },
-        mode: "delete",
-      });
+      await db
+        .update(companySecrets)
+        .set({
+          status: "deleted",
+          deletedAt: secret.deletedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(companySecrets.id, secretId));
+      const providerConfig = secret.providerConfigId
+        ? await getProviderConfigById(secret.providerConfigId)
+        : null;
+      const providerRuntimeConfig =
+        providerConfig && providerConfig.status !== "disabled" && providerConfig.status !== "coming_soon"
+          ? toProviderVaultRuntimeConfig(providerConfig)
+          : null;
+      if (!secret.providerConfigId || providerRuntimeConfig) {
+        await provider.deleteOrArchive({
+          material: versionRow?.material as Record<string, unknown> | undefined,
+          externalRef: secret.externalRef,
+          providerConfig: providerRuntimeConfig,
+          context: {
+            companyId: secret.companyId,
+            secretKey: secret.key,
+            secretName: secret.name,
+            version: secret.latestVersion,
+          },
+          mode: "delete",
+        });
+      }
       await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
       return secret;
     },
