@@ -48,12 +48,17 @@
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
-    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
+    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
+    "lint:css": "stylelint 'ui/**/*.css'",
+    "lint:css:fix": "stylelint 'ui/**/*.css' --fix"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "axe-core": "^4.11.4",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "stylelint": "^17.11.0",
+    "stylelint-config-standard": "^40.0.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },
