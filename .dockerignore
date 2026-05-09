@@ -2,9 +2,13 @@
 .github
 .paperclip
 .pnpm-store
+.claude
+.env.local
 node_modules
 **/node_modules
 coverage
 data
 tmp
 *.log
+.vscode
+.editorconfig
