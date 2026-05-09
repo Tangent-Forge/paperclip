@@ -177,6 +177,7 @@ export async function testEnvironment(
       const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
+      args.push("--skip-trust");
       if (sandbox) {
         args.push("--sandbox");
       } else {

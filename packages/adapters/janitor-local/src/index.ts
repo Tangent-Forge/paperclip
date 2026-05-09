@@ -4,9 +4,9 @@ export const type = "janitor_local";
 export const label = "Janitor (local WSL)";
 
 export const models = [
-  { id: "ollama/qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B (local)" },
-  { id: "ollama/llama3.2:3b", label: "Llama 3.2 3B (local)" },
-  { id: "ollama/mistral:7b", label: "Mistral 7B (local)" },
+  { id: "ollama/qwen3:4b", label: "Qwen 3 4B (local)" },
+  { id: "ollama/llama3.2:latest", label: "Llama 3.2 Latest (local)" },
+  { id: "ollama/nomic-embed-text:latest", label: "Nomic Embed Text (local)" },
   { id: "lmo:auto", label: "LMO auto-route (via tangent-forge-lmo)" },
 ];
 
@@ -15,7 +15,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     key: "cheap",
     label: "Local-only",
     description: "Use the smallest local model for routine cleanup tasks. Zero cloud API cost.",
-    adapterConfig: { model: "ollama/llama3.2:3b" },
+    adapterConfig: { model: "ollama/qwen3:4b" },
     source: "adapter_default",
   },
 ];

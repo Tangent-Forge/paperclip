@@ -50,9 +50,12 @@ fi
 echo ""
 echo "--- .env files NOT in .gitignore ---"
 find "$CWD" -maxdepth 5 -name ".env" -not -name ".env.example" -type f 2>/dev/null | while read -r envfile; do
-  repo=$(git -C "$(dirname "$envfile")" rev-parse --show-toplevel 2>/dev/null || echo "")
+  envdir=$(dirname "$envfile")
+  repo=$(git -C "$envdir" rev-parse --show-toplevel 2>/dev/null || echo "")
   if [[ -n "$repo" ]]; then
-    gitignored=$(git -C "$repo" check-ignore -q "$envfile" 2>/dev/null && echo "yes" || echo "NO")
+    # Get path relative to repo root for check-ignore to work correctly
+    relpath=$(python3 -c "import os; print(os.path.relpath('$envfile', '$repo'))" 2>/dev/null || echo "$envfile")
+    gitignored=$(git -C "$repo" check-ignore -q "$relpath" 2>/dev/null && echo "yes" || echo "NO")
     echo "  $envfile  [gitignored: $gitignored]"
   else
     echo "  $envfile  [not in a git repo]"

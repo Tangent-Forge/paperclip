@@ -1,4 +1,5 @@
-@import "tailwindcss";
+@import url("tailwindcss");
+
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
@@ -44,95 +45,96 @@
 
 :root {
   color-scheme: light;
+
   --radius: 0;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-  --chip-match-title-bg: oklch(0.97 0.02 265);
-  --chip-match-title-fg: oklch(0.4 0.13 265);
-  --chip-match-title-border: oklch(0.85 0.05 265);
-  --chip-match-comment-bg: oklch(0.97 0.02 145);
-  --chip-match-comment-fg: oklch(0.4 0.10 145);
-  --chip-match-comment-border: oklch(0.85 0.05 145);
-  --chip-match-document-bg: oklch(0.97 0.02 295);
-  --chip-match-document-fg: oklch(0.4 0.10 295);
-  --chip-match-document-border: oklch(0.85 0.05 295);
+  --background: oklch(100% 0 0deg);
+  --foreground: oklch(14.5% 0 0deg);
+  --card: oklch(100% 0 0deg);
+  --card-foreground: oklch(14.5% 0 0deg);
+  --popover: oklch(100% 0 0deg);
+  --popover-foreground: oklch(14.5% 0 0deg);
+  --primary: oklch(20.5% 0 0deg);
+  --primary-foreground: oklch(98.5% 0 0deg);
+  --secondary: oklch(97% 0 0deg);
+  --secondary-foreground: oklch(20.5% 0 0deg);
+  --muted: oklch(97% 0 0deg);
+  --muted-foreground: oklch(55.6% 0 0deg);
+  --accent: oklch(97% 0 0deg);
+  --accent-foreground: oklch(20.5% 0 0deg);
+  --destructive: oklch(57.7% 0.245 27.325deg);
+  --destructive-foreground: oklch(57.7% 0.245 27.325deg);
+  --border: oklch(92.2% 0 0deg);
+  --input: oklch(92.2% 0 0deg);
+  --ring: oklch(70.8% 0 0deg);
+  --chart-1: oklch(64.6% 0.222 41.116deg);
+  --chart-2: oklch(60% 0.118 184.704deg);
+  --chart-3: oklch(39.8% 0.07 227.392deg);
+  --chart-4: oklch(82.8% 0.189 84.429deg);
+  --chart-5: oklch(76.9% 0.188 70.08deg);
+  --sidebar: oklch(98.5% 0 0deg);
+  --sidebar-foreground: oklch(14.5% 0 0deg);
+  --sidebar-primary: oklch(20.5% 0 0deg);
+  --sidebar-primary-foreground: oklch(98.5% 0 0deg);
+  --sidebar-accent: oklch(97% 0 0deg);
+  --sidebar-accent-foreground: oklch(20.5% 0 0deg);
+  --sidebar-border: oklch(92.2% 0 0deg);
+  --sidebar-ring: oklch(70.8% 0 0deg);
+  --chip-match-title-bg: oklch(97% 0.02 265deg);
+  --chip-match-title-fg: oklch(40% 0.13 265deg);
+  --chip-match-title-border: oklch(85% 0.05 265deg);
+  --chip-match-comment-bg: oklch(97% 0.02 145deg);
+  --chip-match-comment-fg: oklch(40% 0.10 145deg);
+  --chip-match-comment-border: oklch(85% 0.05 145deg);
+  --chip-match-document-bg: oklch(97% 0.02 295deg);
+  --chip-match-document-fg: oklch(40% 0.10 295deg);
+  --chip-match-document-border: oklch(85% 0.05 295deg);
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
-  --chip-match-title-bg: oklch(0.27 0.04 265 / 0.5);
-  --chip-match-title-fg: oklch(0.78 0.10 265);
-  --chip-match-title-border: oklch(0.4 0.06 265);
-  --chip-match-comment-bg: oklch(0.27 0.04 145 / 0.5);
-  --chip-match-comment-fg: oklch(0.78 0.08 145);
-  --chip-match-comment-border: oklch(0.4 0.05 145);
-  --chip-match-document-bg: oklch(0.27 0.04 295 / 0.5);
-  --chip-match-document-fg: oklch(0.78 0.08 295);
-  --chip-match-document-border: oklch(0.4 0.05 295);
+  --background: oklch(14.5% 0 0deg);
+  --foreground: oklch(98.5% 0 0deg);
+  --card: oklch(20.5% 0 0deg);
+  --card-foreground: oklch(98.5% 0 0deg);
+  --popover: oklch(20.5% 0 0deg);
+  --popover-foreground: oklch(98.5% 0 0deg);
+  --primary: oklch(98.5% 0 0deg);
+  --primary-foreground: oklch(20.5% 0 0deg);
+  --secondary: oklch(26.9% 0 0deg);
+  --secondary-foreground: oklch(98.5% 0 0deg);
+  --muted: oklch(26.9% 0 0deg);
+  --muted-foreground: oklch(70.8% 0 0deg);
+  --accent: oklch(26.9% 0 0deg);
+  --accent-foreground: oklch(98.5% 0 0deg);
+  --destructive: oklch(63.7% 0.237 25.331deg);
+  --destructive-foreground: oklch(98.5% 0 0deg);
+  --border: oklch(26.9% 0 0deg);
+  --input: oklch(26.9% 0 0deg);
+  --ring: oklch(43.9% 0 0deg);
+  --chart-1: oklch(48.8% 0.243 264.376deg);
+  --chart-2: oklch(69.6% 0.17 162.48deg);
+  --chart-3: oklch(76.9% 0.188 70.08deg);
+  --chart-4: oklch(62.7% 0.265 303.9deg);
+  --chart-5: oklch(64.5% 0.246 16.439deg);
+  --sidebar: oklch(14.5% 0 0deg);
+  --sidebar-foreground: oklch(98.5% 0 0deg);
+  --sidebar-primary: oklch(48.8% 0.243 264.376deg);
+  --sidebar-primary-foreground: oklch(98.5% 0 0deg);
+  --sidebar-accent: oklch(26.9% 0 0deg);
+  --sidebar-accent-foreground: oklch(98.5% 0 0deg);
+  --sidebar-border: oklch(26.9% 0 0deg);
+  --sidebar-ring: oklch(43.9% 0 0deg);
+  --chip-match-title-bg: oklch(27% 0.04 265deg / 50%);
+  --chip-match-title-fg: oklch(78% 0.10 265deg);
+  --chip-match-title-border: oklch(40% 0.06 265deg);
+  --chip-match-comment-bg: oklch(27% 0.04 145deg / 50%);
+  --chip-match-comment-fg: oklch(78% 0.08 145deg);
+  --chip-match-comment-border: oklch(40% 0.05 145deg);
+  --chip-match-document-bg: oklch(27% 0.04 295deg / 50%);
+  --chip-match-document-fg: oklch(78% 0.08 295deg);
+  --chip-match-document-border: oklch(40% 0.05 295deg);
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
@@ -142,20 +144,25 @@
   * {
     @apply border-border;
   }
+
   html {
     height: 100%;
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
   }
+
   body {
     @apply bg-background text-foreground antialiased;
+
     height: 100%;
     overflow: hidden;
   }
+
   h1,
   h2,
   h3 {
     text-wrap: balance;
   }
+
   /* Prevent double-tap-to-zoom on interactive elements for mobile */
   a,
   button,
@@ -166,6 +173,7 @@
   label {
     touch-action: manipulation;
   }
+
   /* Let font-mono (utilities layer) override for monospace editors */
   .paperclip-mdxeditor [class*="_placeholder_"],
   .paperclip-mdxeditor-content {
@@ -199,16 +207,16 @@
 }
 
 .dark *::-webkit-scrollbar-track {
-  background: oklch(0.205 0 0);
+  background: oklch(20.5% 0 0deg);
 }
 
 .dark *::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0);
+  background: oklch(40% 0 0deg);
   border-radius: 4px;
 }
 
 .dark *::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.5 0 0);
+  background: oklch(50% 0 0deg);
 }
 
 /* Auto-hide scrollbar: thin, stable gutter with the thumb visible only on hover */
@@ -223,38 +231,48 @@
   height: 8px !important;
   background: transparent !important;
 }
+
 .scrollbar-auto-hide::-webkit-scrollbar-track {
   background: transparent !important;
 }
+
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
 }
+
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover {
-  scrollbar-color: oklch(0.7 0 0) transparent;
+  scrollbar-color: oklch(70% 0 0deg) transparent;
 }
+
 .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
   background: transparent !important;
 }
+
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.7 0 0) !important;
+  background: oklch(70% 0 0deg) !important;
   border-radius: 999px !important;
 }
+
 .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.6 0 0) !important;
+  background: oklch(60% 0 0deg) !important;
 }
+
 /* Dark mode scrollbar on hover */
 .dark .scrollbar-auto-hide:hover {
-  scrollbar-color: oklch(0.4 0 0) transparent;
+  scrollbar-color: oklch(40% 0 0deg) transparent;
 }
+
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-track {
   background: transparent !important;
 }
+
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb {
-  background: oklch(0.4 0 0) !important;
+  background: oklch(40% 0 0deg) !important;
 }
+
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
-  background: oklch(0.5 0 0) !important;
+  background: oklch(50% 0 0deg) !important;
 }
 
 /* Expandable dialog transition for max-width changes */
@@ -269,11 +287,13 @@
     transform: translateY(-14px) scale(0.985);
     filter: blur(4px);
   }
+
   62% {
     opacity: 1;
     transform: translateY(2px) scale(1.002);
     filter: blur(0);
   }
+
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -286,6 +306,7 @@
     box-shadow: inset 2px 0 0 var(--primary);
     background-color: color-mix(in oklab, var(--accent) 55%, transparent);
   }
+
   100% {
     box-shadow: inset 0 0 0 transparent;
     background-color: transparent;
@@ -342,6 +363,7 @@
 .shimmer-text {
   --shimmer-base: var(--foreground);
   --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+
   background: linear-gradient(
     90deg,
     var(--shimmer-base) 0%,
@@ -351,7 +373,7 @@
     var(--shimmer-base) 100%
   );
   background-size: 200% 100%;
-  -webkit-background-clip: text;
+  background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: shimmer-text-slide 2.5s linear infinite;
@@ -392,13 +414,14 @@
   --accentBgHover: color-mix(in oklab, var(--accent) 80%, var(--background));
   --accentBgActive: color-mix(in oklab, var(--accent) 72%, var(--background));
   --accentText: var(--accent-foreground);
+
   font-family: inherit;
   font-size: 1rem;
   line-height: 1.5;
   color: var(--foreground);
 }
 
-@media (min-width: 768px) {
+@media (width >= 768px) {
   .paperclip-mdxeditor-scope,
   .paperclip-mdxeditor {
     font-size: 0.875rem;
@@ -463,14 +486,14 @@
   margin-top: 1.1em;
 }
 
-.paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
+.paperclip-mdxeditor-content a:not(.paperclip-mention-chip, .paperclip-project-mention-chip) {
   color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
 }
 
-.dark .paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
+.dark .paperclip-mdxeditor-content a:not(.paperclip-mention-chip, .paperclip-project-mention-chip) {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
 
@@ -521,14 +544,14 @@ a.paperclip-mention-chip[data-mention-kind="project"]::before {
 a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   width: 0.75rem;
   height: 0.75rem;
-  background-color: currentColor;
-  -webkit-mask-image: var(--paperclip-mention-icon-mask);
+  background-color: currentcolor;
   mask-image: var(--paperclip-mention-icon-mask);
-  -webkit-mask-position: center;
+  mask-image: var(--paperclip-mention-icon-mask);
   mask-position: center;
-  -webkit-mask-repeat: no-repeat;
+  mask-position: center;
   mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-size: contain;
   mask-size: contain;
 }
 
@@ -971,6 +994,7 @@ span.paperclip-project-mention-chip {
   font-size: 0.75rem;
   line-height: 1.25;
   text-decoration: none;
+
   /* Center the pill on the surrounding x-height so it sits on the text line
      instead of hanging below it. inline-flex baseline alignment is unreliable
      across browsers, so use vertical-align: middle for a predictable result.
