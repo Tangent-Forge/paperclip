@@ -483,6 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
       adapterKey: "codex",
       hostApiToken: env.PAPERCLIP_API_KEY,
+      hostApiUrl: "http://127.0.0.1:3100",
       onLog,
     });
     if (paperclipBridge) {
