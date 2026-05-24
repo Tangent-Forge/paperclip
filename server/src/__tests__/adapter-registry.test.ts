@@ -218,14 +218,14 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
+        adapterConfig: expect.objectContaining({ model: "anthropic/claude-3-5-sonnet-20240620" }),
         source: "adapter_default",
       }),
     ]);
     await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
+        adapterConfig: expect.objectContaining({ model: "sonnet-4.6" }),
         source: "adapter_default",
       }),
     ]);
