@@ -5,7 +5,7 @@ export const label = "OpenCode (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g opencode-ai";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "anthropic/claude-3-5-sonnet-latest";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -16,10 +16,11 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
+  { id: "anthropic/claude-haiku-4-5", label: "anthropic/claude-haiku-4-5" },
+  { id: "anthropic/claude-opus-4-0", label: "anthropic/claude-opus-4-0" },
   { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -28,8 +29,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use OpenCode's known Codex mini model as the budget lane.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
-      variant: "low",
+      model: DEFAULT_OPENCODE_LOCAL_MODEL,
     },
     source: "adapter_default",
   },
