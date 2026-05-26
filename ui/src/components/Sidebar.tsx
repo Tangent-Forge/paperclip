@@ -86,8 +86,8 @@ export function Sidebar() {
             label="Inbox"
             icon={Inbox}
             badge={inboxBadge.inbox}
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
+            badgeTone={inboxBadge.failedRuns > 0 || inboxBadge.attentionRequired > 0 || inboxBadge.alerts > 0 ? "danger" : "default"}
+            alert={inboxBadge.failedRuns > 0 || inboxBadge.attentionRequired > 0 || inboxBadge.alerts > 0}
           />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}

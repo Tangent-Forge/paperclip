@@ -80,6 +80,7 @@ export interface InboxBadgeData {
   failedRuns: number;
   joinRequests: number;
   mineIssues: number;
+  attentionRequired: number;
   alerts: number;
 }
 
@@ -1237,6 +1238,9 @@ export function computeInboxBadgeData({
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const attentionRequired = mineIssues.filter(
+    (issue) => issue.status === "blocked" && issue.blockerAttention?.state === "needs_attention",
+  ).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
@@ -1248,7 +1252,7 @@ export function computeInboxBadgeData({
     monthBudgetCents > 0 &&
     monthUtilizationPercent >= 80 &&
     !dismissedAlerts.has("alert:budget");
-  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
+  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert) + Number(attentionRequired > 0);
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
@@ -1257,6 +1261,7 @@ export function computeInboxBadgeData({
     failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
+    attentionRequired,
     alerts,
   };
 }

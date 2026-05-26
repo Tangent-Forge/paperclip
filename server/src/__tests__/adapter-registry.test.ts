@@ -218,7 +218,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "anthropic/claude-3-5-sonnet-20240620" }),
+        adapterConfig: expect.objectContaining({ model: "google/gemini-3.5-flash" }),
         source: "adapter_default",
       }),
     ]);

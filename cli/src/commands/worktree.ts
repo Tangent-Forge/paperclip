@@ -702,7 +702,10 @@ export function copyGitHooksToWorktreeGitDir(cwd: string): CopiedGitHooksResult 
   const workspace = detectGitWorkspaceInfo(cwd);
   if (!workspace) return null;
 
-  const sourceHooksPath = workspace.hooksPath;
+  let sourceHooksPath = workspace.hooksPath;
+  if (!existsSync(sourceHooksPath)) {
+    sourceHooksPath = path.resolve(workspace.commonDir, "hooks");
+  }
   const targetHooksPath = path.resolve(workspace.gitDir, "hooks");
 
   if (sourceHooksPath === targetHooksPath) {

@@ -102,6 +102,33 @@ export function IssueRow({
       Blocked by parked work
     </span>
   ) : null;
+  const blockedAttentionIndicator =
+    issue.status === "blocked" && issue.blockerAttention?.state && issue.blockerAttention.state !== "none" ? (
+      <span
+        data-testid="issue-row-blocked-attention"
+        className={cn(
+          "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+          issue.blockerAttention.state === "needs_attention"
+            ? "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300"
+            : issue.blockerAttention.state === "stalled"
+              ? "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+              : "border-cyan-500/60 bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
+        )}
+        title={
+          issue.blockerAttention.state === "needs_attention"
+            ? "Blocked chain needs an explicit operator decision."
+            : issue.blockerAttention.state === "stalled"
+              ? "Blocked chain is stalled and needs a human next step."
+              : "Blocked by active work in the chain."
+        }
+      >
+        {issue.blockerAttention.state === "needs_attention"
+          ? "Needs attention"
+          : issue.blockerAttention.state === "stalled"
+            ? "Blocked chain stalled"
+            : "Blocked chain active"}
+      </span>
+    ) : null;
 
   return (
     <Link
@@ -125,6 +152,7 @@ export function IssueRow({
         {productivityReviewIndicator}
         {planningModeIndicator}
         {parkedBlockerIndicator}
+        {blockedAttentionIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
@@ -142,17 +170,18 @@ export function IssueRow({
           {desktopMetaLeading ?? (
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />
-                {productivityReviewIndicator}
-              </span>
-              {checklistStep}
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                {identifier}
-              </span>
-              {planningModeIndicator}
-              {parkedBlockerIndicator}
-            </>
-          )}
+              <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />
+              {productivityReviewIndicator}
+            </span>
+            {checklistStep}
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              {identifier}
+            </span>
+            {planningModeIndicator}
+            {parkedBlockerIndicator}
+            {blockedAttentionIndicator}
+          </>
+        )}
           {mobileMeta ? (
             <>
               <span className="text-xs text-muted-foreground sm:hidden" aria-hidden="true">

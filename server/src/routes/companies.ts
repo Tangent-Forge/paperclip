@@ -6,6 +6,8 @@ import {
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  createGoalSchema,
+  createProjectSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -20,6 +22,8 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  projectService,
+  goalService,
   feedbackService,
   logActivity,
 } from "../services/index.js";
@@ -29,6 +33,8 @@ import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } f
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
   const svc = companyService(db);
+  const projects = projectService(db);
+  const goals = goalService(db);
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
@@ -407,6 +413,62 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  // Alias for project creation to support agents that think of "boards" as first-class entities.
+  router.post("/:companyId/boards", validate(createProjectSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const project = await projects.create(companyId, req.body);
+    const actor = getActorInfo(req);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.created",
+      entityType: "project",
+      entityId: project.id,
+      details: {
+        name: project.name,
+        isBoardAlias: true,
+      },
+    });
+
+    res.status(201).json(project);
+  });
+
+  // Alias for goal creation (level=team) to support agents that think of "departments" as first-class entities.
+  router.post("/:companyId/departments", validate(createGoalSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    // Force level to "team" for departments
+    const goalData = {
+      ...req.body,
+      level: "team",
+    };
+
+    const goal = await goals.create(companyId, goalData);
+    const actor = getActorInfo(req);
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "goal.created",
+      entityType: "goal",
+      entityId: goal.id,
+      details: {
+        title: goal.title,
+        isDepartmentAlias: true,
+      },
+    });
+
+    res.status(201).json(goal);
   });
 
   return router;

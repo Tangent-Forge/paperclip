@@ -236,7 +236,9 @@ function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) 
 }
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
-  return isStrandedIssueRecoveryOriginKind(issue.originKind);
+  return isStrandedIssueRecoveryOriginKind(issue.originKind) ||
+    issue.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation ||
+    issue.originKind === RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 }
 
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {

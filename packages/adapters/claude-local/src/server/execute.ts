@@ -728,7 +728,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
-        hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
+        hasTerminalResult: ({ stdout }) =>
+          stdout.includes('"type":"result"') || parseClaudeStreamJson(stdout).resultJson !== null,
       },
     });
 

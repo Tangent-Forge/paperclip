@@ -5,7 +5,7 @@ export const label = "OpenCode (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g opencode-ai";
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "anthropic/claude-3-5-sonnet-20240620";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "google/gemini-3.5-flash";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;

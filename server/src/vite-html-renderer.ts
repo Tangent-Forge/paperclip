@@ -8,36 +8,15 @@ export interface ViteWatcherHost {
     on?: (event: ViteWatcherEvent, listener: (file: string) => void) => unknown;
     off?: (event: ViteWatcherEvent, listener: (file: string) => void) => unknown;
   };
+  transformIndexHtml(url: string, html: string): Promise<string>;
 }
 
 export interface CachedViteHtmlRenderer {
-  render(_url: string): Promise<string>;
+  render(url: string): Promise<string>;
   dispose(): void;
 }
 
 const WATCHER_EVENTS: ViteWatcherEvent[] = ["add", "change", "unlink"];
-const MAIN_ENTRY_TAG = '<script type="module" src="/src/main.tsx"></script>';
-const VITE_CLIENT_TAG = '<script type="module" src="/@vite/client"></script>';
-const REACT_REFRESH_PREAMBLE = `<script type="module">
-import { injectIntoGlobalHook } from "/@react-refresh";
-injectIntoGlobalHook(window);
-window.$RefreshReg$ = () => {};
-window.$RefreshSig$ = () => (type) => type;
-</script>`;
-
-function injectViteDevPreamble(html: string): string {
-  let injectedHtml = html;
-  if (!injectedHtml.includes('"/@react-refresh"') && !injectedHtml.includes("'/@react-refresh'")) {
-    injectedHtml = injectedHtml.includes("</head>")
-      ? injectedHtml.replace("</head>", `    ${REACT_REFRESH_PREAMBLE}\n  </head>`)
-      : `${REACT_REFRESH_PREAMBLE}\n${injectedHtml}`;
-  }
-  if (injectedHtml.includes(VITE_CLIENT_TAG)) return injectedHtml;
-  if (injectedHtml.includes(MAIN_ENTRY_TAG)) {
-    return injectedHtml.replace(MAIN_ENTRY_TAG, `${VITE_CLIENT_TAG}\n    ${MAIN_ENTRY_TAG}`);
-  }
-  return injectedHtml.replace("</body>", `    ${VITE_CLIENT_TAG}\n  </body>`);
-}
 
 export function createCachedViteHtmlRenderer(opts: {
   vite: ViteWatcherHost;
@@ -52,7 +31,7 @@ export function createCachedViteHtmlRenderer(opts: {
   function loadHtml(): string {
     if (cachedHtml === null) {
       const rawTemplate = fs.readFileSync(templatePath, "utf-8");
-      cachedHtml = injectViteDevPreamble(brandHtml(rawTemplate));
+      cachedHtml = brandHtml(rawTemplate);
     }
     return cachedHtml;
   }
@@ -73,8 +52,9 @@ export function createCachedViteHtmlRenderer(opts: {
   }
 
   return {
-    render(): Promise<string> {
-      return Promise.resolve(loadHtml());
+    async render(url: string): Promise<string> {
+      const html = loadHtml();
+      return await opts.vite.transformIndexHtml(url, html);
     },
 
     dispose(): void {

@@ -116,6 +116,12 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as providerRouterExecute,
+  getConfigSchema as getProviderRouterConfigSchema,
+  sessionCodec as providerRouterSessionCodec,
+  testEnvironment as providerRouterTestEnvironment,
+} from "@paperclipai/provider-router-local/server";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -414,6 +420,18 @@ const builtinFallbacks = new Map<string, ServerAdapterModule>();
 // external.  Persisted across reloads via the same disabled-adapters store.
 const pausedOverrides = new Set<string>();
 
+const providerRouterLocalAdapter: ServerAdapterModule = {
+  type: "provider_router_local",
+  execute: providerRouterExecute,
+  testEnvironment: providerRouterTestEnvironment,
+  sessionCodec: providerRouterSessionCodec,
+  sessionManagement: getAdapterSessionManagement("provider_router_local") ?? undefined,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getConfigSchema: getProviderRouterConfigSchema,
+};
+
 const janitorLocalAdapter: ServerAdapterModule = {
   type: "janitor_local",
   execute: janitorExecute,
@@ -437,6 +455,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    providerRouterLocalAdapter,
     janitorLocalAdapter,
     processAdapter,
     httpAdapter,

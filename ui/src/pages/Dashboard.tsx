@@ -34,6 +34,16 @@ function getRecentIssues(issues: Issue[]): Issue[] {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
+function getRunFailureSpike(runActivity: { date: string; failed: number }[] | undefined): boolean {
+  if (!runActivity || runActivity.length < 2) return false;
+  const sorted = [...runActivity].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const latest = sorted.at(-1);
+  const prior = sorted.slice(Math.max(0, sorted.length - 8), -1);
+  if (!latest || prior.length === 0) return false;
+  const averagePriorFailures = prior.reduce((sum, day) => sum + day.failed, 0) / prior.length;
+  return latest.failed >= 5 && (averagePriorFailures === 0 ? latest.failed >= 5 : latest.failed >= averagePriorFailures * 2);
+}
+
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
@@ -90,6 +100,25 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const blockedAttentionIssues = useMemo(
+    () => recentIssues.filter((issue) => issue.status === "blocked" && issue.blockerAttention?.state === "needs_attention"),
+    [recentIssues],
+  );
+  const blockedChainIssues = useMemo(
+    () => recentIssues.filter((issue) => issue.status === "blocked" && issue.blockerAttention?.state && issue.blockerAttention.state !== "none"),
+    [recentIssues],
+  );
+  const silentRunIssues = useMemo(
+    () =>
+      recentIssues.filter(
+        (issue) =>
+          issue.title.toLowerCase().includes("review silent active run") &&
+          issue.status !== "done" &&
+          issue.status !== "cancelled",
+      ),
+    [recentIssues],
+  );
+  const runFailureSpike = useMemo(() => getRunFailureSpike(data?.runActivity), [data?.runActivity]);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -192,6 +221,8 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const showOperationalBanner =
+    blockedAttentionIssues.length > 0 || blockedChainIssues.length > 0 || silentRunIssues.length > 0 || runFailureSpike;
 
   return (
     <div className="space-y-6">
@@ -211,6 +242,34 @@ export function Dashboard() {
           >
             Create one here
           </button>
+        </div>
+      )}
+
+      {showOperationalBanner && (
+        <div className="rounded-xl border border-amber-500/20 bg-[linear-gradient(180deg,rgba(255,162,72,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-amber-50">Operational attention</span>
+            {blockedAttentionIssues.length > 0 ? (
+              <span className="rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-100">
+                {blockedAttentionIssues.length} attention required
+              </span>
+            ) : null}
+            {silentRunIssues.length > 0 ? (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-100">
+                {silentRunIssues.length} silent run{silentRunIssues.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+            {blockedChainIssues.length > 0 ? (
+              <span className="rounded-full border border-cyan-500/30 bg-cyan-500/15 px-2 py-0.5 text-xs font-medium text-cyan-100">
+                {blockedChainIssues.length} blocked chain{blockedChainIssues.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+            {runFailureSpike ? (
+              <span className="rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-100">
+                run failure spike
+              </span>
+            ) : null}
+          </div>
         </div>
       )}
 
