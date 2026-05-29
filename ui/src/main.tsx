@@ -24,7 +24,17 @@ initPluginBridge(React, ReactDOM);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js");
+    if (import.meta.env.PROD) {
+      navigator.serviceWorker.register("/sw.js");
+      return;
+    }
+
+    // Dev mode should not run with cached SW responses.
+    // Remove previously installed workers to avoid stale asset/layout behavior.
+    void navigator.serviceWorker
+      .getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .catch(() => {});
   });
 }
 
