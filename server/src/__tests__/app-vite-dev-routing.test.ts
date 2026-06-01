@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Request } from "express";
-import { shouldServeViteDevHtml } from "../app.js";
+import { shouldServeStaticSpaHtml, shouldServeViteDevHtml } from "../app.js";
 
 function createRequest(path: string, acceptsResult: string | false): Request {
   return {
@@ -23,5 +23,22 @@ describe("shouldServeViteDevHtml", () => {
   it("skips vite asset requests", () => {
     expect(shouldServeViteDevHtml(createRequest("/@vite/client", "html"))).toBe(false);
     expect(shouldServeViteDevHtml(createRequest("/src/main.tsx", "html"))).toBe(false);
+    expect(shouldServeViteDevHtml(createRequest("/index-Ca4u1jjO.css", "html"))).toBe(false);
+  });
+});
+
+describe("shouldServeStaticSpaHtml", () => {
+  it("serves HTML shell for SPA routes", () => {
+    expect(shouldServeStaticSpaHtml("/")).toBe(true);
+    expect(shouldServeStaticSpaHtml("/issues/abc")).toBe(true);
+  });
+
+  it("does not serve the HTML shell for missing asset-like paths", () => {
+    expect(shouldServeStaticSpaHtml("/assets/missing.css")).toBe(false);
+    expect(shouldServeStaticSpaHtml("/ui/assets/index-Ca4u1jjO.css")).toBe(false);
+    expect(shouldServeStaticSpaHtml("/index-Ca4u1jjO.css")).toBe(false);
+    expect(shouldServeStaticSpaHtml("/index-Dhu3o6v0.js")).toBe(false);
+    expect(shouldServeStaticSpaHtml("/sw.js")).toBe(false);
+    expect(shouldServeStaticSpaHtml("/site.webmanifest")).toBe(false);
   });
 });
