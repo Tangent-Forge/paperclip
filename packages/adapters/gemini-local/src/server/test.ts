@@ -120,21 +120,18 @@ export async function testEnvironment(
     });
   }
 
-  const configGeminiApiKey = env.GEMINI_API_KEY;
-  const hostGeminiApiKey = targetIsRemote ? undefined : process.env.GEMINI_API_KEY;
+  // Use GOOGLE_API_KEY as canonical key (GEMINI_API_KEY is deprecated)
   const configGoogleApiKey = env.GOOGLE_API_KEY;
   const hostGoogleApiKey = targetIsRemote ? undefined : process.env.GOOGLE_API_KEY;
   const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || (!targetIsRemote && process.env.GOOGLE_GENAI_USE_GCA === "true");
   if (
-    isNonEmpty(configGeminiApiKey) ||
-    isNonEmpty(hostGeminiApiKey) ||
     isNonEmpty(configGoogleApiKey) ||
     isNonEmpty(hostGoogleApiKey) ||
     hasGca
   ) {
     const source = hasGca
       ? "Google account login (GCA)"
-      : isNonEmpty(configGeminiApiKey) || isNonEmpty(configGoogleApiKey)
+      : isNonEmpty(configGoogleApiKey)
         ? "adapter config env"
         : "server environment";
     checks.push({
@@ -148,7 +145,7 @@ export async function testEnvironment(
       code: "gemini_api_key_missing",
       level: "info",
       message: "No explicit API key detected. Gemini CLI may still authenticate via `gemini auth login` (OAuth).",
-      hint: "If the hello probe fails with an auth error, set GEMINI_API_KEY or GOOGLE_API_KEY in adapter env, or run `gemini auth login`.",
+      hint: "If the hello probe fails with an auth error, set GOOGLE_API_KEY in adapter env, or run `gemini auth login`.",
     });
   }
 
@@ -250,7 +247,7 @@ export async function testEnvironment(
           level: "warn",
           message: "Gemini CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Run `gemini auth` or configure GEMINI_API_KEY / GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
+          hint: "Run `gemini auth` or configure GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
         });
       } else {
         checks.push({
