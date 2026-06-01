@@ -80,6 +80,7 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+const STATIC_ASSET_EXTENSION_RE = /\.(?:avif|bmp|css|gif|ico|jpe?g|js|json|map|mjs|png|svg|txt|webmanifest|webp|woff2?)$/i;
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
@@ -92,7 +93,16 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   const pathname = req.path;
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
+  if (isStaticAssetRequestPath(pathname)) return false;
   return req.accepts(["html"]) === "html";
+}
+
+export function shouldServeStaticSpaHtml(pathname: string): boolean {
+  return !isStaticAssetRequestPath(pathname);
+}
+
+function isStaticAssetRequestPath(pathname: string): boolean {
+  return pathname.includes("/assets/") || STATIC_ASSET_EXTENSION_RE.test(pathname);
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -342,7 +352,7 @@ export async function createApp(
       // instead. The index.html response itself is no-cache so a subsequent
       // deploy's updated asset hashes are picked up on next load.
       app.get(/.*/, (req, res) => {
-        if (req.path.startsWith("/assets/")) {
+        if (!shouldServeStaticSpaHtml(req.path)) {
           res.status(404).end();
           return;
         }

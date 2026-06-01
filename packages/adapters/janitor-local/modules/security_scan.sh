@@ -5,6 +5,8 @@
 # Detects exposed secrets, world-readable key files, and committed .env files.
 
 set -euo pipefail
+# Ignore SIGPIPE (exit 141) from head/pipe truncation inside loops
+trap '' PIPE
 CWD="${JANITOR_CWD:-$(pwd)}"
 EXTRA_PATTERNS="${JANITOR_EXTRA_PATTERNS:-}"
 
@@ -38,7 +40,7 @@ for pattern in "${PATTERNS[@]}"; do
     -E "$pattern" "$CWD" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     echo "  [MATCH] Pattern: $pattern"
-    echo "$matches" | head -5 | while read -r line; do echo "    $line"; done
+    echo "$matches" | head -5 | while read -r line; do echo "    $line"; done 2>/dev/null || true
     FOUND_SECRETS=$((FOUND_SECRETS + 1))
   fi
 done

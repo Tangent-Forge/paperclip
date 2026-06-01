@@ -13,37 +13,37 @@ echo "Root: $CWD | Max age: ${MAX_AGE} days | Dry-run: $DRY_RUN"
 echo ""
 
 echo "--- Large files (>50MB) ---"
-find "$CWD" -maxdepth 8 -type f -size +50M 2>/dev/null \
+{ find "$CWD" -maxdepth 8 -type f -size +50M 2>/dev/null \
   ! -path "*/node_modules/.cache/*" \
   ! -path "*/.git/objects/*" \
   | while read -r f; do
     size=$(du -sh "$f" 2>/dev/null | cut -f1)
     echo "  $size  $f"
-  done
+  done; } || true
 
 echo ""
 echo "--- Build artifact dirs ---"
 for pattern in "dist" "build" ".next" "out" "__pycache__" ".pytest_cache" ".mypy_cache" ".ruff_cache"; do
-  find "$CWD" -maxdepth 6 -type d -name "$pattern" 2>/dev/null | while read -r d; do
+  { find "$CWD" -maxdepth 6 -type d -name "$pattern" 2>/dev/null | while read -r d; do
     size=$(du -sh "$d" 2>/dev/null | cut -f1)
     echo "  [$pattern] $size  $d"
-  done
+  done; } || true
 done
 
 echo ""
 echo "--- Log files older than ${MAX_AGE} days ---"
-find "$CWD" -maxdepth 6 -name "*.log" -type f -mtime "+${MAX_AGE}" 2>/dev/null | while read -r f; do
+{ find "$CWD" -maxdepth 6 -name "*.log" -type f -mtime "+${MAX_AGE}" 2>/dev/null | while read -r f; do
   size=$(du -sh "$f" 2>/dev/null | cut -f1)
   echo "  $size  $f"
-done
+done; } || true
 
 echo ""
 echo "--- Stale .zip/.tar.gz archives ---"
-find "$CWD" -maxdepth 5 \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.tgz" \) -type f 2>/dev/null | while read -r f; do
+{ find "$CWD" -maxdepth 5 \( -name "*.zip" -o -name "*.tar.gz" -o -name "*.tgz" \) -type f 2>/dev/null | while read -r f; do
   size=$(du -sh "$f" 2>/dev/null | cut -f1)
   mtime=$(stat -c "%y" "$f" 2>/dev/null | cut -d' ' -f1)
   echo "  $size  $f  (modified: $mtime)"
-done
+done; } || true
 
 echo ""
 if [[ "$DRY_RUN" == "0" ]]; then
