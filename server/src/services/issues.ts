@@ -319,9 +319,9 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // Terminal statuses (done, cancelled) resolve the dependency: cancelled means
+    // "we're not doing this" and should not permanently block dependents.
+    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -2659,7 +2659,11 @@ export function issueService(db: Db) {
           return {
             ...candidate,
             blockerIssueIds: blockers.map((blocker) => blocker.blockerIssueId),
-            allBlockersDone: blockers.length > 0 && blockers.every((blocker) => blocker.blockerStatus === "done"),
+            allBlockersDone:
+            blockers.length > 0 &&
+            blockers.every(
+              (blocker) => blocker.blockerStatus === "done" || blocker.blockerStatus === "cancelled",
+            ),
           };
         })
         .filter((candidate) => candidate.allBlockersDone)

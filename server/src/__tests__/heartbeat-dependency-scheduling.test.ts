@@ -390,6 +390,86 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("circuit-breaker: stops inserting skipped wakeups after many repeated blocked attempts", async () => {
+    // Regression: a stale blocker used to produce 16k+ skipped 'issue_dependencies_blocked'
+    // rows per day because nothing capped the per-(agent,issue) insert rate. Once the
+    // threshold is reached within the rolling window, further skipped inserts are
+    // suppressed and a single warn is logged.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "high" },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Fire many wakeups beyond the breaker threshold (20). Each call should
+    // return null (skipped) but only the first ~20 should write rows.
+    const totalAttempts = 30;
+    for (let i = 0; i < totalAttempts; i += 1) {
+      const result = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: blockedIssueId, attempt: i },
+        contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(result).toBeNull();
+    }
+
+    const skippedCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+          eq(agentWakeupRequests.status, "skipped"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+
+    // We attempted 30 times. The breaker trips at 20 within the 60-min window,
+    // so no more than 20 rows should have landed (the gate may also short-circuit
+    // for other reasons, so we assert ≤ threshold, not strict equality).
+    expect(skippedCount).toBeLessThanOrEqual(20);
+    expect(skippedCount).toBeGreaterThan(0);
+    expect(skippedCount).toBeLessThan(totalAttempts);
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
