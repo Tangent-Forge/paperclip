@@ -5,9 +5,9 @@
 # Detects exposed secrets, world-readable key files, and committed .env files.
 
 set -euo pipefail
-# Ignore SIGPIPE (exit 141) from head/pipe truncation inside grep|head|while loops
-# (e.g. when `head -5` closes early). Real errors still fail loudly via the
-# explicit checks inside the loops.
+# Ignore SIGPIPE (exit 141) from head/pipe truncation inside grep|head|while
+# loops (e.g. when `head -5` closes early on large match sets). Real errors
+# still fail loudly via the explicit checks inside the loops.
 trap '' PIPE
 CWD="${JANITOR_CWD:-$(pwd)}"
 EXTRA_PATTERNS="${JANITOR_EXTRA_PATTERNS:-}"
@@ -42,7 +42,10 @@ for pattern in "${PATTERNS[@]}"; do
     -E "$pattern" "$CWD" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     echo "  [MATCH] Pattern: $pattern"
-    echo "$matches" | head -5 | while read -r line; do echo "    $line"; done 2>/dev/null || true
+    # Wrap the truncated head pipeline in { ...; } || true so SIGPIPE (141)
+    # from `head -5` closing the pipe while `echo`/grep upstream is still
+    # writing does not propagate through `pipefail` and abort the script.
+    { echo "$matches" | head -5 | while read -r line; do echo "    $line"; done; } 2>/dev/null || true
     FOUND_SECRETS=$((FOUND_SECRETS + 1))
   fi
 done
