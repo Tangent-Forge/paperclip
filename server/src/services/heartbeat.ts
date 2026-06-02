@@ -183,6 +183,19 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// Circuit breaker for dependency-blocked wakeup storms. After THRESHOLD skipped
+// "issue_dependencies_blocked" rows for the same (agent, issue) within WINDOW,
+// stop inserting further rows until the window slides. Prevents the 16k/day
+// loop pattern where a stale blocker permanently traps an issue and automation
+// timers keep waking it.
+const DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_THRESHOLD = 20;
+const DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MINUTES = 60;
+const DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MS =
+  DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MINUTES * 60 * 1000;
+// Dedup set for circuit-breaker warn logs, keyed by `${agentId}:${issueId}`.
+// Process-local; resets on restart, which is fine — restart implies operator
+// attention and the new window restarts logging anyway.
+const dependencyBlockedBreakerLogged = new Set<string>();
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -8814,6 +8827,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+          // Circuit breaker: if the same (agent, issue, reason) has already been
+          // skipped many times recently, suppress further insertions. Prevents the
+          // event-storm pattern where automation timers keep waking a permanently
+          // blocked issue. After DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_THRESHOLD
+          // skipped rows in DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MINUTES,
+          // we stop writing rows until the window slides past or the blocker resolves.
+          const windowStart = new Date(Date.now() - DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MS);
+          const recentCount = await tx
+            .select({ n: sql<number>`COUNT(*)::int` })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+                eq(agentWakeupRequests.status, "skipped"),
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+                gt(agentWakeupRequests.createdAt, windowStart),
+              ),
+            )
+            .then((rows) => rows[0]?.n ?? 0);
+
+          if (recentCount >= DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_THRESHOLD) {
+            // Log only on first suppression per (agent, issue) pair within this
+            // process, so a sustained loop doesn't generate thousands of warns.
+            const breakerKey = `${agentId}:${issueId}`;
+            if (!dependencyBlockedBreakerLogged.has(breakerKey)) {
+              dependencyBlockedBreakerLogged.add(breakerKey);
+              logger.warn({
+                msg: "dependency_blocked_circuit_breaker_tripped",
+                agentId,
+                issueId,
+                recentCount,
+                windowMinutes: DEPENDENCY_BLOCKED_CIRCUIT_BREAKER_WINDOW_MINUTES,
+                unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              });
+            }
+            return { kind: "skipped" as const };
+          }
+
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
