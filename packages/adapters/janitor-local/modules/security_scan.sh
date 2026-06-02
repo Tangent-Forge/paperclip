@@ -5,6 +5,10 @@
 # Detects exposed secrets, world-readable key files, and committed .env files.
 
 set -euo pipefail
+# Ignore SIGPIPE (exit 141) from head/pipe truncation inside grep|head|while loops
+# (e.g. when `head -5` closes early). Real errors still fail loudly via the
+# explicit checks inside the loops.
+trap '' PIPE
 CWD="${JANITOR_CWD:-$(pwd)}"
 EXTRA_PATTERNS="${JANITOR_EXTRA_PATTERNS:-}"
 
@@ -38,7 +42,7 @@ for pattern in "${PATTERNS[@]}"; do
     -E "$pattern" "$CWD" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     echo "  [MATCH] Pattern: $pattern"
-    echo "$matches" | head -5 | while read -r line; do echo "    $line"; done
+    echo "$matches" | head -5 | while read -r line; do echo "    $line"; done 2>/dev/null || true
     FOUND_SECRETS=$((FOUND_SECRETS + 1))
   fi
 done
@@ -49,7 +53,7 @@ fi
 
 echo ""
 echo "--- .env files NOT in .gitignore ---"
-find "$CWD" -maxdepth 5 -name ".env" -not -name ".env.example" -type f 2>/dev/null | while read -r envfile; do
+{ find "$CWD" -maxdepth 5 -name ".env" -not -name ".env.example" -type f 2>/dev/null | while read -r envfile; do
   envdir=$(dirname "$envfile")
   repo=$(git -C "$envdir" rev-parse --show-toplevel 2>/dev/null || echo "")
   if [[ -n "$repo" ]]; then
@@ -60,18 +64,18 @@ find "$CWD" -maxdepth 5 -name ".env" -not -name ".env.example" -type f 2>/dev/nu
   else
     echo "  $envfile  [not in a git repo]"
   fi
-done
+done; } || true
 
 echo ""
 echo "--- World-readable private key files ---"
-find "$CWD" -maxdepth 6 \( -name "*.pem" -o -name "*.key" -o -name "id_rsa" -o -name "id_ed25519" \) \
+{ find "$CWD" -maxdepth 6 \( -name "*.pem" -o -name "*.key" -o -name "id_rsa" -o -name "id_ed25519" \) \
   -type f 2>/dev/null | while read -r f; do
   perms=$(stat -c "%a" "$f" 2>/dev/null)
   echo "  $f  [permissions: $perms]"
   if [[ "$perms" == *"4" || "$perms" == *"6" || "$perms" == *"7" ]]; then
     echo "    ⚠ World-readable or group-readable — recommend chmod 600"
   fi
-done
+done; } || true
 
 echo ""
 echo "=== Security Scan Complete | Secrets found: $FOUND_SECRETS ==="
