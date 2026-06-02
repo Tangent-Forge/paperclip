@@ -2968,7 +2968,19 @@ export function issueService(db: Db) {
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
         const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+        // Local-only origin kinds get a "PCL" prefix so agents can distinguish
+        // them from real Linear issue identifiers (which use the company prefix,
+        // e.g. "TAN"). Without this, agents escalate on hallucinated TAN-NNN IDs.
+        // See TAN-133.
+        const LOCAL_ORIGIN_KINDS = new Set([
+          "stranded_issue_recovery",
+          "harness_liveness_escalation",
+          "issue_graph_liveness_escalation",
+          "agent_health_escalation",
+          "dependency_blocked_escalation",
+        ]);
+        const issuePrefix = LOCAL_ORIGIN_KINDS.has(issueData.originKind ?? "") ? "PCL" : company.issuePrefix;
+        const identifier = `${issuePrefix}-${issueNumber}`;
 
         const values = {
           ...issueData,
