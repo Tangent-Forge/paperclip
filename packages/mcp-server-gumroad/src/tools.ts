@@ -37,7 +37,7 @@ export const gumroadTools: GumroadToolDefinition[] = [
     "gumroad_get_sales_summary",
     "Get a summary of sales for the last N days (default 30). Returns per-product breakdown.",
     {
-      days: z.number().int().min(1).max(365).default(30).describe("Number of days to look back"),
+      days: z.coerce.number().int().min(1).max(365).default(30).describe("Number of days to look back"),
     },
     async (input, client) => {
       const after = new Date(Date.now() - input.days * 86_400_000).toISOString();
@@ -62,9 +62,9 @@ export const gumroadTools: GumroadToolDefinition[] = [
     {
       product_id: z.string().min(1).describe("Gumroad product ID"),
       name: z.string().min(1).describe("Offer code name (e.g. LAUNCH20)"),
-      amount_off: z.number().int().min(1).describe("Amount off in cents or percent"),
+      amount_off: z.coerce.number().int().min(1).describe("Amount off in cents or percent"),
       offer_type: z.enum(["cents", "percent"]).describe("Whether amount_off is cents or percent"),
-      max_purchase_count: z.number().int().min(1).optional().describe("Max redemptions (null = unlimited)"),
+      max_purchase_count: z.coerce.number().int().min(1).optional().describe("Max redemptions (null = unlimited)"),
     },
     async (input, client) => {
       return client.post(`/products/${input.product_id}/offer_codes`, {
@@ -209,7 +209,7 @@ export const gumroadTools: GumroadToolDefinition[] = [
     "Refund a sale. Requires Paperclip approval gate before execution.",
     {
       sale_id: z.string().min(1).describe("Gumroad sale ID to refund"),
-      amount_cents: z.number().int().min(1).optional().describe("Partial refund amount in cents (omit for full refund)"),
+      amount_cents: z.coerce.number().int().min(1).optional().describe("Partial refund amount in cents (omit for full refund)"),
     },
     async (input, client) => {
       const body: Record<string, unknown> = {};
@@ -297,7 +297,7 @@ export const gumroadTools: GumroadToolDefinition[] = [
     {
       product_id: z.string().min(1).describe("Gumroad product ID"),
       offer_code_id: z.string().min(1).describe("Offer code ID to update"),
-      max_purchase_count: z.number().int().min(1).describe("New maximum number of redemptions"),
+      max_purchase_count: z.coerce.number().int().min(1).describe("New maximum number of redemptions"),
     },
     async (input, client) => {
       return client.put(`/products/${input.product_id}/offer_codes/${input.offer_code_id}`, {
