@@ -107,9 +107,9 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
   return false;
 }
 
-async function isHolderAlive(lockDir: string): Promise<boolean> {
+async function isHolderAlive(lockFile: string): Promise<boolean> {
   try {
-    const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
+    const raw = await fs.readFile(lockFile, "utf8");
     const owner = JSON.parse(raw) as { pid?: unknown };
     const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
     if (pid === null) {
@@ -123,36 +123,35 @@ async function isHolderAlive(lockDir: string): Promise<boolean> {
       return false;
     }
   } catch {
-    // owner.json missing or unreadable — treat as stale.
+    // lockFile missing or unreadable — treat as stale.
     return false;
   }
 }
 
-async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockFile: string): Promise<() => Promise<void>> {
   const deadline = Date.now() + 30_000;
   while (true) {
     try {
-      await fs.mkdir(lockDir);
       await fs.writeFile(
-        path.join(lockDir, "owner.json"),
+        lockFile,
         `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
-        "utf8",
+        { flag: "wx", encoding: "utf8" },
       );
       return async () => {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        await fs.rm(lockFile, { force: true }).catch(() => undefined);
       };
     } catch (error) {
       const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
       if (code !== "EEXIST") throw error;
       // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
-      // the lockDir would otherwise persist forever and stall restores. Mirror
+      // the lockFile would otherwise persist forever and stall restores. Mirror
       // the materializePaperclipSkillCopy lock pattern — remove and retry.
-      if (!(await isHolderAlive(lockDir))) {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+      if (!(await isHolderAlive(lockFile))) {
+        await fs.rm(lockFile, { force: true }).catch(() => undefined);
         continue;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for workspace restore lock at ${lockDir}`);
+        throw new Error(`Timed out waiting for workspace restore lock at ${lockFile}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
