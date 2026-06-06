@@ -215,21 +215,26 @@ export function validatePluginRuntimeQuery(
   const statement = statements[0]!;
   assertNoBannedSql(statement);
   const normalized = normaliseSql(statement);
-  if (!normalized.startsWith("select ") && !normalized.startsWith("with ")) {
-    throw new Error("ctx.db.query only allows SELECT statements");
-  }
-  if (/\b(insert|update|delete|alter|create|drop|truncate)\b/.test(normalized)) {
-    throw new Error("ctx.db.query cannot contain mutation or DDL keywords");
-  }
 
-  const allowedCoreReadTables = new Set(coreReadTables);
-  for (const ref of extractQualifiedRefs(statement)) {
-    if (ref.schema === namespace) continue;
-    if (ref.schema === "public") {
-      assertAllowedPublicRead(ref, allowedCoreReadTables);
-      continue;
+  if (normalized.startsWith("select ") || normalized.startsWith("with ")) {
+    if (/\b(insert|update|delete|alter|create|drop|truncate)\b/.test(normalized)) {
+      throw new Error("ctx.db.query cannot contain mutation or DDL keywords");
     }
-    throw new Error(`ctx.db.query cannot read schema "${ref.schema}"`);
+
+    const allowedCoreReadTables = new Set(coreReadTables);
+    for (const ref of extractQualifiedRefs(statement)) {
+      if (ref.schema === namespace) continue;
+      if (ref.schema === "public") {
+        assertAllowedPublicRead(ref, allowedCoreReadTables);
+        continue;
+      }
+      throw new Error(`ctx.db.query cannot read schema "${ref.schema}"`);
+    }
+  } else if (/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
+    // A mutating query is validated the same way as execute to protect security boundaries
+    validatePluginRuntimeExecute(query, namespace);
+  } else {
+    throw new Error("ctx.db.query only allows SELECT, INSERT, UPDATE, or DELETE statements");
   }
 }
 
