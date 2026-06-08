@@ -71,6 +71,27 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/namespace/i);
   });
 
+  it("allows mutating queries (INSERT/UPDATE/DELETE) if they target the plugin namespace", () => {
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "INSERT INTO plugin_test.rows (id, name) VALUES ($1, $2) RETURNING id",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "UPDATE plugin_test.rows SET name = $1 WHERE id = $2 RETURNING *",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "INSERT INTO public.issues (id, title) VALUES ($1, $2)",
+        "plugin_test",
+      )
+    ).toThrow(/namespace/i);
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
