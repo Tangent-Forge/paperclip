@@ -58,3 +58,8 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# local runtime artifacts
+paperclip.db
+.sources/
+10_references/
