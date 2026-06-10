@@ -138,6 +138,13 @@ async function createTarballFromDirectory(input: {
   const excludeArgs = ["._*", ...(input.exclude ?? [])].flatMap((entry) => ["--exclude", entry]);
   await execTar([
     "-c",
+    // Prevent macOS bsdtar from embedding LIBARCHIVE.xattr.* PAX extended
+    // headers for extended attributes (e.g. com.apple.provenance). GNU tar on
+    // Linux does not recognise these proprietary headers and fails extraction
+    // with "This does not look like a tar archive". COPYFILE_DISABLE=1 (set in
+    // execTar) already suppresses AppleDouble ._* sidecar files; --no-xattrs
+    // additionally suppresses the inline PAX xattr entries.
+    "--no-xattrs",
     ...(input.followSymlinks ? ["-h"] : []),
     "-f",
     input.archivePath,
@@ -267,7 +274,7 @@ export async function prepareSandboxManagedRuntime(input: {
     const preservedNames = new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
     const findPreserveArgs = [...preservedNames].map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
     await input.client.run(
-      `sh -lc ${shellQuote(
+      `sh -c ${shellQuote(
         `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
           `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${findPreserveArgs} -exec rm -rf -- {} + && ` +
           `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
@@ -289,7 +296,7 @@ export async function prepareSandboxManagedRuntime(input: {
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes));
       await input.client.run(
-        `sh -lc ${shellQuote(
+        `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
             `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
             `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
@@ -314,7 +321,7 @@ export async function prepareSandboxManagedRuntime(input: {
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
         await input.client.run(
-          `sh -lc ${shellQuote(
+          `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
               `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
               `${tarExcludeFlags(input.workspaceExclude)} .`,
