@@ -1,0 +1,11 @@
+name = "email-ingest-router"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+workers_dev = false
+
+[vars]
+PAPERCLIP_TRIGGER_URL = "https://paperclip-webhook.tf-hub.dev/api/routine-triggers/public/8e4af92cfd6cf0b2e52bc524/fire"
+DEFAULT_AGENT = "hermes"
+
+[observability]
+enabled = true

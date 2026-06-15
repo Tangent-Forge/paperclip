@@ -482,8 +482,7 @@ describe("runChildProcess", () => {
           "const { spawn } = require('node:child_process');",
           "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] });",
           "process.stdout.write(`descendant:${child.pid}\\n`);",
-          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
-          "setTimeout(() => process.exit(0), 25);",
+          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`, () => process.exit(0));",
         ].join(" "),
       ],
       {

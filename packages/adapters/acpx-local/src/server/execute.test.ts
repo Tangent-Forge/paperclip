@@ -665,14 +665,17 @@ describe("acpx_local runtime skill isolation", () => {
           return buildRuntime() as never;
         },
       });
+      const stateDir = path.join(root, `state-${agent}`);
       const result = await execute({
         runId: `run-${agent}`,
         agent: { id: `agent-${agent}`, companyId: "company-1" },
         runtime: {},
         config:
           agent === "custom"
-            ? { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, `state-${agent}`), cwd }
-            : { agent, stateDir: path.join(root, `state-${agent}`), cwd },
+            ? { agent, agentCommand: "node ./fake-acp.js", stateDir, cwd }
+            : agent === "codex"
+              ? { agent, stateDir, cwd, env: { CODEX_HOME: path.join(root, "codex-home") } }
+              : { agent, stateDir, cwd },
         context: { paperclipWorkspace: { cwd } },
         onLog: async () => {},
         onMeta: async () => {},
@@ -693,7 +696,7 @@ describe("acpx_local runtime skill isolation", () => {
     await fs.mkdir(cwd, { recursive: true });
 
     await runExecutor(
-      { agent: "codex", stateDir, cwd },
+      { agent: "codex", stateDir, cwd, env: { CODEX_HOME: path.join(root, "codex-home") } },
       { context: { paperclipWorkspace: { cwd } } },
     );
 
