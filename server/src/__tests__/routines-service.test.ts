@@ -1588,6 +1588,40 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.status).toBe("issue_created");
   });
 
+  it("deduplicates duplicate webhook POSTs using dispatch fingerprint when idempotency-key is omitted", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    const payload = { event: "error.created" };
+    const first = await svc.firePublicTrigger(trigger.publicId!, { payload });
+    const second = await svc.firePublicTrigger(trigger.publicId!, { payload });
+
+    expect(first.id).toBe(second.id);
+    expect(first.source).toBe("webhook");
+    expect(second.source).toBe("webhook");
+    expect(first.linkedIssueId).toBeTruthy();
+    expect(first.linkedIssueId).toBe(second.linkedIssueId);
+
+    const routineRunsRows = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(routineRunsRows).toHaveLength(1);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(1);
+  });
+
   it("suppresses scheduled ticks while the routine project is paused, then resumes when unpaused", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const { trigger } = await svc.createTrigger(

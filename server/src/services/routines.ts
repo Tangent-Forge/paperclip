@@ -1206,13 +1206,16 @@ export function routineService(
       title,
       description,
     });
+    const resolvedIdempotencyKey =
+      input.idempotencyKey
+      ?? (input.source === "webhook" ? `dispatch-fingerprint:${dispatchFingerprint}` : null);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
       );
 
-      if (input.idempotencyKey) {
+      if (resolvedIdempotencyKey) {
         const existing = await txDb
           .select()
           .from(routineRuns)
@@ -1221,7 +1224,7 @@ export function routineService(
               eq(routineRuns.companyId, input.routine.companyId),
               eq(routineRuns.routineId, input.routine.id),
               eq(routineRuns.source, input.source),
-              eq(routineRuns.idempotencyKey, input.idempotencyKey),
+              eq(routineRuns.idempotencyKey, resolvedIdempotencyKey),
               input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
             ),
           )
@@ -1242,7 +1245,7 @@ export function routineService(
           source: input.source,
           status: "received",
           triggeredAt,
-          idempotencyKey: input.idempotencyKey ?? null,
+          idempotencyKey: resolvedIdempotencyKey,
           triggerPayload,
           dispatchFingerprint,
           routineRevisionId: input.routine.latestRevisionId,
