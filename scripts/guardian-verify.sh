@@ -7,7 +7,7 @@ set -eo pipefail
 
 PHASE=""
 ENV="staging"
-REPO_DIR="/Users/tangentforge/tangent-forge/repos/paperclip"
+REPO_DIR="/Users/tangentforge/tangent-forge/repos/tf-pc"
 
 usage() {
   echo "Usage: $0 --phase [5|6|7|8] [--env staging|production]"
