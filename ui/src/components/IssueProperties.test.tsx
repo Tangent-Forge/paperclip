@@ -1059,9 +1059,12 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
-    const modelButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("GPT-5.5"));
-    expect(modelButton).not.toBeUndefined();
+    let modelButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      modelButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("GPT-5.5"));
+      expect(modelButton).not.toBeUndefined();
+    });
 
     await act(async () => {
       modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));

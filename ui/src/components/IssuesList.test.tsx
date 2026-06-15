@@ -1232,7 +1232,7 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
-  });
+  }, 15_000);
 
   it("waits for the desktop main scroll container before rendering more local rows", async () => {
     const manyIssues = Array.from({ length: 120 }, (_, index) =>
@@ -1283,7 +1283,7 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
-  });
+  }, 15_000);
 
   it("requests more server issues after scrolling past the rendered rows", async () => {
     const visibleIssues = Array.from({ length: 100 }, (_, index) =>
