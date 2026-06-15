@@ -1061,9 +1061,9 @@ describe("IssueProperties", () => {
 
     let modelButton: HTMLButtonElement | undefined;
     await waitForAssertion(() => {
-      modelButton = Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.includes("GPT-5.5"));
-      expect(modelButton).not.toBeUndefined();
+      const buttons = Array.from(container.querySelectorAll("button"));
+      modelButton = buttons.find((button) => button.textContent?.includes("GPT-5.5"));
+      expect(modelButton).toBeDefined();
     });
 
     await act(async () => {
