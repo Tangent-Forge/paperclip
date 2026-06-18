@@ -40,6 +40,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/janitor-local",
+    "name": "@paperclipai/adapter-janitor-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -97,6 +102,11 @@
   {
     "dir": "packages/mcp-server",
     "name": "@paperclipai/mcp-server",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/mcp-server-gumroad",
+    "name": "@paperclipai/mcp-server-gumroad",
     "publishFromCi": true
   },
   {
