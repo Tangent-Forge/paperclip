@@ -62,3 +62,4 @@ tests/release-smoke/playwright-report/
 # Local runtime agent roster (snapshot on WSL 2026-06-04; copy lives on Mac at ~/wsl-handoff/paperclip-agents-2026-06-04/)
 agents.json
 agents.json.bak
+.gstack/
