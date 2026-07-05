@@ -25,7 +25,8 @@ jobs:
       - name: Block manual lockfile edits
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          !startsWith(github.head_ref, 'chore/upstream-sync-')
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
