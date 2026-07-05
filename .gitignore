@@ -68,3 +68,7 @@ paperclip.db
 .sources/
 10_references/
 .herenow
+
+# Janitor audit reports — may contain secrets from scanned workspaces (TAN-102)
+.janitor/
+**/.janitor/reports/
