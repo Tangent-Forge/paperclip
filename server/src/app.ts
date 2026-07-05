@@ -126,6 +126,21 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+export function resolveStaticUiDistCandidates(appModuleDir: string): string[] {
+  const packagedUiDist = path.resolve(appModuleDir, "../ui-dist");
+  const monorepoUiDist = path.resolve(appModuleDir, "../../ui/dist");
+
+  // When running from TypeScript source (`server/src`), prefer the freshly built
+  // monorepo UI bundle. A stale untracked `server/ui-dist` can otherwise shadow
+  // `ui/dist` and keep serving broken CSS after a local rebuild.
+  if (path.basename(appModuleDir) === "src") {
+    return [monorepoUiDist, packagedUiDist];
+  }
+
+  // Packaged/compiled server builds should keep using the published UI bundle.
+  return [packagedUiDist, monorepoUiDist];
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -339,11 +354,7 @@ export async function createApp(
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
-    // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
-    const candidates = [
-      path.resolve(__dirname, "../ui-dist"),
-      path.resolve(__dirname, "../../ui/dist"),
-    ];
+    const candidates = resolveStaticUiDistCandidates(__dirname);
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)

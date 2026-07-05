@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const execFileAsync = promisify(execFile);
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-export type JanitorModuleId = "workspace" | "storage" | "security" | "performance" | "dev_tools";
+export type JanitorModuleId = "workspace" | "storage" | "security" | "performance" | "dev_tools" | "review_knowledge";
 
 export interface JanitorModuleResult {
   module: JanitorModuleId;
@@ -53,6 +53,12 @@ export const JANITOR_MODULES: JanitorModuleEntry[] = [
     label: "Dev Tools Inventory",
     description: "Lists installed dev tools, their versions, and any known issues",
     scriptName: "dev_tools_inventory.sh",
+  },
+  {
+    id: "review_knowledge",
+    label: "Knowledge Ingest Reviewer",
+    description: "Two-tier review of inbox files for the TF Brain vault — Haiku scoring with sensitive-data heuristics, routes to archive/quarantine/exceptions.",
+    scriptName: "review_knowledge.sh",
   },
 ];
 
