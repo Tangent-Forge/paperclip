@@ -3299,7 +3299,11 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
-  it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
+  it("treats cancelled blockers as resolving the dependency", async () => {
+    // Regression: cancelled blockers used to permanently block dependents,
+    // which combined with automation timers produced an event storm of
+    // 'issue_dependencies_blocked' skipped wakeups. Cancelled means
+    // "we're not doing this" and should resolve the gate like 'done'.
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -3308,6 +3312,31 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       requireBoardApprovalForNewAgents: false,
     });
 
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Cancelled blocker", status: "todo", priority: "medium" },
+      { id: blockedId, companyId, title: "Blocked", status: "todo", priority: "medium" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      isDependencyReady: false,
+    });
+
+    await svc.update(blockerId, { status: "cancelled" });
+
+    await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
+      issueId: blockedId,
+      blockerIssueIds: [blockerId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+  });
+
+  it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
     const sourceIssueId = randomUUID();
     const recoveryIssueId = randomUUID();
     await db.insert(issues).values([
