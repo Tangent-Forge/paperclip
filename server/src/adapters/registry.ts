@@ -143,6 +143,17 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as providerRouterExecute,
+  getConfigSchema as getProviderRouterConfigSchema,
+  sessionCodec as providerRouterSessionCodec,
+  testEnvironment as providerRouterTestEnvironment,
+} from "@paperclipai/provider-router-local/server";
+import {
+  agentConfigurationDoc as providerRouterAgentConfigurationDoc,
+  models as providerRouterModels,
+  modelProfiles as providerRouterModelProfiles,
+} from "@paperclipai/provider-router-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -468,6 +479,21 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const providerRouterLocalAdapter: ServerAdapterModule = {
+  type: "provider_router_local",
+  execute: providerRouterExecute,
+  testEnvironment: providerRouterTestEnvironment,
+  sessionCodec: providerRouterSessionCodec,
+  sessionManagement: getAdapterSessionManagement("provider_router_local") ?? undefined,
+  models: providerRouterModels,
+  modelProfiles: providerRouterModelProfiles,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getConfigSchema: getProviderRouterConfigSchema,
+  agentConfigurationDoc: providerRouterAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -504,6 +530,7 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    providerRouterLocalAdapter,
     janitorLocalAdapter,
     processAdapter,
     httpAdapter,
