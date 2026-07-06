@@ -7,7 +7,14 @@ server/ui-dist/
 ui/storybook-static/
 .env
 .env.backup*
+.env.backup-*
 .env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.env
 *.tsbuildinfo
 drizzle/meta/
 .vite/
