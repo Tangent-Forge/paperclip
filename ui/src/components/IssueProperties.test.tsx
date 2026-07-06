@@ -1059,11 +1059,12 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
+    // Wait for the adapter-models query to resolve so the model options render.
     let modelButton: HTMLButtonElement | undefined;
     await waitForAssertion(() => {
-      const buttons = Array.from(container.querySelectorAll("button"));
-      modelButton = buttons.find((button) => button.textContent?.includes("GPT-5.5"));
-      expect(modelButton).toBeDefined();
+      modelButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("GPT-5.5"));
+      expect(modelButton).not.toBeUndefined();
     });
 
     await act(async () => {

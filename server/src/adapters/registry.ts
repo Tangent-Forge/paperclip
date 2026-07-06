@@ -230,6 +230,56 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+function passHermesCustomProviderThroughExtraArgs(config: Record<string, unknown>): Record<string, unknown> {
+  const provider = typeof config.provider === "string" ? config.provider.trim() : "";
+  if (!provider.startsWith("custom:")) return config;
+
+  const existingExtraArgs = Array.isArray(config.extraArgs)
+    ? config.extraArgs.filter((arg): arg is string => typeof arg === "string")
+    : [];
+  const alreadyHasProviderArg = existingExtraArgs.some((arg) =>
+    arg === "--provider" || arg.startsWith("--provider=")
+  );
+  if (alreadyHasProviderArg) return config;
+
+  return {
+    ...config,
+    extraArgs: [...existingExtraArgs, "--provider", provider],
+  };
+}
+
+function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const result: AdapterModel[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ ...model, id });
+  }
+  return result;
+}
+
+function prefixAdapterModelLabels(models: AdapterModel[], provider: "Claude" | "Codex"): AdapterModel[] {
+  const prefix = `${provider}: `;
+  return models.map((model) => ({
+    ...model,
+    label: model.label.startsWith(prefix) ? model.label : `${prefix}${model.label}`,
+  }));
+}
+
+async function listAcpxModels(): Promise<AdapterModel[]> {
+  const [claude, codex] = await Promise.all([
+    listClaudeModels().catch(() => claudeModels),
+    listCodexModels().catch(() => codexModels),
+  ]);
+  return dedupeAdapterModels([
+    ...acpxModels,
+    ...prefixAdapterModelLabels(claude, "Claude"),
+    ...prefixAdapterModelLabels(codex, "Codex"),
+  ]);
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -449,19 +499,20 @@ const hermesLocalAdapter: ServerAdapterModule = {
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
     };
+    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(patchedConfig);
 
     // Only inject the auth guard into promptTemplate when a custom template already exists.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
     // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      effectivePatchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
     }
 
     const patchedCtx = {
       ...normalizedCtx,
       agent: {
         ...normalizedCtx.agent,
-        adapterConfig: patchedConfig,
+        adapterConfig: effectivePatchedConfig,
       },
     };
 
