@@ -87,7 +87,7 @@ describe("gemini_local environment diagnostics", () => {
         model: "gemini-2.5-pro",
         yolo: true,
         env: {
-          GEMINI_API_KEY: "test-key",
+          GOOGLE_API_KEY: "test-key",
           PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
@@ -121,7 +121,7 @@ describe("gemini_local environment diagnostics", () => {
         command: "gemini",
         cwd,
         env: {
-          GEMINI_API_KEY: "test-key",
+          GOOGLE_API_KEY: "test-key",
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
       },
