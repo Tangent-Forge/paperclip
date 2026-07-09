@@ -140,6 +140,34 @@ If the connection drops, the UI reconnects automatically.
 3. Monitor errors + cancel quickly when needed
 4. Reset sessions when drift appears
 
+## 7.4 Cloud-to-local handoff proof
+
+Use Paperclip issues as the handoff bus when a cloud operator needs local execution without receiving local secrets. The cloud side creates a normal issue assigned to a local adapter agent (`codex_local` or `claude_local`), and Paperclip's assignment wakeup starts the local heartbeat.
+
+The proof helper creates a structured, inert issue:
+
+```sh
+pnpm paperclipai cloud handoff-proof \
+  --company-id <company-id> \
+  --assignee-agent-id <local-agent-id> \
+  --repo /path/or/repo-label \
+  --workspace /path/to/local/workspace \
+  --required-secret-names OPENAI_API_KEY,GITHUB_TOKEN \
+  --callback-issue-id <issue-id-or-identifier>
+```
+
+The generated issue description includes a `paperclip.cloudLocalHandoffProof.v1` JSON payload with:
+
+- `command`: inert local command to run
+- `repo` / `workspace`: intended local workspace context
+- `requiredLocalSecretNames`: secret names only, never values
+- `expectedOutputOrArtifact`: what the local agent should comment or attach
+- `callback`: same issue thread or an explicit issue id/identifier
+
+For workspace routing, pass `--execution-workspace-id` to reuse an existing Paperclip execution workspace, or `--inherit-execution-workspace-from-issue-id` to reuse another issue's workspace context. When the local adapter wakes, it should verify `PAPERCLIP_WORKSPACE_SOURCE` and `PWD`, run the inert command, then comment the command, cwd, exit code, and trimmed output back on the issue. If cross-host sync is needed, local adapters should use the existing remote-managed runtime bridge rather than a separate runner control bus.
+
+Do not expose local secret values to cloud-created handoff issues. The cloud side may reference required secret names so the local adapter can verify configuration on the local host. A self-hosted GitHub runner can be documented as a fallback, but the primary path is Paperclip issue assignment plus local adapter execution.
+
 ## 8. Troubleshooting
 
 If runs fail repeatedly:

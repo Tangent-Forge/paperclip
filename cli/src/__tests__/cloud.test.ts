@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityExportResult } from "@paperclipai/shared";
 import {
   assertDiscoveryCompatible,
+  buildCloudLocalHandoffProofDescription,
+  buildCloudLocalHandoffProofIssuePayload,
+  buildCloudLocalHandoffProofPayload,
   buildBundleFromLocalCompany,
   cloudCommandExitCodes,
   connectCloud,
@@ -90,6 +93,58 @@ describe("cloud CLI helpers", () => {
     expect(resolveDeviceCodeExpiresAt(validExpiry, now)).toBe(Date.parse(validExpiry));
     expect(resolveDeviceCodeExpiresAt(undefined, now)).toBe(now + 15 * 60_000);
     expect(resolveDeviceCodeExpiresAt("not-a-date", now)).toBe(now + 15 * 60_000);
+  });
+
+  it("builds a secret-name-only cloud-to-local handoff proof payload", () => {
+    const payload = buildCloudLocalHandoffProofPayload({
+      command: "printf proof",
+      repo: "paperclip",
+      workspace: "/workspaces/paperclip",
+      requiredSecretNames: "OPENAI_API_KEY, GITHUB_TOKEN, OPENAI_API_KEY",
+      expectedArtifact: "comment with cwd",
+      callbackIssueId: "TAN-1446",
+    });
+
+    expect(payload).toEqual({
+      schema: "paperclip.cloudLocalHandoffProof.v1",
+      command: "printf proof",
+      repo: "paperclip",
+      workspace: "/workspaces/paperclip",
+      requiredLocalSecretNames: ["GITHUB_TOKEN", "OPENAI_API_KEY"],
+      expectedOutputOrArtifact: "comment with cwd",
+      callback: {
+        issueIdOrIdentifier: "TAN-1446",
+        thread: "same_issue",
+      },
+    });
+
+    const description = buildCloudLocalHandoffProofDescription(payload);
+    expect(description).toContain('"requiredLocalSecretNames"');
+    expect(description).toContain('"OPENAI_API_KEY"');
+    expect(description).not.toContain("sk-");
+  });
+
+  it("creates a routed handoff proof issue payload for an existing execution workspace", () => {
+    const issue = buildCloudLocalHandoffProofIssuePayload({
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      executionWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      parentId: "33333333-3333-4333-8333-333333333333",
+      goalId: "44444444-4444-4444-8444-444444444444",
+      title: "Run proof",
+      command: "pwd",
+    });
+
+    expect(issue).toMatchObject({
+      title: "Run proof",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111",
+      executionWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      executionWorkspacePreference: "reuse_existing",
+      parentId: "33333333-3333-4333-8333-333333333333",
+      goalId: "44444444-4444-4444-8444-444444444444",
+    });
+    expect(issue.description).toContain('"command": "pwd"');
   });
 
   it("builds deterministic chunks with validated payload hashes", async () => {

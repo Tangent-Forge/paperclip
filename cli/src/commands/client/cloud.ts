@@ -6,8 +6,10 @@ import pc from "picocolors";
 import type {
   CompanyPortabilityExportResult,
   CompanyPortabilityFileEntry,
+  Issue,
   InstanceExperimentalSettings,
 } from "@paperclipai/shared";
+import { createIssueSchema } from "@paperclipai/shared";
 import { openUrl } from "../../client/board-auth.js";
 import { resolvePaperclipInstanceId } from "../../config/home.js";
 import {
@@ -52,6 +54,23 @@ interface CloudPushOptions extends BaseClientOptions {
   remoteUrl?: string;
   dryRun?: boolean;
   maxEntitiesPerChunk?: number;
+}
+
+interface CloudHandoffProofOptions extends BaseClientOptions {
+  companyId?: string;
+  assigneeAgentId?: string;
+  title?: string;
+  command?: string;
+  repo?: string;
+  workspace?: string;
+  requiredSecretNames?: string;
+  expectedArtifact?: string;
+  callbackIssueId?: string;
+  parentId?: string;
+  goalId?: string;
+  executionWorkspaceId?: string;
+  inheritExecutionWorkspaceFromIssueId?: string;
+  billingCode?: string;
 }
 
 interface UpstreamDiscovery {
@@ -139,6 +158,117 @@ export function registerCloudCommands(program: Command): void {
         }
       }),
   );
+
+  addCommonClientOptions(
+    cloud
+      .command("handoff-proof")
+      .description("Create an inert cloud-to-local handoff proof issue assigned to a local adapter agent")
+      .requiredOption("--assignee-agent-id <id>", "Local adapter agent that should execute the proof")
+      .option("--title <title>", "Issue title", "Cloud-to-local handoff proof")
+      .option("--command <command>", "Inert command for the local agent to run", DEFAULT_HANDOFF_PROOF_COMMAND)
+      .option("--repo <path-or-url>", "Repository or workspace label expected by the handoff", ".")
+      .option("--workspace <path>", "Concrete local workspace path expected by the handoff")
+      .option("--required-secret-names <csv>", "Comma-separated local secret names; names only, never values")
+      .option("--expected-artifact <text>", "Expected output or artifact description", "Issue-thread comment with cwd and command output")
+      .option("--callback-issue-id <id>", "Issue id or identifier where the local result should be posted")
+      .option("--parent-id <id>", "Parent issue ID")
+      .option("--goal-id <id>", "Goal ID")
+      .option("--execution-workspace-id <id>", "Existing execution workspace ID to route into")
+      .option("--inherit-execution-workspace-from-issue-id <id>", "Issue whose execution workspace should be reused")
+      .option("--billing-code <code>", "Billing code")
+      .action(async (opts: CloudHandoffProofOptions) => {
+        try {
+          const issue = await createCloudLocalHandoffProof(opts);
+          printOutput(issue, { json: Boolean(opts.json), label: "Created cloud-to-local handoff proof issue" });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: true },
+  );
+}
+
+export const DEFAULT_HANDOFF_PROOF_COMMAND = `printf 'paperclip-local-handoff-proof cwd=%s\\n' "$PWD"`;
+
+export interface CloudLocalHandoffProofPayload {
+  schema: "paperclip.cloudLocalHandoffProof.v1";
+  command: string;
+  repo: string;
+  workspace: string | null;
+  requiredLocalSecretNames: string[];
+  expectedOutputOrArtifact: string;
+  callback: {
+    issueIdOrIdentifier: string | null;
+    thread: "same_issue";
+  };
+}
+
+export function buildCloudLocalHandoffProofPayload(input: {
+  command?: string;
+  repo?: string;
+  workspace?: string | null;
+  requiredSecretNames?: string | string[];
+  expectedArtifact?: string;
+  callbackIssueId?: string | null;
+}): CloudLocalHandoffProofPayload {
+  return {
+    schema: "paperclip.cloudLocalHandoffProof.v1",
+    command: requiredString(input.command || DEFAULT_HANDOFF_PROOF_COMMAND, "--command"),
+    repo: requiredString(input.repo || ".", "--repo"),
+    workspace: normalizeOptionalString(input.workspace),
+    requiredLocalSecretNames: normalizeSecretNames(input.requiredSecretNames),
+    expectedOutputOrArtifact: requiredString(
+      input.expectedArtifact || "Issue-thread comment with cwd and command output",
+      "--expected-artifact",
+    ),
+    callback: {
+      issueIdOrIdentifier: normalizeOptionalString(input.callbackIssueId),
+      thread: "same_issue",
+    },
+  };
+}
+
+export function buildCloudLocalHandoffProofDescription(payload: CloudLocalHandoffProofPayload): string {
+  return [
+    "Cloud-to-local handoff proof.",
+    "",
+    "A cloud-side operator can create this issue without receiving local secret values. The local adapter assignee should run the inert command in the resolved Paperclip execution workspace, then comment the cwd and output back on this same issue thread.",
+    "",
+    "```json",
+    JSON.stringify(payload, null, 2),
+    "```",
+    "",
+    "Local execution steps:",
+    "1. Confirm `PAPERCLIP_WORKSPACE_SOURCE` and `PWD` point at the intended local workspace.",
+    "2. Run `payload.command` exactly as an inert proof command.",
+    "3. Post the command, cwd, exit code, and trimmed output to the callback issue thread.",
+    "4. Do not request or print local secret values; only verify that any required local secret names are configured when the real handoff needs them.",
+  ].join("\n");
+}
+
+export function buildCloudLocalHandoffProofIssuePayload(input: CloudHandoffProofOptions) {
+  const payload = buildCloudLocalHandoffProofPayload(input);
+  return createIssueSchema.parse({
+    title: input.title || "Cloud-to-local handoff proof",
+    description: buildCloudLocalHandoffProofDescription(payload),
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: input.assigneeAgentId,
+    parentId: input.parentId,
+    goalId: input.goalId,
+    billingCode: input.billingCode,
+    executionWorkspaceId: input.executionWorkspaceId,
+    executionWorkspacePreference: input.executionWorkspaceId ? "reuse_existing" : undefined,
+    inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
+  });
+}
+
+export async function createCloudLocalHandoffProof(opts: CloudHandoffProofOptions): Promise<Issue> {
+  const ctx = resolveCommandContext(opts, { requireCompany: true });
+  const payload = buildCloudLocalHandoffProofIssuePayload(opts);
+  const created = await ctx.api.post<Issue>(apiPath`/api/companies/${ctx.companyId}/issues`, payload);
+  if (!created) throw new Error("Cloud-to-local handoff proof issue creation returned no issue.");
+  return created;
 }
 
 export async function connectCloud(remoteUrl: string, opts: CloudConnectOptions = {}): Promise<CloudConnection> {
@@ -689,6 +819,21 @@ function shortHash(value: string): string {
 function requiredString(value: unknown, label: string): string {
   if (typeof value === "string" && value.trim()) return value.trim();
   throw new Error(`${label} is required.`);
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeSecretNames(value: string | string[] | undefined): string[] {
+  const rawNames = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return Array.from(
+    new Set(
+      rawNames
+        .map((name) => name.trim())
+        .filter(Boolean),
+    ),
+  ).sort();
 }
 
 function numberValue(value: unknown): number {
