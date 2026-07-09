@@ -15,6 +15,15 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  approvalComments,
+  approvals,
+  assets,
+  financeEvents,
+  goals,
+  issueThreadInteractions,
+  joinRequests,
+  projects,
+  routines,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -597,10 +606,45 @@ export function agentService(db: Db) {
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // cost_events and finance_events FK-reference both heartbeat_runs.id and agents.id,
+        // so they must be cleared before deleting heartbeat_runs (and the agent) or the
+        // delete violates the *_heartbeat_run_id_heartbeat_runs_id_fk constraints. These rows
+        // are inherently tied to the runs being deleted, so they are removed, not detached.
+        await tx.delete(costEvents).where(
+          or(
+            eq(costEvents.agentId, id),
+            sql`${costEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          ),
+        );
+        await tx.delete(financeEvents).where(
+          or(
+            eq(financeEvents.agentId, id),
+            sql`${financeEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          ),
+        );
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        // The remaining NO ACTION agent references live on shared/entity records that
+        // outlive the agent (projects, goals, routines) or on audit rows worth preserving;
+        // detach the agent (SET NULL) instead of deleting the record. All columns are
+        // nullable. SET NULL / CASCADE FKs elsewhere are handled by Postgres automatically.
+        await tx.update(projects).set({ leadAgentId: null }).where(eq(projects.leadAgentId, id));
+        await tx.update(goals).set({ ownerAgentId: null }).where(eq(goals.ownerAgentId, id));
+        await tx.update(routines).set({ assigneeAgentId: null }).where(eq(routines.assigneeAgentId, id));
+        await tx.update(approvals).set({ requestedByAgentId: null }).where(eq(approvals.requestedByAgentId, id));
+        await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
+        await tx.update(assets).set({ createdByAgentId: null }).where(eq(assets.createdByAgentId, id));
+        await tx.update(joinRequests).set({ createdAgentId: null }).where(eq(joinRequests.createdAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ createdByAgentId: null })
+          .where(eq(issueThreadInteractions.createdByAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ resolvedByAgentId: null })
+          .where(eq(issueThreadInteractions.resolvedByAgentId, id));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
