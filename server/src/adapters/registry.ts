@@ -1,4 +1,5 @@
 import type {
+  AdapterModel,
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
@@ -25,7 +26,10 @@ import {
   listAcpxSkills,
   syncAcpxSkills,
 } from "@paperclipai/adapter-acpx-local/server";
-import { agentConfigurationDoc as acpxAgentConfigurationDoc } from "@paperclipai/adapter-acpx-local";
+import {
+  agentConfigurationDoc as acpxAgentConfigurationDoc,
+  models as acpxModels,
+} from "@paperclipai/adapter-acpx-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -159,6 +163,9 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -246,6 +253,69 @@ function passHermesCustomProviderThroughExtraArgs(config: Record<string, unknown
     ...config,
     extraArgs: [...existingExtraArgs, "--provider", provider],
   };
+}
+
+function cfgNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readHermesModelDefaults(configPath: string): { model?: string; provider?: string } {
+  let body = "";
+  try {
+    body = fs.readFileSync(configPath, "utf8");
+  } catch {
+    return {};
+  }
+
+  const defaults: { model?: string; provider?: string } = {};
+  let inModelBlock = false;
+  for (const line of body.split(/\r?\n/)) {
+    if (/^\S/.test(line)) {
+      inModelBlock = line.trim() === "model:";
+      continue;
+    }
+    if (!inModelBlock) continue;
+
+    const match = line.match(/^\s+(default|provider):\s*['"]?([^'"]*?)['"]?\s*$/);
+    if (!match) continue;
+    const value = match[2]?.trim();
+    if (!value) continue;
+    if (match[1] === "default") defaults.model = value;
+    if (match[1] === "provider") defaults.provider = value;
+  }
+  return defaults;
+}
+
+function resolveHermesConfigWithLocalDefaults(config: Record<string, unknown>): Record<string, unknown> {
+  if (cfgNonEmptyString(config.model)) return config;
+
+  const env =
+    config.env && typeof config.env === "object" && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const profileName =
+    cfgNonEmptyString(config.hermesProfile) ??
+    cfgNonEmptyString(config.profile) ??
+    cfgNonEmptyString(env.HERMES_PROFILE) ??
+    cfgNonEmptyString(process.env.HERMES_PROFILE) ??
+    "paperclip-worker";
+  const hermesHome = cfgNonEmptyString(env.HERMES_HOME) ?? cfgNonEmptyString(process.env.HERMES_HOME) ?? path.join(os.homedir(), ".hermes");
+  const candidateConfigPaths = [
+    path.join(hermesHome, "profiles", profileName, "config.yaml"),
+    path.join(hermesHome, "config.yaml"),
+  ];
+
+  for (const configPath of candidateConfigPaths) {
+    const defaults = readHermesModelDefaults(configPath);
+    if (!defaults.model) continue;
+    return {
+      ...config,
+      model: defaults.model,
+      ...(cfgNonEmptyString(config.provider) || !defaults.provider ? {} : { provider: defaults.provider }),
+    };
+  }
+
+  return config;
 }
 
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
@@ -499,7 +569,9 @@ const hermesLocalAdapter: ServerAdapterModule = {
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
     };
-    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(patchedConfig);
+    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(
+      resolveHermesConfigWithLocalDefaults(patchedConfig),
+    );
 
     // Only inject the auth guard into promptTemplate when a custom template already exists.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
