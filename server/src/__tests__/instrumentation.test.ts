@@ -12,9 +12,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const PROTOCOL_ENV = "OTEL_EXPORTER_OTLP_PROTOCOL";
+const TRACEPARENT_ENV = "OTEL_TRACEPARENT";
+const TRACESTATE_ENV = "OTEL_TRACESTATE";
 
 const originalEndpoint = process.env[ENDPOINT_ENV];
 const originalProtocol = process.env[PROTOCOL_ENV];
+const originalTraceparent = process.env[TRACEPARENT_ENV];
+const originalTracestate = process.env[TRACESTATE_ENV];
 
 async function importFreshInstrumentation() {
   vi.resetModules();
@@ -24,6 +28,8 @@ async function importFreshInstrumentation() {
 beforeEach(() => {
   delete process.env[ENDPOINT_ENV];
   delete process.env[PROTOCOL_ENV];
+  delete process.env[TRACEPARENT_ENV];
+  delete process.env[TRACESTATE_ENV];
 });
 
 afterEach(() => {
@@ -31,6 +37,10 @@ afterEach(() => {
   else process.env[ENDPOINT_ENV] = originalEndpoint;
   if (originalProtocol === undefined) delete process.env[PROTOCOL_ENV];
   else process.env[PROTOCOL_ENV] = originalProtocol;
+  if (originalTraceparent === undefined) delete process.env[TRACEPARENT_ENV];
+  else process.env[TRACEPARENT_ENV] = originalTraceparent;
+  if (originalTracestate === undefined) delete process.env[TRACESTATE_ENV];
+  else process.env[TRACESTATE_ENV] = originalTracestate;
   vi.restoreAllMocks();
 });
 
@@ -106,5 +116,41 @@ describe("shutdownInstrumentation", () => {
     const { shutdownInstrumentation } = await importFreshInstrumentation();
 
     await expect(shutdownInstrumentation()).resolves.toBeUndefined();
+  });
+});
+
+describe("W3C trace context helpers", () => {
+  it("reads only traceparent and tracestate from carriers", async () => {
+    const {
+      readW3CTraceContextCarrier,
+      mergeW3CTraceContextHeaders,
+    } = await import("../telemetry/trace-context.js");
+
+    const carrier = readW3CTraceContextCarrier({
+      traceparent: " 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01 ",
+      tracestate: ["vendor=value"],
+      baggage: "user=not-forwarded",
+    });
+
+    expect(carrier).toEqual({
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      tracestate: "vendor=value",
+    });
+    expect(mergeW3CTraceContextHeaders({}, carrier)).toEqual({
+      traceparent: carrier.traceparent,
+      tracestate: carrier.tracestate,
+    });
+  });
+
+  it("maps active trace context to adapter env names without baggage", async () => {
+    process.env[TRACEPARENT_ENV] = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+    process.env[TRACESTATE_ENV] = "vendor=value";
+
+    const { traceContextEnv, traceContextFromEnv } = await import("../telemetry/trace-context.js");
+
+    expect(traceContextEnv(traceContextFromEnv())).toEqual({
+      OTEL_TRACEPARENT: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+      OTEL_TRACESTATE: "vendor=value",
+    });
   });
 });

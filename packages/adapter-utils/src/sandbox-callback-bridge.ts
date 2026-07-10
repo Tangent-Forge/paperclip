@@ -102,6 +102,8 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  "traceparent",
+  "tracestate",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {

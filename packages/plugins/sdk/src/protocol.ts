@@ -98,6 +98,14 @@ export interface JsonRpcInvocationScope {
 export interface JsonRpcInvocationContext {
   readonly id: string;
   readonly scope: JsonRpcInvocationScope;
+  /**
+   * W3C Trace Context propagated by the host. Workers treat this as opaque and
+   * do not persist it; nested worker→host calls echo only `id`.
+   */
+  readonly traceContext?: {
+    readonly traceparent?: string;
+    readonly tracestate?: string;
+  };
 }
 
 /**

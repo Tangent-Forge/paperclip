@@ -53,6 +53,11 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import {
+  injectActiveW3CTraceContext,
+  runWithExtractedW3CTraceContext,
+  type W3CTraceContextCarrier,
+} from "../telemetry/trace-context.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -210,8 +215,14 @@ interface PendingRequest {
 
 interface ActiveInvocation {
   scope: PluginInvocationScope;
+  traceContext?: W3CTraceContextCarrier;
   timer?: ReturnType<typeof setTimeout>;
 }
+
+type WorkerInvocationResolution =
+  | { kind: "none" }
+  | { kind: "invalid" }
+  | { kind: "active"; invocation: ActiveInvocation };
 
 // ---------------------------------------------------------------------------
 // PluginWorkerHandle — manages a single worker process
@@ -531,12 +542,17 @@ export function createPluginWorkerHandle(
     return null;
   }
 
-  function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
+  async function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): Promise<PluginInvocationContext> {
+    const traceContext = await injectActiveW3CTraceContext();
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
+      ...(traceContext.traceparent ? { traceContext } : {}),
     };
-    const entry: ActiveInvocation = { scope };
+    const entry: ActiveInvocation = {
+      scope,
+      ...(traceContext.traceparent ? { traceContext } : {}),
+    };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -554,18 +570,23 @@ export function createPluginWorkerHandle(
     activeInvocations.delete(invocation.id);
   }
 
-  function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
+  function invocationForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerInvocationResolution {
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
-      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      return hasActiveInvocation ? { kind: "invalid" } : { kind: "none" };
     }
     const entry = activeInvocations.get(invocationId);
-    if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope };
+    return entry ? { kind: "active", invocation: entry } : { kind: "invalid" };
+  }
+
+  function contextForWorkerMessage(resolution: WorkerInvocationResolution): WorkerHostCallContext {
+    if (resolution.kind === "none") return {};
+    if (resolution.kind === "invalid") return { invalidInvocationScope: true };
+    return { invocationScope: resolution.invocation.scope };
   }
 
   /**
@@ -594,7 +615,12 @@ export function createPluginWorkerHandle(
     }
 
     try {
-      const result = await handler(request.params, contextForWorkerMessage(request));
+      const invocation = invocationForWorkerMessage(request);
+      const runHandler = () => handler(request.params, contextForWorkerMessage(invocation));
+      const traceContext = invocation.kind === "active" ? invocation.invocation.traceContext : undefined;
+      const result = traceContext
+        ? await runWithExtractedW3CTraceContext(traceContext, runHandler)
+        : await runHandler();
       sendMessage({
         jsonrpc: JSONRPC_VERSION,
         id: request.id,
@@ -666,7 +692,8 @@ export function createPluginWorkerHandle(
     ) {
       const params = (notification.params ?? {}) as Record<string, unknown>;
       const companyId = String(params.companyId ?? "");
-      const context = contextForWorkerMessage(notification);
+      const invocation = invocationForWorkerMessage(notification);
+      const context = contextForWorkerMessage(invocation);
       if (context.invalidInvocationScope) {
         log.warn(
           { method: notification.method, companyId },
@@ -1134,7 +1161,7 @@ export function createPluginWorkerHandle(
       const id = nextRequestId++;
       const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
       const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope) : null;
+      let invocation: PluginInvocationContext | null = null;
 
       // Guard against double-settlement. When a process exits all pending
       // requests are rejected via rejectAllPending(), but the timeout timer
@@ -1175,18 +1202,18 @@ export function createPluginWorkerHandle(
         },
         timer,
         sentAt: Date.now(),
-        invocationId: invocation?.id,
       };
 
-      pendingRequests.set(id, pending);
-
-      try {
+      void (async () => {
+        invocation = invocationScope ? await registerInvocation(invocationScope) : null;
+        pending.invocationId = invocation?.id;
+        pendingRequests.set(id, pending);
         const request = {
           ...createRequest(method, params, id),
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         };
         sendMessage(request);
-      } catch (err) {
+      })().catch((err) => {
         clearTimeout(timer);
         pendingRequests.delete(id);
         clearInvocation(invocation);
@@ -1197,7 +1224,7 @@ export function createPluginWorkerHandle(
             }`,
           ),
         );
-      }
+      });
     });
 
     // Some call sites hand these promises across async boundaries before
@@ -1257,18 +1284,19 @@ export function createPluginWorkerHandle(
     notify(method: string, params: unknown) {
       if (status !== "running") return;
       const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
-      try {
+      let invocation: PluginInvocationContext | null = null;
+      void (async () => {
+        invocation = invocationScope ? await registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
           method,
           params,
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         });
-      } catch {
+      })().catch(() => {
         clearInvocation(invocation);
         log.warn({ method }, "failed to send notification to worker");
-      }
+      });
     },
 
     on<K extends WorkerHandleEventName>(

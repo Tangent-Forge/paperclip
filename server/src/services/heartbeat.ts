@@ -197,6 +197,10 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  injectActiveW3CTraceContext,
+  traceContextEnv,
+} from "../telemetry/trace-context.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -8950,6 +8954,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
+      Object.assign(adapterEnv, traceContextEnv(await injectActiveW3CTraceContext()));
       const runtimeServices = await ensureRuntimeServicesForRun({
         db,
         runId: run.id,
