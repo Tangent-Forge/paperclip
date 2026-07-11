@@ -126,6 +126,59 @@ The blackbox jobs assume a blackbox exporter is already running on
 `127.0.0.1:9115`. They do not expose Paperclip, Hermes, GBrain, OpenWebUI,
 Ollama, Caddy, or Cloudflared publicly.
 
+### Loopback-Only LGTM Stack
+
+For a local, repo-controlled Grafana LGTM stack, start the Compose file from the
+repo root:
+
+```bash
+docker compose -f infra/observability/docker-compose.lgtm.yml up -d
+```
+
+The stack publishes every host port on `127.0.0.1` only:
+
+| Service | URL / endpoint |
+| --- | --- |
+| Grafana | `http://127.0.0.1:3001` |
+| Prometheus | `http://127.0.0.1:9090` |
+| Loki | `http://127.0.0.1:3101` |
+| Tempo | `http://127.0.0.1:3200` |
+| Tempo OTLP gRPC | `http://127.0.0.1:4317` |
+| Tempo OTLP HTTP | `http://127.0.0.1:4318` |
+| Blackbox exporter | `http://127.0.0.1:9115` |
+
+Default Grafana credentials are `admin` / `paperclip`; override them with
+`PAPERCLIP_OBS_GRAFANA_USER` and `PAPERCLIP_OBS_GRAFANA_PASSWORD` before
+starting the stack. Host ports can be changed with the `PAPERCLIP_OBS_*_PORT`
+environment variables defined in `infra/observability/docker-compose.lgtm.yml`.
+
+Compose uses `infra/observability/prometheus/docker-prometheus.yml` because
+Prometheus runs inside Docker and reaches host services through
+`host.docker.internal`. The existing `prometheus.yml` remains the host-native
+scrape plan for an operator-run Prometheus process.
+
+Private-plane retention defaults are intentionally small: Prometheus keeps
+seven days of TSDB data, Loki keeps 168 hours of log chunks, and Tempo keeps
+24 hours of traces. Override Prometheus retention with
+`PAPERCLIP_OBS_PROMETHEUS_RETENTION` before starting the stack.
+
+To send Paperclip traces to the local Tempo instance with the HTTP OTLP
+exporter, install the OTel peer dependencies from the tracing section above and
+start Paperclip with:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_SERVICE_NAME=paperclip \
+pnpm dev
+```
+
+Shut the stack down with:
+
+```bash
+docker compose -f infra/observability/docker-compose.lgtm.yml down
+```
+
 ### Sample Evidence
 
 These samples were collected on 2026-07-11 from private loopback
