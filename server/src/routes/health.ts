@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { collectSystemMetrics, renderPrometheusSystemMetrics, type SystemMetricsSnapshot } from "../services/system-metrics.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -35,6 +36,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    collectSystemMetrics?: () => SystemMetricsSnapshot;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -43,6 +45,7 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+  const readSystemMetrics = opts.collectSystemMetrics ?? collectSystemMetrics;
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
@@ -178,6 +181,18 @@ export function healthRoutes(
       },
       ...(devServer ? { devServer } : {}),
     });
+  });
+
+  router.get("/metrics", (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (!shouldExposeFullHealthDetails(actorType, opts.deploymentMode)) {
+      res.status(403).json({ error: "health_metrics_auth_required" });
+      return;
+    }
+
+    res
+      .type("text/plain; version=0.0.4; charset=utf-8")
+      .send(renderPrometheusSystemMetrics(readSystemMetrics()));
   });
 
   return router;

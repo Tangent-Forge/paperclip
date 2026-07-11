@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
+import type { SystemMetricsSnapshot } from "../services/system-metrics.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 
@@ -13,9 +14,67 @@ vi.mock("../dev-server-status.js", () => ({
   toDevServerHealthStatus: vi.fn(),
 }));
 
+const mockMetrics: SystemMetricsSnapshot = {
+  collectedAt: "2026-07-11T00:00:00.000Z",
+  host: {
+    hostname: "test-host",
+    platform: "linux",
+    arch: "x64",
+    uptimeSeconds: 123,
+    loadAverage: { "1m": 0.1, "5m": 0.2, "15m": 0.3 },
+    cpuCount: 4,
+    memory: {
+      totalBytes: 1000,
+      freeBytes: 400,
+      usedBytes: 600,
+      processRssBytes: 100,
+      processHeapUsedBytes: 50,
+      processHeapTotalBytes: 80,
+    },
+    disk: {
+      path: "/workspace",
+      totalBytes: 2000,
+      freeBytes: 1500,
+      usedBytes: 500,
+    },
+  },
+  container: {
+    detected: true,
+    cgroupVersion: "v2",
+    memory: {
+      currentBytes: 300,
+      limitBytes: 900,
+    },
+    cpu: {
+      quotaCores: 2,
+      usageSeconds: 10,
+      throttledPeriods: 1,
+    },
+  },
+  edge: {
+    startedAt: "2026-07-11T00:00:00.000Z",
+    uptimeSeconds: 1,
+    requestCount: 7,
+    inflightRequestCount: 0,
+    statusClasses: { "2xx": 6, "5xx": 1 },
+    methods: { GET: 7 },
+    latencyMs: {
+      count: 7,
+      avg: 12,
+      max: 40,
+    },
+  },
+};
+
 function createApp(db?: Db) {
   const app = express();
-  app.use("/health", healthRoutes(db));
+  app.use("/health", healthRoutes(db, {
+    deploymentMode: "local_trusted",
+    deploymentExposure: "private",
+    authReady: true,
+    companyDeletionEnabled: true,
+    collectSystemMetrics: () => mockMetrics,
+  }));
   return app;
 }
 
@@ -88,6 +147,7 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        collectSystemMetrics: () => mockMetrics,
       }),
     );
 
@@ -123,6 +183,7 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        collectSystemMetrics: () => mockMetrics,
       }),
     );
 
@@ -162,6 +223,7 @@ describe("GET /health", () => {
         deploymentExposure: "public",
         authReady: true,
         companyDeletionEnabled: false,
+        collectSystemMetrics: () => mockMetrics,
       }),
     );
 
@@ -180,5 +242,49 @@ describe("GET /health", () => {
         companyDeletionEnabled: false,
       },
     });
+  });
+
+  it("returns Prometheus host, container, and edge metrics to authorized health callers", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/health/metrics");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/plain");
+    expect(res.text).toContain("# HELP paperclip_host_uptime_seconds");
+    expect(res.text).toContain("paperclip_host_uptime_seconds 123");
+    expect(res.text).toContain('paperclip_host_memory_bytes{state="process_rss"} 100');
+    expect(res.text).toContain('paperclip_host_disk_bytes{path="/workspace",state="used"} 500');
+    expect(res.text).toContain('paperclip_container_detected{cgroup_version="v2"} 1');
+    expect(res.text).toContain('paperclip_container_memory_bytes{state="current"} 300');
+    expect(res.text).toContain("paperclip_container_cpu_quota_cores 2");
+    expect(res.text).toContain("paperclip_edge_requests_total 7");
+    expect(res.text).toContain('paperclip_edge_requests_total{method="GET"} 7');
+    expect(res.text).toContain('paperclip_edge_requests_total{status_class="5xx"} 1');
+    expect(res.text).toContain("paperclip_edge_request_latency_milliseconds_count 7");
+    expect(res.text).toContain("paperclip_edge_request_latency_milliseconds_sum 84");
+  });
+
+  it("rejects anonymous metrics requests in authenticated mode", async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(undefined, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        collectSystemMetrics: () => mockMetrics,
+      }),
+    );
+
+    const res = await request(app).get("/health/metrics");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "health_metrics_auth_required" });
   });
 });
