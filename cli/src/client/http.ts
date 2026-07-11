@@ -122,6 +122,13 @@ export class PaperclipApiClient {
       headers["x-paperclip-run-id"] = this.runId;
     }
 
+    if (process.env.OTEL_TRACEPARENT && !headers.traceparent) {
+      headers.traceparent = process.env.OTEL_TRACEPARENT;
+    }
+    if (process.env.OTEL_TRACESTATE && !headers.tracestate) {
+      headers.tracestate = process.env.OTEL_TRACESTATE;
+    }
+
     let response: Response;
     try {
       response = await fetch(url, {

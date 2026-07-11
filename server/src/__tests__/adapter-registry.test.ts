@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -70,6 +73,7 @@ describe("server adapter registry", () => {
     setOverridePaused("claude_local", false);
     setOverridePaused("hermes_local", false);
     hermesExecuteMock.mockClear();
+    vi.unstubAllEnvs();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -580,6 +584,48 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("uses the Hermes paperclip-worker profile model when adapterConfig is empty", async () => {
+    const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-home-"));
+    await fs.mkdir(path.join(hermesHome, "profiles", "paperclip-worker"), { recursive: true });
+    await fs.writeFile(
+      path.join(hermesHome, "profiles", "paperclip-worker", "config.yaml"),
+      [
+        "model:",
+        "  default: gpt-5.5",
+        "  provider: openai-codex",
+        "providers: {}",
+      ].join("\n"),
+    );
+    vi.stubEnv("HERMES_HOME", hermesHome);
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.model).toBe("gpt-5.5");
+    expect(patchedCtx.agent.adapterConfig.provider).toBe("openai-codex");
+    expect(patchedCtx.agent.adapterConfig.model).not.toBe("anthropic/claude-sonnet-4");
+
+    await fs.rm(hermesHome, { recursive: true, force: true });
   });
 });
 

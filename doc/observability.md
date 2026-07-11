@@ -67,6 +67,19 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` is set but the OTel packages are not
 installed, the server logs a single diagnostic line on boot and continues
 without tracing — your server stays up.
 
+## Trace propagation
+
+Paperclip supports W3C Trace Context propagation for `traceparent` and
+`tracestate` only. Incoming API requests extract those headers when tracing is
+enabled, and Paperclip forwards the active context across supported internal
+boundaries: server/CLI Paperclip API calls, heartbeat adapter launches via
+`OTEL_TRACEPARENT`/`OTEL_TRACESTATE`, sandbox callback bridge requests, and the
+plugin host-worker JSON-RPC invocation envelope.
+
+Baggage is intentionally unsupported and is not forwarded. Browser UI traces,
+arbitrary plugin outbound requests, adapter vendor API calls, and edge worker
+paths are also out of scope for this server integration.
+
 ## Scope
 
 This integration emits **traces only**. Metrics and log exporters are out of
