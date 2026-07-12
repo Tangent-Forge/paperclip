@@ -109,6 +109,26 @@ test("reports escalation, false decision, and override metrics", () => {
   assert.equal(metrics.falseRejectionRate, 0.25);
   assert.equal(metrics.overrideRate, 0.25);
   assert.equal(metrics.byReasonCode.source_hash_mismatch, 1);
+  assert.equal(metrics.decisionCoverage, 4);
+  assert.deepEqual(metrics.missingDecisions, ["REVISE"]);
+  assert.equal(metrics.thresholdResults.passed, false);
+});
+
+test("passes metric thresholds for representative pilot coverage", () => {
+  const metrics = computeMetrics([
+    { decision: "AUTO_APPROVE", expectedDecision: "AUTO_APPROVE", humanOverrideDecision: null, reasonCodes: [] },
+    { decision: "AUTO_REJECT", expectedDecision: "AUTO_REJECT", humanOverrideDecision: null, reasonCodes: [] },
+    { decision: "REVISE", expectedDecision: "REVISE", humanOverrideDecision: "AUTO_APPROVE", reasonCodes: ["validator_warning"] },
+    { decision: "QUARANTINE", expectedDecision: "QUARANTINE", humanOverrideDecision: null, reasonCodes: ["source_hash_mismatch"], hardExclusionCodes: ["source_hash_mismatch"] },
+    { decision: "HUMAN_ESCALATION", expectedDecision: "HUMAN_ESCALATION", humanOverrideDecision: null, reasonCodes: ["high_impact_public_publication"] },
+  ]);
+  assert.equal(metrics.decisionCoverage, 5);
+  assert.equal(metrics.escalationRate, 0.4);
+  assert.equal(metrics.hardExclusionRate, 0.2);
+  assert.equal(metrics.falseApprovalRate, 0);
+  assert.equal(metrics.falseRejectionRate, 0);
+  assert.equal(metrics.overrideRate, 0.2);
+  assert.equal(metrics.thresholdResults.passed, true);
 });
 
 test("refuses live mode because the pilot is read-only", () => {

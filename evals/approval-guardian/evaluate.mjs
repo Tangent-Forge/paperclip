@@ -9,6 +9,14 @@ const DECISIONS = ["AUTO_APPROVE", "AUTO_REJECT", "REVISE", "QUARANTINE", "HUMAN
 const DEFAULT_RUBRIC_VERSION = "approval-guardian-pilot-v1";
 const RECORD_SCHEMA_VERSION = 1;
 const EVALUATOR_VERSION = "approval-guardian-evaluator-v1";
+const DEFAULT_METRIC_THRESHOLDS = {
+  minDecisionCoverage: DECISIONS.length,
+  minEscalationRate: 0.2,
+  minHardExclusionRate: 0.2,
+  maxFalseApprovalRate: 0,
+  maxFalseRejectionRate: 0,
+  maxOverrideRate: 0.25,
+};
 const HIGH_IMPACT_EFFECTS = new Set([
   "financial_commitment",
   "legal_commitment",
@@ -290,7 +298,58 @@ function classifyCandidate(candidate, options = {}) {
   return record;
 }
 
-function computeMetrics(records) {
+function evaluateMetricThresholds(metrics, thresholds = DEFAULT_METRIC_THRESHOLDS) {
+  const checks = [
+    {
+      name: "decision_coverage",
+      actual: metrics.decisionCoverage,
+      threshold: thresholds.minDecisionCoverage,
+      passed: metrics.decisionCoverage >= thresholds.minDecisionCoverage,
+      comparator: ">=",
+    },
+    {
+      name: "escalation_rate",
+      actual: metrics.escalationRate,
+      threshold: thresholds.minEscalationRate,
+      passed: metrics.escalationRate >= thresholds.minEscalationRate,
+      comparator: ">=",
+    },
+    {
+      name: "hard_exclusion_rate",
+      actual: metrics.hardExclusionRate,
+      threshold: thresholds.minHardExclusionRate,
+      passed: metrics.hardExclusionRate >= thresholds.minHardExclusionRate,
+      comparator: ">=",
+    },
+    {
+      name: "false_approval_rate",
+      actual: metrics.falseApprovalRate,
+      threshold: thresholds.maxFalseApprovalRate,
+      passed: metrics.falseApprovalRate <= thresholds.maxFalseApprovalRate,
+      comparator: "<=",
+    },
+    {
+      name: "false_rejection_rate",
+      actual: metrics.falseRejectionRate,
+      threshold: thresholds.maxFalseRejectionRate,
+      passed: metrics.falseRejectionRate <= thresholds.maxFalseRejectionRate,
+      comparator: "<=",
+    },
+    {
+      name: "override_rate",
+      actual: metrics.overrideRate,
+      threshold: thresholds.maxOverrideRate,
+      passed: metrics.overrideRate <= thresholds.maxOverrideRate,
+      comparator: "<=",
+    },
+  ];
+  return {
+    passed: checks.every((check) => check.passed),
+    checks,
+  };
+}
+
+function computeMetrics(records, thresholds = DEFAULT_METRIC_THRESHOLDS) {
   const total = records.length;
   const byDecision = Object.fromEntries(DECISIONS.map((decision) => [decision, 0]));
   const byReasonCode = {};
@@ -311,10 +370,13 @@ function computeMetrics(records) {
     if (record.humanOverrideDecision && record.humanOverrideDecision !== record.decision) overrides += 1;
   }
   const rate = (count) => (total === 0 ? 0 : Number((count / total).toFixed(4)));
-  return {
+  const missingDecisions = DECISIONS.filter((decision) => byDecision[decision] === 0);
+  const metrics = {
     total,
     byDecision,
     byReasonCode,
+    decisionCoverage: DECISIONS.length - missingDecisions.length,
+    missingDecisions,
     escalationRate: rate(byDecision.HUMAN_ESCALATION + byDecision.QUARANTINE),
     hardExclusionRate: rate(hardExclusions),
     falseApprovalRate: rate(falseApprovals),
@@ -324,6 +386,11 @@ function computeMetrics(records) {
     falseApprovals,
     falseRejections,
     overrides,
+  };
+  return {
+    ...metrics,
+    thresholds,
+    thresholdResults: evaluateMetricThresholds(metrics, thresholds),
   };
 }
 
@@ -365,7 +432,7 @@ function main(argv = process.argv.slice(2)) {
 
   if (args.pretty) console.log(JSON.stringify(payload, null, 2));
   else console.log(records.map((record) => JSON.stringify(record)).join("\n"));
-  return records.some((record) => record.decision === "QUARANTINE") ? 2 : 0;
+  return metrics.thresholdResults.passed ? 0 : 2;
 }
 
 const thisFile = fileURLToPath(import.meta.url);
@@ -379,4 +446,4 @@ if (process.argv[1] === thisFile) {
   }
 }
 
-export { DECISIONS, classifyCandidate, computeMetrics, main };
+export { DECISIONS, DEFAULT_METRIC_THRESHOLDS, classifyCandidate, computeMetrics, evaluateMetricThresholds, main };

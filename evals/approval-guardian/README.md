@@ -30,4 +30,14 @@ Each JSONL decision record includes:
 
 Metrics include decision counts, escalation rate, hard-exclusion rate, false approval rate, false rejection rate, override rate, and counts by reason code.
 
+The default pilot fixture covers all five Guardian decisions and checks metric thresholds:
+
+- decision coverage must include all five decisions
+- escalation rate must be at least `0.2`
+- hard-exclusion rate must be at least `0.2`
+- false approval and false rejection rates must stay at `0`
+- override rate must stay at or below `0.25`
+
+Expected quarantines are valid pilot outcomes. The CLI exits non-zero when metric thresholds fail.
+
 Candidate packets should include immutable source pointers and hashes, validator results, sensitivity and side-effect classification, author and guardian context ids, scores, and optional `expectedDecision` / `humanOverrideDecision` fields for measuring false approvals, false rejections, and overrides.
