@@ -1,0 +1,63 @@
+{
+  "candidates": [
+    {
+      "id": "pilot-auto-approve",
+      "source": {
+        "uri": "file://low-risk-source.txt",
+        "sha256": "24e00d362fbfe5398ac687c31b4c9e8e40a4e4164a8305296048fbb13934fcc5"
+      },
+      "destination": "tf-brain/20_WORKING/Historical_Ingestion/INGESTION_BATCHES/REALQ105",
+      "proposedAction": "knowledge_promotion_candidate",
+      "sensitivity": "low",
+      "sideEffects": ["read_only_decision_record"],
+      "scores": { "overall": 0.94 },
+      "confidence": 0.93,
+      "authorContextId": "author-run-001",
+      "guardianContextId": "guardian-run-001",
+      "validatorResults": [
+        { "name": "source_hash", "status": "pass", "score": 1, "evidence": "source hash matches packet" },
+        { "name": "sensitivity", "status": "pass", "score": 0.94, "evidence": "no sensitive classes detected" }
+      ],
+      "expectedDecision": "AUTO_APPROVE"
+    },
+    {
+      "id": "pilot-human-escalation",
+      "source": {
+        "uri": "file://low-risk-source.txt",
+        "sha256": "24e00d362fbfe5398ac687c31b4c9e8e40a4e4164a8305296048fbb13934fcc5"
+      },
+      "destination": "release/evidence",
+      "proposedAction": "publish_release_evidence",
+      "sensitivity": "low",
+      "sideEffects": ["public_publication"],
+      "scores": { "overall": 0.91 },
+      "confidence": 0.9,
+      "authorContextId": "author-run-002",
+      "guardianContextId": "guardian-run-002",
+      "validatorResults": [
+        { "name": "release_evidence", "status": "pass", "score": 0.91, "evidence": "evidence is internally consistent" }
+      ],
+      "expectedDecision": "HUMAN_ESCALATION"
+    },
+    {
+      "id": "pilot-revise",
+      "source": {
+        "uri": "file://low-risk-source.txt",
+        "sha256": "24e00d362fbfe5398ac687c31b4c9e8e40a4e4164a8305296048fbb13934fcc5"
+      },
+      "destination": "tf-brain/20_WORKING/Historical_Ingestion/INGESTION_BATCHES/REALQ105",
+      "proposedAction": "knowledge_promotion_candidate",
+      "sensitivity": "low",
+      "sideEffects": ["read_only_decision_record"],
+      "scores": { "overall": 0.78 },
+      "confidence": 0.81,
+      "authorContextId": "author-run-003",
+      "guardianContextId": "guardian-run-003",
+      "validatorResults": [
+        { "name": "source_support", "status": "warn", "score": 0.78, "evidence": "source pointer is present but evidence quote is thin" }
+      ],
+      "expectedDecision": "REVISE",
+      "humanOverrideDecision": "AUTO_APPROVE"
+    }
+  ]
+}
