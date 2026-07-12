@@ -91,7 +91,7 @@ describe("buildCodexExecArgs", () => {
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex",
+      model: "gpt-5",
       fastMode: true,
     });
 
@@ -104,7 +104,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5",
       "-",
     ]);
   });
