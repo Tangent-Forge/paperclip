@@ -62,7 +62,7 @@
   {
     "dir": "packages/adapters/provider-router-local",
     "name": "@paperclipai/provider-router-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/shared",
