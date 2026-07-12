@@ -24,6 +24,10 @@ jobs:
           ref: master
 
       - name: Dependency Review
+        # GitHub's dependency graph is not enabled on the Tangent Forge fork.
+        # Keep this gate active on the canonical upstream repository while
+        # allowing fork PRs to use the repository-local security gates below.
+        if: github.event.repository.fork != true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
