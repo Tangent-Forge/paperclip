@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { classifyCandidate, computeMetrics } from "./evaluate.mjs";
+import { classifyCandidate, computeMetrics, main } from "./evaluate.mjs";
 
 function writeSource(tmp, body = "source material") {
   const sourcePath = path.join(tmp, "source.txt");
@@ -31,6 +31,10 @@ test("auto-approves low-risk validated packets", () => {
     { baseDir: tmp, now: "2026-07-12T00:00:00.000Z" },
   );
   assert.equal(record.decision, "AUTO_APPROVE");
+  assert.equal(record.decisionStage, "guardian_score");
+  assert.equal(record.recordType, "approval_guardian_decision");
+  assert.equal(record.replay.canonicalWrites, false);
+  assert.match(record.decisionRecordId, /^[a-f0-9]{64}$/);
   assert.deepEqual(record.reasonCodes, []);
 });
 
@@ -49,7 +53,25 @@ test("quarantines hash mismatches before approval", () => {
     { baseDir: tmp },
   );
   assert.equal(record.decision, "QUARANTINE");
+  assert.equal(record.decisionStage, "hard_exclusion");
   assert.ok(record.reasonCodes.includes("source_hash_mismatch"));
+  assert.ok(record.hardExclusionCodes.includes("source_hash_mismatch"));
+});
+
+test("quarantines live or canonical mutation candidates before scoring", () => {
+  const record = classifyCandidate({
+    id: "canonical-write",
+    source: { inlineText: "source", sha256: "41cf679b6b0d6e0d6ca10e82d62d577a4efb361ee90ad54967c6570207aa1ff0" },
+    sensitivity: "low",
+    sideEffects: ["canonical_db_write"],
+    mutatesCanonicalState: true,
+    confidence: 0.99,
+    validatorResults: [{ name: "all", status: "pass", score: 0.99 }],
+  });
+  assert.equal(record.decision, "QUARANTINE");
+  assert.equal(record.decisionStage, "hard_exclusion");
+  assert.ok(record.hardExclusionCodes.includes("hard_exclusion_canonical_db_write"));
+  assert.ok(record.hardExclusionCodes.includes("mutates_canonical_state"));
 });
 
 test("escalates high-impact side effects and same-context review", () => {
@@ -70,13 +92,25 @@ test("escalates high-impact side effects and same-context review", () => {
 
 test("reports escalation, false decision, and override metrics", () => {
   const metrics = computeMetrics([
-    { decision: "AUTO_APPROVE", expectedDecision: "AUTO_REJECT", humanOverrideDecision: null },
-    { decision: "AUTO_REJECT", expectedDecision: "AUTO_APPROVE", humanOverrideDecision: null },
-    { decision: "HUMAN_ESCALATION", expectedDecision: "HUMAN_ESCALATION", humanOverrideDecision: "AUTO_APPROVE" },
-    { decision: "QUARANTINE", expectedDecision: "QUARANTINE", humanOverrideDecision: null },
+    { decision: "AUTO_APPROVE", expectedDecision: "AUTO_REJECT", humanOverrideDecision: null, reasonCodes: [] },
+    { decision: "AUTO_REJECT", expectedDecision: "AUTO_APPROVE", humanOverrideDecision: null, reasonCodes: [] },
+    { decision: "HUMAN_ESCALATION", expectedDecision: "HUMAN_ESCALATION", humanOverrideDecision: "AUTO_APPROVE", reasonCodes: [] },
+    {
+      decision: "QUARANTINE",
+      expectedDecision: "QUARANTINE",
+      humanOverrideDecision: null,
+      reasonCodes: ["source_hash_mismatch"],
+      hardExclusionCodes: ["source_hash_mismatch"],
+    },
   ]);
   assert.equal(metrics.escalationRate, 0.5);
+  assert.equal(metrics.hardExclusionRate, 0.25);
   assert.equal(metrics.falseApprovalRate, 0.25);
   assert.equal(metrics.falseRejectionRate, 0.25);
   assert.equal(metrics.overrideRate, 0.25);
+  assert.equal(metrics.byReasonCode.source_hash_mismatch, 1);
+});
+
+test("refuses live mode because the pilot is read-only", () => {
+  assert.throws(() => main(["--input", "unused.json", "--live"]), /read-only\/dry-run only/);
 });
