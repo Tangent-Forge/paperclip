@@ -58,6 +58,45 @@
       ],
       "expectedDecision": "REVISE",
       "humanOverrideDecision": "AUTO_APPROVE"
+    },
+    {
+      "id": "pilot-quarantine-hash-mismatch",
+      "source": {
+        "uri": "file://low-risk-source.txt",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "destination": "tf-brain/20_WORKING/Historical_Ingestion/INGESTION_BATCHES/REALQ105",
+      "proposedAction": "knowledge_promotion_candidate",
+      "sensitivity": "low",
+      "sideEffects": ["read_only_decision_record"],
+      "scores": { "overall": 0.96 },
+      "confidence": 0.96,
+      "authorContextId": "author-run-004",
+      "guardianContextId": "guardian-run-004",
+      "validatorResults": [
+        { "name": "source_hash", "status": "pass", "score": 1, "evidence": "candidate supplied an immutable source pointer" },
+        { "name": "sensitivity", "status": "pass", "score": 0.96, "evidence": "no sensitive classes detected" }
+      ],
+      "expectedDecision": "QUARANTINE"
+    },
+    {
+      "id": "pilot-auto-reject",
+      "source": {
+        "uri": "file://low-risk-source.txt",
+        "sha256": "24e00d362fbfe5398ac687c31b4c9e8e40a4e4164a8305296048fbb13934fcc5"
+      },
+      "destination": "tf-brain/20_WORKING/Historical_Ingestion/INGESTION_BATCHES/REALQ105",
+      "proposedAction": "knowledge_promotion_candidate",
+      "sensitivity": "low",
+      "sideEffects": ["read_only_decision_record"],
+      "scores": { "overall": 0.37 },
+      "confidence": 0.42,
+      "authorContextId": "author-run-005",
+      "guardianContextId": "guardian-run-005",
+      "validatorResults": [
+        { "name": "source_support", "status": "fail", "score": 0.37, "evidence": "candidate does not meet minimum source support" }
+      ],
+      "expectedDecision": "AUTO_REJECT"
     }
   ]
 }
