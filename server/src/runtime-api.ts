@@ -61,16 +61,16 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
+  const bindHost = normalizeHost(input.bindHost);
+  if (bindHost && !isWildcardHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const allowedHostname = input.allowedHostnames
     .map((value) => value.trim())
     .find(Boolean);
   if (allowedHostname) {
     return formatOrigin("http:", allowedHostname, input.port);
-  }
-
-  const bindHost = normalizeHost(input.bindHost);
-  if (bindHost && !isWildcardHost(bindHost)) {
-    return formatOrigin("http:", bindHost, input.port);
   }
 
   return formatOrigin("http:", "localhost", input.port);
