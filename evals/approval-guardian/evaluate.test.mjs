@@ -1,14 +1,47 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { classifyCandidate, computeMetrics, main } from "./evaluate.mjs";
+import { appendDecisionLedger, classifyCandidate, computeMetrics, explainDecision, main, replayDecisions } from "./evaluate.mjs";
 
 function writeSource(tmp, body = "source material") {
   const sourcePath = path.join(tmp, "source.txt");
   fs.writeFileSync(sourcePath, body);
   return sourcePath;
+}
+
+function validCandidate(id = "ok") {
+  return {
+    id,
+    source: {
+      inlineText: "source",
+      sha256: "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+    },
+    sensitivity: "low",
+    sideEffects: ["read_only_decision_record"],
+    confidence: 0.91,
+    authorContextId: "author",
+    guardianContextId: "guardian",
+    validatorResults: [{ name: "all", status: "pass", score: 0.92 }],
+  };
+}
+
+function runNode(args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
 }
 
 test("auto-approves low-risk validated packets", () => {
@@ -88,6 +121,77 @@ test("escalates high-impact side effects and same-context review", () => {
   assert.equal(record.decision, "HUMAN_ESCALATION");
   assert.ok(record.reasonCodes.includes("high_impact_public_publication"));
   assert.ok(record.reasonCodes.includes("author_guardian_same_context"));
+});
+
+test("escalates material model disagreement through the policy engine", () => {
+  const record = classifyCandidate({
+    ...validCandidate("disagreement"),
+    modelVotes: [
+      { model: "author", decision: "AUTO_APPROVE" },
+      { model: "guardian-small", decision: "REVISE" },
+      { model: "guardian-large", decision: "AUTO_REJECT" },
+    ],
+  });
+  assert.equal(record.decision, "HUMAN_ESCALATION");
+  assert.equal(record.modelDisagreement, 0.6667);
+  assert.ok(record.reasonCodes.includes("model_disagreement"));
+});
+
+test("appends decision ledger records without truncating or duplicating stable decisions", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "approval-guardian-ledger-"));
+  const ledgerPath = path.join(tmp, "decisions.jsonl");
+  const first = classifyCandidate(validCandidate("ledger-one"));
+  const second = classifyCandidate(validCandidate("ledger-two"));
+
+  assert.deepEqual(appendDecisionLedger(ledgerPath, [first]), { appended: 1, skipped: 0, total: 1 });
+  assert.deepEqual(appendDecisionLedger(ledgerPath, [first, second]), { appended: 1, skipped: 1, total: 2 });
+
+  const lines = fs.readFileSync(ledgerPath, "utf8").trim().split("\n");
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[0]).candidateId, "ledger-one");
+  assert.equal(JSON.parse(lines[1]).candidateId, "ledger-two");
+});
+
+test("serializes concurrent ledger appends and preserves idempotency", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "approval-guardian-concurrent-"));
+  const ledgerPath = path.join(tmp, "decisions.jsonl");
+  const inputPath = path.join(process.cwd(), "evals/approval-guardian/fixtures/pilot-candidates.json");
+
+  const runs = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      runNode(["evals/approval-guardian/evaluate.mjs", "--input", inputPath, "--decision-log", ledgerPath], process.cwd()),
+    ),
+  );
+
+  assert.deepEqual(
+    runs.map((run) => run.code),
+    [0, 0, 0, 0, 0],
+    runs.map((run) => run.stderr).join("\n"),
+  );
+  const records = fs.readFileSync(ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(records.length, 5);
+  assert.deepEqual(
+    records.map((record) => record.candidateId).sort(),
+    ["pilot-auto-approve", "pilot-auto-reject", "pilot-human-escalation", "pilot-quarantine-hash-mismatch", "pilot-revise"],
+  );
+});
+
+test("explains and replays pinned decision records", () => {
+  const candidate = validCandidate("pinned");
+  const record = classifyCandidate(candidate);
+  const explanation = explainDecision(record);
+  assert.equal(explanation.recordType, "approval_guardian_explanation");
+  assert.match(explanation.summary, /AUTO_APPROVE/);
+  assert.equal(explanation.replay.inputPacketSha256, record.inputPacketSha256);
+
+  const replay = replayDecisions([record], [candidate]);
+  assert.equal(replay.recordType, "approval_guardian_replay");
+  assert.equal(replay.passed, 1);
+  assert.equal(replay.failed, 0);
+
+  const tampered = replayDecisions([{ ...record, decisionRecordId: "0".repeat(64) }], [candidate]);
+  assert.equal(tampered.passed, 0);
+  assert.equal(tampered.failed, 1);
 });
 
 test("reports escalation, false decision, and override metrics", () => {
