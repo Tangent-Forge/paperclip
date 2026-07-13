@@ -911,6 +911,51 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["skills/paperclipai/paperclip/release-changelog/SKILL.md"])).toContain("paperclipai/paperclip/release-changelog");
   });
 
+  it("preserves bundled skill repository paths in portable source metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySkillSvc.listFull.mockResolvedValue([
+      {
+        id: "skill-doc-maintenance",
+        companyId: "company-1",
+        key: "paperclipai/paperclip/doc-maintenance",
+        slug: "doc-maintenance",
+        name: "doc-maintenance",
+        description: "Bundled doc maintenance skill",
+        markdown: "---\nname: doc-maintenance\n---\n\n# Doc Maintenance\n",
+        sourceType: "github",
+        sourceLocator: "https://github.com/paperclipai/paperclip/tree/master/packages/skills-catalog/catalog/bundled/docs/doc-maintenance",
+        sourceRef: "0123456789abcdef0123456789abcdef01234567",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: {
+          sourceKind: "paperclip_bundled",
+          owner: "paperclipai",
+          repo: "paperclip",
+          ref: "0123456789abcdef0123456789abcdef01234567",
+          trackingRef: "master",
+          repoSkillDir: "packages/skills-catalog/catalog/bundled/docs/doc-maintenance",
+        },
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: false,
+        agents: false,
+        projects: false,
+        issues: false,
+        skills: true,
+      },
+    });
+
+    const markdown = asTextFile(exported.files["skills/paperclipai/paperclip/doc-maintenance/SKILL.md"]);
+    expect(markdown).toContain('path: "packages/skills-catalog/catalog/bundled/docs/doc-maintenance"');
+    expect(markdown).toContain("https://github.com/paperclipai/paperclip/tree/master/packages/skills-catalog/catalog/bundled/docs/doc-maintenance");
+    expect(markdown).not.toContain('path: "skills/doc-maintenance"');
+  });
+
   it("builds export previews without tasks by default", async () => {
     const portability = companyPortabilityService({} as any);
 
