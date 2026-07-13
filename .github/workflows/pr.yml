@@ -365,6 +365,9 @@ jobs:
         # browser bundles inside the 30 minute job budget.
         run: google-chrome --version
 
+      - name: Build workspace packages
+        run: pnpm build
+
       - name: Generate Paperclip config
         run: |
           mkdir -p ~/.paperclip/instances/default

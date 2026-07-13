@@ -385,6 +385,9 @@ const acpxLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: acpxAgentConfigurationDoc,
+  models: acpxModels,
+  listModels: listAcpxModels,
+  refreshModels: listAcpxModels,
   getConfigSchema: getAcpxConfigSchema,
 };
 

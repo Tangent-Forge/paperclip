@@ -3337,6 +3337,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 
   it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
+    const companyId = randomUUID();
     const sourceIssueId = randomUUID();
     const recoveryIssueId = randomUUID();
     await db.insert(issues).values([
