@@ -24,6 +24,10 @@ jobs:
           ref: master
 
       - name: Dependency Review
+        # Dependency Review is unsupported on forks; keep the gate for the
+        # canonical upstream repository while allowing fork PRs to run the
+        # repository-local policy checks below.
+        if: github.event.repository.fork != true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
