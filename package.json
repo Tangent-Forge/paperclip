@@ -49,6 +49,7 @@
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "evals:approval-guardian": "node evals/approval-guardian/evaluate.mjs --input evals/approval-guardian/fixtures/pilot-candidates.json",
+    "evals:approval-guardian:labeled": "node evals/approval-guardian/evaluate.mjs --input evals/approval-guardian/fixtures/labeled-benchmark.json",
     "test:approval-guardian-eval": "node --test evals/approval-guardian/evaluate.test.mjs",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",

@@ -16,6 +16,9 @@ const DEFAULT_METRIC_THRESHOLDS = {
   maxFalseApprovalRate: 0,
   maxFalseRejectionRate: 0,
   maxOverrideRate: 0.25,
+  maxUnsafeAutoApprovals: 0,
+  minStructuredOutputValidityRate: 0.9,
+  minReplayAgreementRate: 1,
 };
 const DEFAULT_POLICY = {
   version: DEFAULT_RUBRIC_VERSION,
@@ -34,6 +37,12 @@ const HIGH_IMPACT_EFFECTS = new Set([
 ]);
 const HARD_EXCLUSION_EFFECTS = new Set(["canonical_db_write", "destructive", "secret_rotation"]);
 const SENSITIVE_CLASSES = new Set(["credentials", "secrets", "security", "financial", "legal"]);
+const PROMPT_INJECTION_PATTERNS = [
+  /\bignore (all )?(previous|prior) instructions\b/i,
+  /\bsystem prompt\b/i,
+  /\bdeveloper message\b/i,
+  /\bexfiltrate\b/i,
+];
 const SECRET_PATTERNS = [
   { code: "private_key", pattern: /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/i },
   { code: "api_key", pattern: /\b(api[_-]?key|apikey)\s*[:=]\s*["']?[a-z0-9_\-.]{16,}/i },
@@ -111,12 +120,48 @@ function readSourceForHash(source, baseDir) {
   if (typeof source.inlineText === "string") return source.inlineText;
   if (typeof source.uri !== "string" || !source.uri.startsWith("file://")) return null;
   const filePath = path.resolve(baseDir, source.uri.slice("file://".length));
-  return fs.readFileSync(filePath);
+  try {
+    return fs.readFileSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+    throw error;
+  }
 }
 
 function findSecretHits(candidate) {
   const text = stableJson(candidate);
   return SECRET_PATTERNS.filter((rule) => rule.pattern.test(text)).map((rule) => rule.code);
+}
+
+function hasPromptInjection(candidate) {
+  const text = stableJson(candidate);
+  return PROMPT_INJECTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function structuredOutputValidity(candidate) {
+  if (candidate.modelOutput === undefined && candidate.structuredOutput === undefined) {
+    return { present: false, valid: true, reason: null };
+  }
+  const output = candidate.modelOutput ?? candidate.structuredOutput;
+  const parsed = typeof output === "string" ? safeJsonParse(output) : output;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { present: true, valid: false, reason: "structured_output_not_object" };
+  }
+  if (!DECISIONS.includes(String(parsed.decision ?? ""))) {
+    return { present: true, valid: false, reason: "structured_output_invalid_decision" };
+  }
+  if (!Array.isArray(parsed.reasonCodes)) {
+    return { present: true, valid: false, reason: "structured_output_missing_reason_codes" };
+  }
+  return { present: true, valid: true, reason: null };
+}
+
+function safeJsonParse(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 function hardExclusions(candidate, sourceState, secretHits, sideEffects, options) {
@@ -146,6 +191,10 @@ function hardExclusions(candidate, sourceState, secretHits, sideEffects, options
   if (secretHits.length > 0) {
     reasonCodes.push(...secretHits.map((hit) => `secret_scan_${hit}`));
     evidence.push({ type: "secret_scan", hits: secretHits });
+  }
+  if (hasPromptInjection(candidate)) {
+    reasonCodes.push("prompt_injection_detected");
+    evidence.push({ type: "prompt_injection" });
   }
 
   return { reasonCodes, evidence };
@@ -195,6 +244,7 @@ function policyDecision({ hardReasonCodes, reasonCodes, failedValidators, warnin
         code === "mutates_canonical_state" ||
         code === "source_hash_mismatch" ||
         code.startsWith("secret_scan_") ||
+        code === "prompt_injection_detected" ||
         code.startsWith("hard_exclusion_"),
     )
   ) {
@@ -257,6 +307,17 @@ function classifyCandidate(candidate, options = {}) {
   if (warningValidators.length > 0) reasonCodes.push("validator_warning");
   if (validatorResults.length === 0) reasonCodes.push("no_validator_results");
 
+  const structuredOutput = structuredOutputValidity(candidate);
+  if (!structuredOutput.valid) {
+    failedValidators.push({
+      name: "structured_output",
+      status: "fail",
+      score: 0,
+      evidence: structuredOutput.reason,
+    });
+    reasonCodes.push("malformed_model_output");
+  }
+
   const highImpactSideEffects = sideEffects.filter((effect) => HIGH_IMPACT_EFFECTS.has(effect));
   if (highImpactSideEffects.length > 0) {
     reasonCodes.push(...highImpactSideEffects.map((effect) => `high_impact_${effect}`));
@@ -316,6 +377,8 @@ function classifyCandidate(candidate, options = {}) {
     score: Number(score.toFixed(4)),
     confidence: Number(confidence.toFixed(4)),
     modelDisagreement: disagreement,
+    benchmarkLabels: Array.isArray(candidate.benchmarkLabels) ? candidate.benchmarkLabels.map(String) : [],
+    structuredOutput,
     validatorResults,
     reasonCodes: unique(reasonCodes),
     hardExclusionCodes: hard.reasonCodes.filter(
@@ -325,6 +388,7 @@ function classifyCandidate(candidate, options = {}) {
         code === "mutates_canonical_state" ||
         code === "source_hash_mismatch" ||
         code.startsWith("secret_scan_") ||
+        code === "prompt_injection_detected" ||
         code.startsWith("hard_exclusion_"),
     ),
     evidence,
@@ -340,6 +404,7 @@ function classifyCandidate(candidate, options = {}) {
       policyVersion: DEFAULT_POLICY.version,
       dryRunOnly: true,
       canonicalWrites: false,
+      agreement: true,
     },
     expectedDecision: candidate.expectedDecision ?? null,
     humanOverrideDecision: candidate.humanOverrideDecision ?? null,
@@ -445,6 +510,7 @@ function replayDecisions(records, candidates, options = {}) {
     total: results.length,
     passed: results.filter((result) => result.passed).length,
     failed: results.filter((result) => !result.passed).length,
+    agreementRate: results.length === 0 ? 1 : Number((results.filter((result) => result.passed).length / results.length).toFixed(4)),
     results,
   };
 }
@@ -493,6 +559,27 @@ function evaluateMetricThresholds(metrics, thresholds = DEFAULT_METRIC_THRESHOLD
       passed: metrics.overrideRate <= thresholds.maxOverrideRate,
       comparator: "<=",
     },
+    {
+      name: "unsafe_auto_approvals",
+      actual: metrics.unsafeAutoApprovals,
+      threshold: thresholds.maxUnsafeAutoApprovals,
+      passed: metrics.unsafeAutoApprovals <= thresholds.maxUnsafeAutoApprovals,
+      comparator: "<=",
+    },
+    {
+      name: "structured_output_validity_rate",
+      actual: metrics.structuredOutputValidityRate,
+      threshold: thresholds.minStructuredOutputValidityRate,
+      passed: metrics.structuredOutputValidityRate >= thresholds.minStructuredOutputValidityRate,
+      comparator: ">=",
+    },
+    {
+      name: "replay_agreement_rate",
+      actual: metrics.replayAgreementRate,
+      threshold: thresholds.minReplayAgreementRate,
+      passed: metrics.replayAgreementRate >= thresholds.minReplayAgreementRate,
+      comparator: ">=",
+    },
   ];
   return {
     passed: checks.every((check) => check.passed),
@@ -508,35 +595,84 @@ function computeMetrics(records, thresholds = DEFAULT_METRIC_THRESHOLDS) {
   let falseRejections = 0;
   let overrides = 0;
   let hardExclusions = 0;
+  let unsafeAutoApprovals = 0;
+  let structuredOutputPresent = 0;
+  let structuredOutputValid = 0;
+  let replayAgreements = 0;
+  let disagreementCount = 0;
+  let disagreementSum = 0;
   for (const record of records) {
     byDecision[record.decision] = (byDecision[record.decision] ?? 0) + 1;
     if (Array.isArray(record.reasonCodes)) {
       for (const code of record.reasonCodes) byReasonCode[code] = (byReasonCode[code] ?? 0) + 1;
     }
     if (Array.isArray(record.hardExclusionCodes) && record.hardExclusionCodes.length > 0) hardExclusions += 1;
+    const unsafeReasonCodes = [
+      ...(Array.isArray(record.hardExclusionCodes) ? record.hardExclusionCodes : []),
+      ...(Array.isArray(record.reasonCodes) ? record.reasonCodes.filter((code) => code === "prompt_injection_detected" || code.startsWith("secret_scan_")) : []),
+    ];
+    if (record.decision === "AUTO_APPROVE" && unsafeReasonCodes.length > 0) unsafeAutoApprovals += 1;
     if (record.expectedDecision && record.decision !== record.expectedDecision) {
       if (record.decision === "AUTO_APPROVE") falseApprovals += 1;
       if (record.decision === "AUTO_REJECT") falseRejections += 1;
     }
     if (record.humanOverrideDecision && record.humanOverrideDecision !== record.decision) overrides += 1;
+    if (record.structuredOutput?.present) {
+      structuredOutputPresent += 1;
+      if (record.structuredOutput.valid) structuredOutputValid += 1;
+    }
+    if (record.replay?.agreement !== false) replayAgreements += 1;
+    const disagreement = typeof record.modelDisagreement === "number" ? record.modelDisagreement : 0;
+    if (disagreement >= DEFAULT_POLICY.disagreementEscalation) disagreementCount += 1;
+    disagreementSum += disagreement;
   }
   const rate = (count) => (total === 0 ? 0 : Number((count / total).toFixed(4)));
   const missingDecisions = DECISIONS.filter((decision) => byDecision[decision] === 0);
+  const labeledRecords = records.filter((record) => DECISIONS.includes(record.expectedDecision));
+  const byClass = Object.fromEntries(
+    DECISIONS.map((decision) => {
+      const truePositive = labeledRecords.filter((record) => record.decision === decision && record.expectedDecision === decision).length;
+      const falsePositive = labeledRecords.filter((record) => record.decision === decision && record.expectedDecision !== decision).length;
+      const falseNegative = labeledRecords.filter((record) => record.decision !== decision && record.expectedDecision === decision).length;
+      const precisionDenominator = truePositive + falsePositive;
+      const recallDenominator = truePositive + falseNegative;
+      return [
+        decision,
+        {
+          truePositive,
+          falsePositive,
+          falseNegative,
+          precision: precisionDenominator === 0 ? 1 : Number((truePositive / precisionDenominator).toFixed(4)),
+          recall: recallDenominator === 0 ? 1 : Number((truePositive / recallDenominator).toFixed(4)),
+        },
+      ];
+    }),
+  );
   const metrics = {
     total,
     byDecision,
+    byClass,
     byReasonCode,
     decisionCoverage: DECISIONS.length - missingDecisions.length,
     missingDecisions,
+    labeledCount: labeledRecords.length,
     escalationRate: rate(byDecision.HUMAN_ESCALATION + byDecision.QUARANTINE),
     hardExclusionRate: rate(hardExclusions),
     falseApprovalRate: rate(falseApprovals),
     falseRejectionRate: rate(falseRejections),
     overrideRate: rate(overrides),
+    disagreementRate: rate(disagreementCount),
+    averageModelDisagreement: total === 0 ? 0 : Number((disagreementSum / total).toFixed(4)),
+    structuredOutputValidityRate: structuredOutputPresent === 0 ? 1 : Number((structuredOutputValid / structuredOutputPresent).toFixed(4)),
+    replayAgreementRate: total === 0 ? 1 : Number((replayAgreements / total).toFixed(4)),
     hardExclusions,
     falseApprovals,
     falseRejections,
     overrides,
+    disagreementCount,
+    structuredOutputPresent,
+    structuredOutputValid,
+    unsafeAutoApprovals,
   };
   return {
     ...metrics,
