@@ -508,6 +508,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
+  "GET /api/health/metrics",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -757,6 +758,20 @@ registry.registerPath({
       bootstrapInviteActive: z.boolean().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/metrics",
+  tags: ["health"],
+  summary: "Get Prometheus-formatted health metrics",
+  responses: {
+    200: {
+      description: "Prometheus metrics",
+      content: { "text/plain": { schema: { type: "string" } } },
+    },
+    403: r.forbidden,
   },
 });
 
