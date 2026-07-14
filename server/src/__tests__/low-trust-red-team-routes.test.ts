@@ -534,6 +534,12 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companySkills);
+    // Some low-trust continuation paths can enqueue document revision writes while
+    // heartbeat cleanup is draining. Run the document cleanup a second time just
+    // before removing companies so async quarantine/continuation revisions do not
+    // leave a company FK behind.
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(companies);
   });
 
