@@ -33,13 +33,24 @@ Only `process` is implemented for live MCP stdio execution right now; `http` and
 
 Process mode behavior:
 
-- build a bounded Paperclip task-context payload from the execution context
+- build a bounded Paperclip task-context payload from a top-level allowlist only
+- keep the outbound context to the current run / agent / runtime identifiers plus approved task fields
+- redact common secret-shaped values and cap nested depth, string length, and total payload size
 - connect to the target over stdio via the MCP SDK
 - make exactly one MCP tool call
 - relay target stderr to adapter stderr logs
 - capture the MCP tool result, including `isError` responses
+- sanitize returned `content` and `structuredContent` with corresponding defense-in-depth redaction and size limits
 - return timeout and transport failures with stable adapter error codes
 - fail closed on invalid config before any spawn attempt
+
+Privacy and resource boundaries:
+
+- Allowed task-context keys are `issueId`, `taskId`, `prompt`, `title`, `description`, `instructions`, `comment`, `wakeReason`, `paperclipTaskMarkdown`, `paperclipIssue`, `paperclipWake`, `paperclipWakeComment`, and `paperclipContinuationSummary`.
+- Adapter config, auth/session values, secret manifests, workspace internals, and unknown top-level context keys are never included in the MCP task payload.
+- Context values are limited to 4 nested levels, 24 keys per object, 24 array entries, 4,096 characters per string, and a shared 64 KiB character budget.
+- MCP results are limited to 4 nested levels, 32 keys per object, 32 array entries, 8,192 characters per string, and a shared 128 KiB character budget across content and structured content.
+- Sensitive-key and common Bearer/labeled-secret redaction is defense in depth, not a guarantee that arbitrary tool output is secret-free. The configured MCP target and downstream result consumers still require normal governance.
 
 ## Registration
 

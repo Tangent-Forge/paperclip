@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServerAdapter } from "../src/server/index.js";
 
@@ -15,21 +16,17 @@ function makeExecContext(config: Record<string, unknown>) {
   const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
   const metas: unknown[] = [];
   const spawns: Array<{ pid: number; processGroupId: number | null; startedAt: string }> = [];
-  return {
-    ctx: {
-      runId: "run-123",
-      agent: { id: "agent-1", companyId: "company-1", name: "Ada", adapterType: "mcp_bridge", adapterConfig: {} },
-      runtime: { sessionId: "session-1", sessionParams: { x: 1 }, sessionDisplayId: "disp-1", taskKey: "task-1" },
-      config,
-      context: { issueId: "issue-7", prompt: "do the thing" },
-      onLog: vi.fn(async (stream, chunk) => { logs.push({ stream, chunk }); }),
-      onMeta: vi.fn(async (meta) => { metas.push(meta); }),
-      onSpawn: vi.fn(async (meta) => { spawns.push(meta); }),
-    },
-    logs,
-    metas,
-    spawns,
+  const ctx: AdapterExecutionContext = {
+    runId: "run-123",
+    agent: { id: "agent-1", companyId: "company-1", name: "Ada", adapterType: "mcp_bridge", adapterConfig: {} },
+    runtime: { sessionId: "session-1", sessionParams: { x: 1 }, sessionDisplayId: "disp-1", taskKey: "task-1" },
+    config,
+    context: { issueId: "issue-7", prompt: "do the thing" },
+    onLog: vi.fn(async (stream, chunk) => { logs.push({ stream, chunk }); }),
+    onMeta: vi.fn(async (meta) => { metas.push(meta); }),
+    onSpawn: vi.fn(async (meta) => { spawns.push(meta); }),
   };
+  return { ctx, logs, metas, spawns };
 }
 
 function resultJson(result: ExecResult): Record<string, unknown> {
@@ -80,22 +77,34 @@ describe("mcp bridge process mode", () => {
     const cwd = join(tmpdir(), `paperclip-mcp-${randomUUID()}`);
     mkdirSync(cwd, { recursive: true });
     tempDirs.push(cwd);
-    const { ctx, logs, metas, spawns } = makeExecContext({ mode: "process", command: process.execPath, args: [fixturePath, "echo"], cwd, timeoutSec: 5, toolName: "echo", toolArguments: { literal: "value" }, contextArgument: "taskContext", env: { PAPERCLIP_TEST_FLAG: "1" } });
+    const { ctx, logs, metas, spawns } = makeExecContext({
+      mode: "process",
+      command: process.execPath,
+      args: [fixturePath, "echo"],
+      cwd,
+      timeoutSec: 5,
+      toolName: "echo",
+      toolArguments: { literal: "value" },
+      contextArgument: "taskContext",
+      env: { PAPERCLIP_TEST_FLAG: "1" },
+    });
     const result = await adapter.execute(ctx);
     expect(result.exitCode).toBe(0);
     expect(result.resultJson?.toolName).toBe("echo");
     expect(result.summary).toContain("mode");
     expect(spawns).toHaveLength(1);
     expect(metas).toHaveLength(1);
-    expect(JSON.stringify(metas[0])).not.toContain("sessionParams");
-    expect(JSON.stringify(metas[0])).not.toContain("authToken");
-    expect(JSON.stringify(metas[0])).not.toContain("adapterConfig");
-    expect(JSON.stringify(metas[0])).toContain(`"command":"${basename(process.execPath)}"`);
-    expect(JSON.stringify(metas[0])).toContain(`"commandArgs":["${fixturePath}","echo"]`);
-    expect(JSON.stringify(metas[0])).toContain('"PAPERCLIP_TEST_FLAG":"[redacted]"');
-    expect(JSON.stringify(result.resultJson)).not.toContain("adapterConfig");
-    expect(JSON.stringify(result.resultJson)).not.toContain("authToken");
-    expect(JSON.stringify(result.resultJson)).not.toContain("sessionParams");
+    const metaJson = JSON.stringify(metas[0]);
+    expect(metaJson).not.toContain("sessionParams");
+    expect(metaJson).not.toContain("authToken");
+    expect(metaJson).not.toContain("adapterConfig");
+    expect(metaJson).toContain(`"command":"${basename(process.execPath)}"`);
+    expect(metaJson).toContain(`"commandArgs":["${fixturePath}","echo"]`);
+    expect(metaJson).toContain('"PAPERCLIP_TEST_FLAG":"[redacted]"');
+    const resultJsonText = JSON.stringify(result.resultJson);
+    expect(resultJsonText).not.toContain("adapterConfig");
+    expect(resultJsonText).not.toContain("authToken");
+    expect(resultJsonText).not.toContain("sessionParams");
     expect(logs.some((entry) => entry.stream === "stderr" && entry.chunk.includes("fixture-stderr-marker"))).toBe(true);
     const fixture = parseFixture(result);
     expect(fixture.received.callCount).toBe(1);
@@ -107,6 +116,56 @@ describe("mcp bridge process mode", () => {
     expect(fixture.received.literal).toBe("value");
     expect(fixture.received.cwd).toBe(cwd);
     expect(fixture.received.env.PAPERCLIP_TEST_FLAG).toBe("1");
+  });
+
+  it("redacts and bounds oversized MCP results", async () => {
+    const { ctx } = makeExecContext({ mode: "process", command: process.execPath, args: [fixturePath, "oversized"], toolName: "oversized" });
+    const result = await adapter.execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const resultText = JSON.stringify(result.resultJson);
+    expect(resultText.length).toBeLessThan(150000);
+    expect(resultText).not.toContain("examplebearertoken123");
+    expect(resultText).not.toContain("example-token-value");
+    expect(resultText).not.toContain("example-api-value");
+    expect(resultText).not.toContain("example-secret-value");
+    expect(resultText).toContain("[redacted]");
+    expect(resultText).toContain("keep-me");
+    expect(result.summary).toContain("normal text");
+    expect(result.summary?.length ?? 0).toBeLessThanOrEqual(1000);
+  });
+
+  it("allowlists, redacts, and bounds task context before the tool call", async () => {
+    const { ctx } = makeExecContext({ mode: "process", command: process.execPath, args: [fixturePath, "echo"], toolName: "echo" });
+    ctx.agent.adapterConfig = { authorization: "Bearer adapter-token-value" };
+    ctx.runtime.sessionParams = { token: "session-token-value" };
+    ctx.context = {
+      issueId: "issue-7",
+      prompt: `keep this prompt Bearer contextbearertoken123 ${"p".repeat(6000)}`,
+      paperclipIssue: {
+        id: "issue-7",
+        title: "Allowed issue",
+        apiKey: "nested-api-value",
+        nested: { authorization: "Bearer nestedbearertoken123", ok: true },
+      },
+      paperclipWake: Array.from({ length: 80 }, (_, index) => ({ index, token: `wake-token-${index}` })),
+      paperclipSecrets: { manifest: ["credential-name"] },
+      unknownField: { password: "unknown-password-value" },
+      authToken: "context-auth-value",
+    };
+    const result = await adapter.execute(ctx);
+    const fixture = parseFixture(result);
+    const outbound = fixture.received.context.context;
+    const outboundText = JSON.stringify(outbound);
+    expect(outbound.issueId).toBe("issue-7");
+    expect(outbound.paperclipIssue.title).toBe("Allowed issue");
+    expect(outbound.paperclipIssue.apiKey).toBe("[redacted]");
+    expect(outbound.paperclipIssue.nested.authorization).toBe("[redacted]");
+    expect(outbound.paperclipWake).toHaveLength(24);
+    expect(outbound.prompt.length).toBeLessThanOrEqual(4096);
+    expect(outboundText.length).toBeLessThan(70_000);
+    for (const forbidden of ["paperclipSecrets", "unknownField", "authToken", "adapter-token-value", "session-token-value", "contextbearertoken123", "nestedbearertoken123", "nested-api-value", "unknown-password-value"]) {
+      expect(outboundText).not.toContain(forbidden);
+    }
   });
 
   it("supports the default context argument name", async () => {
@@ -132,6 +191,16 @@ describe("mcp bridge process mode", () => {
     expect(result.errorCode).toBe("mcp_tool_error");
     expect(result.resultJson?.isError).toBe(true);
     expect((result.resultJson?.structuredContent as { failed?: boolean }).failed).toBe(true);
+  });
+
+  it("redacts secrets in tool errors while preserving error semantics", async () => {
+    const { ctx } = makeExecContext({ mode: "process", command: process.execPath, args: [fixturePath, "tool-error"], toolName: "tool-error", toolArguments: { authorization: "Bearer secret-token-value" } });
+    const result = await adapter.execute(ctx);
+    const resultText = JSON.stringify(result.resultJson);
+    expect(result.errorCode).toBe("mcp_tool_error");
+    expect(result.summary).toContain("tool error");
+    expect(resultText).not.toContain("secret-token-value");
+    expect(resultText).toContain("[redacted]");
   });
 
   it("times out a delayed tool call and terminates the child", async () => {

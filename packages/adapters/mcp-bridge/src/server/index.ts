@@ -47,9 +47,9 @@ Core fields:
 Process mode behavior:
 - Paperclip connects to the target over stdio using the MCP SDK.
 - Paperclip makes exactly one MCP tool call per execution.
-- The tool call always includes a bounded Paperclip task-context payload with runId, agent identity, runtime task/session identifiers, and the adapter execution context.
+- The tool call includes a size-bounded, defense-in-depth-redacted task payload: runId, minimal agent/runtime identifiers, and only approved task-context fields. Adapter config, auth/session data, secret manifests, workspace internals, and unknown context keys are excluded.
 - stderr is relayed as adapter stderr logs and is never treated as protocol stdout.
-- The adapter returns the MCP result payload on success, preserves MCP tool errors, and marks timeouts explicitly.
+- The adapter returns bounded/redacted MCP content and structured content on success, preserves MCP tool errors, and marks timeouts explicitly. Redaction is defense in depth, not a substitute for governing the configured target.
 - Invalid or unknown config shapes fail closed before any spawn attempt.
 
 Notes:

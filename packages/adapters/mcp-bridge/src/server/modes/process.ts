@@ -15,6 +15,35 @@ const MIN_TIMEOUT_SEC = 1;
 const MAX_TIMEOUT_SEC = 3600;
 const MAX_SUMMARY_CHARS = 1000;
 const MAX_ERROR_CHARS = 400;
+const MAX_CONTEXT_DEPTH = 4;
+const MAX_CONTEXT_KEYS = 24;
+const MAX_CONTEXT_ARRAY_ENTRIES = 24;
+const MAX_CONTEXT_STRING_CHARS = 4096;
+const MAX_CONTEXT_TOTAL_CHARS = 64 * 1024;
+const MAX_RESULT_DEPTH = 4;
+const MAX_RESULT_KEYS = 32;
+const MAX_RESULT_ARRAY_ENTRIES = 32;
+const MAX_RESULT_STRING_CHARS = 8192;
+const MAX_RESULT_TOTAL_CHARS = 128 * 1024;
+const REDACTED = "[redacted]";
+const CONTEXT_ALLOWED_KEYS = new Set([
+  "issueId",
+  "taskId",
+  "prompt",
+  "title",
+  "description",
+  "instructions",
+  "comment",
+  "wakeReason",
+  "paperclipTaskMarkdown",
+  "paperclipIssue",
+  "paperclipWake",
+  "paperclipWakeComment",
+  "paperclipContinuationSummary",
+]);
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|passwd|api[-_]?key|private[-_]?key|authorization|cookie|credential)/i;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/g;
+const LABELED_SECRET_PATTERN = /\b(?:token|secret|password|passwd|api[-_]?key|private[-_]?key|authorization|cookie|credential)\b\s*[:=]\s*[^\s,;]+/gi;
 
 type CleanupStep = () => Promise<void>;
 
@@ -37,7 +66,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function redactMessage(value: unknown): string {
   const text = typeof value === "string" ? value : value instanceof Error ? value.message : String(value ?? "");
-  return text.replace(/([A-Za-z]:\\|\/)?[^\s]*?(?:token|secret|password|passwd|key)[^\s]*/gi, "[redacted]");
+  return sanitizeText(text, MAX_ERROR_CHARS);
 }
 
 function truncateMessage(message: string, limit = MAX_ERROR_CHARS): string {
@@ -60,6 +89,99 @@ function isJsonSafe(value: unknown, seen = new Set<unknown>()): boolean {
   seen.add(value);
   if (Array.isArray(value)) return value.every((item) => isJsonSafe(item, seen));
   return Object.entries(value).every(([key, entry]) => typeof key === "string" && isJsonSafe(entry, seen));
+}
+
+function sanitizeText(text: string, limit: number): string {
+  const redacted = text.replace(BEARER_PATTERN, REDACTED).replace(LABELED_SECRET_PATTERN, (match) => match.replace(/[:=].*$/, `: ${REDACTED}`));
+  return redacted.length > limit ? `${redacted.slice(0, limit - 1)}…` : redacted;
+}
+
+function sanitizeJsonValue(
+  value: unknown,
+  options: {
+    maxDepth: number;
+    maxKeys: number;
+    maxArrayEntries: number;
+    maxStringChars: number;
+    totalCharsLeft: { value: number };
+  },
+  depth = 0,
+  seen = new Set<unknown>(),
+): unknown {
+  if (options.totalCharsLeft.value <= 0) return "…";
+  if (value === null) return null;
+  if (typeof value === "string") {
+    const sanitized = sanitizeText(value, Math.min(options.maxStringChars, options.totalCharsLeft.value));
+    options.totalCharsLeft.value -= sanitized.length;
+    return sanitized;
+  }
+  const kind = typeof value;
+  if (kind === "number") return Number.isFinite(value) ? value : REDACTED;
+  if (kind === "boolean") return value;
+  if (kind === "bigint" || kind === "function" || kind === "symbol" || kind === "undefined") return undefined;
+  if (!isPlainObject(value) && !Array.isArray(value)) return undefined;
+  if (seen.has(value)) return "[cycle]";
+  if (depth >= options.maxDepth) return "[depth]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const output: unknown[] = [];
+      for (const entry of value.slice(0, options.maxArrayEntries)) {
+        const sanitized = sanitizeJsonValue(entry, options, depth + 1, seen);
+        if (sanitized !== undefined) output.push(sanitized);
+        if (options.totalCharsLeft.value <= 0) break;
+      }
+      return output;
+    }
+    const output: Record<string, unknown> = {};
+    let count = 0;
+    for (const [key, entry] of Object.entries(value)) {
+      if (count >= options.maxKeys || options.totalCharsLeft.value <= 0) break;
+      count += 1;
+      const sensitive = SENSITIVE_KEY_PATTERN.test(key);
+      if (sensitive) {
+        output[key] = REDACTED;
+        continue;
+      }
+      const sanitized = sanitizeJsonValue(entry, options, depth + 1, seen);
+      if (sanitized !== undefined) output[key] = sanitized;
+    }
+    return output;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function sanitizeContextPayload(ctx: AdapterExecutionContext): Record<string, unknown> {
+  const context = isPlainObject(ctx.context) ? ctx.context : {};
+  const allowedContext: Record<string, unknown> = {};
+  for (const key of Object.keys(context)) {
+    if (!CONTEXT_ALLOWED_KEYS.has(key)) continue;
+    allowedContext[key] = context[key];
+  }
+  const sanitized = sanitizeJsonValue({
+    runId: ctx.runId,
+    agent: { id: ctx.agent.id, companyId: ctx.agent.companyId, name: ctx.agent.name },
+    runtime: { taskKey: ctx.runtime.taskKey, sessionDisplayId: ctx.runtime.sessionDisplayId },
+    context: allowedContext,
+  }, {
+    maxDepth: MAX_CONTEXT_DEPTH,
+    maxKeys: MAX_CONTEXT_KEYS,
+    maxArrayEntries: MAX_CONTEXT_ARRAY_ENTRIES,
+    maxStringChars: MAX_CONTEXT_STRING_CHARS,
+    totalCharsLeft: { value: MAX_CONTEXT_TOTAL_CHARS },
+  });
+  return isPlainObject(sanitized) ? sanitized : {};
+}
+
+function sanitizeResultPayload(value: unknown, totalCharsLeft: { value: number }): unknown {
+  return sanitizeJsonValue(value, {
+    maxDepth: MAX_RESULT_DEPTH,
+    maxKeys: MAX_RESULT_KEYS,
+    maxArrayEntries: MAX_RESULT_ARRAY_ENTRIES,
+    maxStringChars: MAX_RESULT_STRING_CHARS,
+    totalCharsLeft,
+  });
 }
 
 function parseStringArray(value: unknown): string[] | null {
@@ -107,7 +229,7 @@ function validateProcessConfig(config: Record<string, unknown>): { ok: true; val
 }
 
 function buildContextPayload(ctx: AdapterExecutionContext): Record<string, unknown> {
-  return { runId: ctx.runId, agent: { id: ctx.agent.id, companyId: ctx.agent.companyId, name: ctx.agent.name }, runtime: { taskKey: ctx.runtime.taskKey, sessionDisplayId: ctx.runtime.sessionDisplayId }, context: ctx.context };
+  return sanitizeContextPayload(ctx);
 }
 
 function createInvocationMeta(config: ProcessConfig, timeoutSec: number): AdapterInvocationMeta {
@@ -196,7 +318,7 @@ export async function executeProcessMode(ctx: AdapterExecutionContext): Promise<
     client = null;
     await closing.close().catch(() => undefined);
   };
-  const cleanup = async () => {
+  const cleanup: CleanupStep = async () => {
     try {
       if (started) await closeClient();
       else await closeTransport();
@@ -206,8 +328,7 @@ export async function executeProcessMode(ctx: AdapterExecutionContext): Promise<
   };
   const fail = async (error: unknown): Promise<AdapterExecutionResult> => {
     const { errorCode, timedOut, message } = classifyError(error);
-    if (timedOut) await closeTransport().catch(() => undefined);
-    else await closeTransport().catch(() => undefined);
+    await closeTransport().catch(() => undefined);
     return { exitCode: 1, signal: null, timedOut, errorMessage: message, errorCode: timedOut ? "mcp_bridge_timeout" : started ? "mcp_bridge_protocol_error" : errorCode, resultJson: { ok: false, toolName: config.toolName, error: message }, summary: message };
   };
 
@@ -221,10 +342,14 @@ export async function executeProcessMode(ctx: AdapterExecutionContext): Promise<
     const mergedArgs = { ...config.toolArguments, [config.contextArgument]: buildContextPayload(ctx) };
     const callTimeout = Math.max(0, deadline - Date.now());
     const response = await raceWithTimeout(client.callTool({ name: config.toolName, arguments: mergedArgs }, undefined, { timeout: callTimeout, maxTotalTimeout: callTimeout }), callTimeout);
-    const content = normalizeContent((response as { content?: unknown }).content);
-    const structuredContent = (response as { structuredContent?: unknown }).structuredContent ?? null;
+    const resultBudget = { value: MAX_RESULT_TOTAL_CHARS };
+    const content = sanitizeResultPayload(normalizeContent((response as { content?: unknown }).content), resultBudget);
+    const structuredContent = sanitizeResultPayload((response as { structuredContent?: unknown }).structuredContent ?? null, resultBudget);
     const isError = Boolean((response as { isError?: unknown }).isError);
-    const textContent = content.map((entry) => (entry.type === "text" && typeof entry.text === "string" ? entry.text : null)).filter((value): value is string => Boolean(value)).join("\n");
+    const textContent = (content as Array<Record<string, unknown>>)
+      .map((entry) => (entry.type === "text" && typeof entry.text === "string" ? entry.text : null))
+      .filter((value): value is string => Boolean(value))
+      .join("\n");
     const resultJson = { ok: !isError, toolName: config.toolName, content, structuredContent, isError, contextArgument: config.contextArgument };
     const summary = summarizeText(textContent) ?? `MCP tool ${config.toolName} completed${isError ? " with error" : ""}.`;
     if (isError) return { exitCode: 1, signal: null, timedOut: false, errorMessage: summary, errorCode: "mcp_tool_error", resultJson, summary };
