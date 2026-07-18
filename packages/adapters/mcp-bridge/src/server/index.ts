@@ -9,7 +9,13 @@ import type {
 import { executeHttpMode, testHttpModeEnvironment } from "./modes/http.js";
 import { executePluginMode, testPluginModeEnvironment } from "./modes/plugin.js";
 import { executeProcessMode, testProcessModeEnvironment } from "./modes/process.js";
-import { createScaffoldDetectModel, readBridgeMode } from "./shared.js";
+import {
+  createInvalidModeEnvironmentResult,
+  createInvalidModeFailure,
+  createScaffoldDetectModel,
+  isBridgeMode,
+  readBridgeMode,
+} from "./shared.js";
 
 export const type = "mcp_bridge";
 export const label = "Paperclip MCP Bridge";
@@ -43,7 +49,17 @@ function getModeName(config: Record<string, unknown>): "http" | "plugin" | "proc
   return readBridgeMode(config);
 }
 
+function getExplicitMode(config: Record<string, unknown>): string | null {
+  const rawMode = typeof config.mode === "string" ? config.mode.trim().toLowerCase() : "";
+  return rawMode.length > 0 ? rawMode : null;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const explicitMode = getExplicitMode(ctx.config);
+  if (explicitMode && !isBridgeMode(explicitMode)) {
+    return createInvalidModeFailure(explicitMode);
+  }
+
   switch (getModeName(ctx.config)) {
     case "http":
       return executeHttpMode(ctx);
@@ -58,6 +74,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const explicitMode = getExplicitMode(ctx.config);
+  if (explicitMode && !isBridgeMode(explicitMode)) {
+    return createInvalidModeEnvironmentResult(explicitMode);
+  }
+
   switch (getModeName(ctx.config)) {
     case "http":
       return testHttpModeEnvironment(ctx);

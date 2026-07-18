@@ -11,14 +11,15 @@ It currently supports only scaffolded HTTP, plugin, and process execution modes.
 
 - Package name: `@tangent-forge/paperclip-mcp-adapter`
 - Adapter type: `mcp_bridge`
-- Entry point: `dist/server/index.js` after build, `src/server/index.ts` in workspace/dev
+- Entry point: built `dist/index.js` and `dist/server/index.js` after build
+- Workspace/dev source: `src/index.ts` and `src/server/index.ts`
 - Loader contract: `createServerAdapter()` returns the current `ServerAdapterModule` shape, including:
   - `testEnvironment`
   - optional `detectModel`
 
 ## Registration
 
-For local testing, add a record to the adapter plugin store that points at the package root:
+For local testing, add a record to the adapter plugin store as an array entry that points at the package root:
 
 ```json
 [
