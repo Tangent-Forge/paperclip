@@ -32,6 +32,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tests/tsconfig.json",
     "test": "vitest run --config vitest.config.ts",
     "test:dist": "pnpm run build && node tests/dist-smoke.mjs"
   },

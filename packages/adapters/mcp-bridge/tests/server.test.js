@@ -28,7 +28,6 @@ describe("createServerAdapter", () => {
 
 describe("MCP bridge adapter scaffold", () => {
   it.each([
-    ["process"],
     ["http"],
     ["plugin"],
   ])("returns a scaffold failure for %s mode", async (mode) => {
@@ -44,10 +43,10 @@ describe("MCP bridge adapter scaffold", () => {
     });
   });
 
-  it("defaults omitted mode to safe process mode", async () => {
+  it("rejects omitted process config as invalid before spawn", async () => {
     const result = await execute({ ...baseExecutionContext, config: {} });
-    expect(result.errorCode).toBe("mcp_bridge_not_implemented");
-    expect(result.errorMessage).toContain("process mode");
+    expect(result.errorCode).toBe("mcp_bridge_invalid_config");
+    expect(result.errorMessage).toContain("command must be a non-empty string");
   });
 
   it("rejects explicit unsupported execution modes", async () => {
@@ -62,7 +61,6 @@ describe("MCP bridge adapter scaffold", () => {
   });
 
   it.each([
-    ["process"],
     ["http"],
     ["plugin"],
   ])("returns a degraded environment result for %s mode", async (mode) => {
@@ -79,12 +77,12 @@ describe("MCP bridge adapter scaffold", () => {
     expect(result.checks[0]?.message).toContain("handler is present");
   });
 
-  it("defaults omitted mode to warn on safe process environment checks", async () => {
+  it("rejects omitted process environment checks as invalid config", async () => {
     const result = await testEnvironment({ ...baseEnvironmentContext, config: {} });
-    expect(result.status).toBe("warn");
+    expect(result.status).toBe("fail");
     expect(result.checks[0]).toMatchObject({
       code: "mcp_bridge_process_mode",
-      level: "warn",
+      level: "error",
     });
   });
 

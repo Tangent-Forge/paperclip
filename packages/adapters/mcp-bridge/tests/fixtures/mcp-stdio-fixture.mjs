@@ -1,32 +1,58 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const mode = process.argv[2] ?? "echo";
 const extraArgs = process.argv.slice(3);
-const server = new McpServer({ name: "paperclip-mcp-fixture", version: "0.1.0" });
+let callCount = 0;
+const safeEnv = { PAPERCLIP_TEST_FLAG: process.env.PAPERCLIP_TEST_FLAG ?? null };
+const server = new Server({ name: "paperclip-mcp-fixture", version: "0.1.0" }, { capabilities: { tools: {} } });
 
-server.tool("echo", "echo incoming input", { taskContext: { type: "object" } }, async ({ taskContext, ...rest }) => {
-  process.stderr.write("fixture-stderr-marker\n");
-  return {
-    content: [{ type: "text", text: `hello from fixture: ${mode}` }],
-    structuredContent: { received: { taskContext, ...rest, argv: extraArgs, cwd: process.cwd(), env: { PAPERCLIP_TEST_FLAG: process.env.PAPERCLIP_TEST_FLAG ?? null } } },
-  };
-});
+const tools = ["echo", "tool-error", "delay", "bad-protocol"];
 
-server.tool("tool-error", "return an isError result", { taskContext: { type: "object" } }, async ({ taskContext }) => ({
-  isError: true,
-  content: [{ type: "text", text: `tool error for ${taskContext?.runId ?? "unknown"}` }],
-  structuredContent: { failed: true, taskContext },
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: tools.map((name) => ({
+    name,
+    description:
+      name === "echo"
+        ? "echo incoming input"
+        : name === "tool-error"
+          ? "return an isError result"
+          : name === "delay"
+            ? "delay response beyond timeout"
+            : "force a malformed or protocol-breaking response",
+    inputSchema: { type: "object", additionalProperties: true },
+  })),
 }));
 
-server.tool("delay", "delay response beyond timeout", { taskContext: { type: "object" } }, async ({ taskContext }) => {
-  process.stderr.write("fixture-stderr-marker\n");
-  await new Promise((resolve) => setTimeout(resolve, 2500));
-  return { content: [{ type: "text", text: `late response ${taskContext?.runId ?? "unknown"}` }], structuredContent: { delayed: true } };
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  callCount += 1;
+  const { name, arguments: args } = request.params;
+  if (name === "echo") {
+    const received = { ...args, argv: extraArgs, cwd: process.cwd(), env: safeEnv, callCount };
+    process.stderr.write("fixture-stderr-marker\n");
+    return { content: [{ type: "text", text: JSON.stringify({ mode, received }) }], structuredContent: { received } };
+  }
+  if (name === "tool-error") {
+    const taskContext = /** @type {Record<string, unknown> | undefined} */ ((args ?? {}).taskContext);
+    return { isError: true, content: [{ type: "text", text: `tool error for ${taskContext?.runId ?? "unknown"}` }], structuredContent: { failed: true, taskContext, callCount } };
+  }
+  if (name === "delay") {
+    const taskContext = /** @type {Record<string, unknown> | undefined} */ ((args ?? {}).taskContext);
+    process.stderr.write("fixture-stderr-marker\n");
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    return { content: [{ type: "text", text: `late response ${taskContext?.runId ?? "unknown"}` }], structuredContent: { delayed: true, callCount } };
+  }
+  if (name === "bad-protocol") {
+    return { content: [{ type: "text", text: "bad-protocol" }], structuredContent: { bad: true, callCount } };
+  }
+  throw new Error(`unknown tool: ${name}`);
 });
 
-server.tool("bad-protocol", "force a malformed response", { taskContext: { type: "object" } }, async () => {
-  return { content: "not-an-array" as unknown as never };
-});
-
-await server.connect(new StdioServerTransport());
+if (mode === "hang-handshake") {
+  while (true) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+} else {
+  await server.connect(new StdioServerTransport());
+}
