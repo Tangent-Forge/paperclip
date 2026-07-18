@@ -21,23 +21,36 @@ for (const adapter of [adapterFromRoot, adapterFromServer]) {
   assert.equal(typeof adapter.testEnvironment, "function");
   assert.equal(typeof adapter.detectModel, "function");
   assert.deepEqual(adapter.models, []);
-  assert.ok(adapter.agentConfigurationDoc.includes("Adapter: mcp_bridge"));
+  assert.ok(adapter.agentConfigurationDoc.includes('command (string, required): executable path only'));
 
-  const envResult = await adapter.testEnvironment({
+  const envInvalid = await adapter.testEnvironment({
     companyId: "company-1",
     adapterType: adapter.type,
-    config: {},
+    config: { mode: "process", command: "", toolName: "echo" },
   });
-  assert.equal(envResult.status, "warn");
-  assert.equal(envResult.checks[0]?.level, "warn");
-  assert.equal(envResult.checks[0]?.code, "mcp_bridge_process_mode");
+  assert.equal(envInvalid.status, "fail");
+  assert.equal(envInvalid.checks[0]?.level, "error");
+  assert.equal(envInvalid.checks[0]?.code, "mcp_bridge_process_mode");
+
+  const envValid = await adapter.testEnvironment({
+    companyId: "company-1",
+    adapterType: adapter.type,
+    config: { mode: "process", command: process.execPath, toolName: "echo" },
+  });
+  assert.equal(envValid.status, "warn");
+  assert.equal(envValid.checks[0]?.level, "warn");
+  assert.equal(envValid.checks[0]?.code, "mcp_bridge_process_mode");
 
   const execResult = await adapter.execute({
-    config: {},
+    runId: "run-smoke",
+    agent: { id: "agent-1", companyId: "company-1", name: "Smoke", adapterType: adapter.type, adapterConfig: {} },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+    config: { mode: "process", command: "", toolName: "echo" },
     context: {},
+    onLog: async () => {},
   });
-  assert.equal(execResult.errorCode, "mcp_bridge_not_implemented");
-  assert.equal(execResult.resultJson?.implemented, false);
+  assert.equal(execResult.errorCode, "mcp_bridge_invalid_config");
+  assert.equal(execResult.resultJson?.ok, false);
 }
 
 const detectModelResult = await rootModule.detectModel();

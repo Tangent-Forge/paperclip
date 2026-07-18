@@ -1,11 +1,12 @@
 # @tangent-forge/paperclip-mcp-adapter
 
-Canonical TAN-23 scaffold for a Paperclip external adapter package.
+Canonical TAN-26 MCP bridge adapter for Paperclip.
 
 ## What it is
 
 This package exposes `createServerAdapter()` for the Paperclip external adapter loader.
-It currently supports only scaffolded HTTP, plugin, and process execution modes.
+It supports the bridge modes `http`, `plugin`, and `process`.
+Only `process` is implemented for live MCP stdio execution right now; `http` and `plugin` remain scaffolded.
 
 ## Current contract
 
@@ -16,6 +17,29 @@ It currently supports only scaffolded HTTP, plugin, and process execution modes.
 - Loader contract: `createServerAdapter()` returns the current `ServerAdapterModule` shape, including:
   - `testEnvironment`
   - optional `detectModel`
+
+## Process mode configuration
+
+`mode: "process"` uses the MCP SDK stdio transport and requires:
+
+- `command` — required non-empty executable path; no shell string parsing
+- `args` — optional `string[]` passed literally
+- `env` — optional `Record<string, string>` merged onto a safe inherited environment
+- `cwd` — optional non-empty working directory
+- `timeoutSec` — optional positive number, default `60`, max `3600`
+- `toolName` — required non-empty MCP tool name
+- `toolArguments` — optional plain JSON object merged into the single tool call
+- `contextArgument` — optional argument name for the Paperclip task context, default `context`
+
+Process mode behavior:
+
+- build a bounded Paperclip task-context payload from the execution context
+- connect to the target over stdio via the MCP SDK
+- make exactly one MCP tool call
+- relay target stderr to adapter stderr logs
+- capture the MCP tool result, including `isError` responses
+- return timeout and transport failures with stable adapter error codes
+- fail closed on invalid config before any spawn attempt
 
 ## Registration
 
@@ -36,5 +60,6 @@ Paperclip's external adapter loader resolves the package entrypoint from the pac
 
 ## Status
 
-This is intentionally a scaffold. The mode handlers return explicit not-implemented results until the real TAN-26 bridge behavior is added.
-Supported scaffold environment checks return `warn` because execution/environment validation is not implemented yet.
+`process` is implemented for real MCP stdio execution.
+`http` and `plugin` remain scaffolded and still return not-implemented results.
+Environment checks for `process` validate config only; live target probing happens during execution.
