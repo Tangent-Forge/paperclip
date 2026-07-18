@@ -37,3 +37,4 @@ Paperclip's external adapter loader resolves the package entrypoint from the pac
 ## Status
 
 This is intentionally a scaffold. The mode handlers return explicit not-implemented results until the real TAN-26 bridge behavior is added.
+Supported scaffold environment checks return `warn` because execution/environment validation is not implemented yet.

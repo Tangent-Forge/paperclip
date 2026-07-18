@@ -32,7 +32,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts",
+    "test:dist": "pnpm run build && node tests/dist-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

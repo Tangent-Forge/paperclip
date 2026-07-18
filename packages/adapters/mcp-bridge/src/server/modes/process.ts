@@ -15,13 +15,13 @@ export async function testProcessModeEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   return {
     adapterType: "mcp_bridge",
-    status: "pass",
+    status: "warn",
     testedAt: new Date().toISOString(),
     checks: [
       {
         code: "mcp_bridge_process_mode",
-        level: "info",
-        message: "Process bridge scaffold environment check passed.",
+        level: "warn",
+        message: "Process mode handler is present, but scaffold environment validation is not implemented yet.",
       },
     ],
   };

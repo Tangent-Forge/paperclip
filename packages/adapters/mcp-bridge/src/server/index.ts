@@ -43,6 +43,7 @@ Core fields:
 Notes:
 - This package is currently a scaffold.
 - The mode-specific executors return explicit scaffold failures until the bridge logic is implemented.
+- Environment checks return warn results for supported scaffold modes because validation is not implemented yet.
 `;
 
 function getModeName(config: Record<string, unknown>): "http" | "plugin" | "process" {

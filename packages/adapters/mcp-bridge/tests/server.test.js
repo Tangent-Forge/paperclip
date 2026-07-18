@@ -65,20 +65,27 @@ describe("MCP bridge adapter scaffold", () => {
     ["process"],
     ["http"],
     ["plugin"],
-  ])("returns a valid environment test result for %s mode", async (mode) => {
+  ])("returns a degraded environment result for %s mode", async (mode) => {
     const result = await testEnvironment({ ...baseEnvironmentContext, config: { mode } });
     expect(result).toMatchObject({
       adapterType: type,
-      status: "pass",
+      status: "warn",
       checks: expect.any(Array),
     });
-    expect(result.checks[0]?.code).toContain(mode);
+    expect(result.checks[0]).toMatchObject({
+      code: `mcp_bridge_${mode}_mode`,
+      level: "warn",
+    });
+    expect(result.checks[0]?.message).toContain("handler is present");
   });
 
-  it("defaults omitted mode to safe process environment checks", async () => {
+  it("defaults omitted mode to warn on safe process environment checks", async () => {
     const result = await testEnvironment({ ...baseEnvironmentContext, config: {} });
-    expect(result.status).toBe("pass");
-    expect(result.checks[0]?.code).toContain("process");
+    expect(result.status).toBe("warn");
+    expect(result.checks[0]).toMatchObject({
+      code: "mcp_bridge_process_mode",
+      level: "warn",
+    });
   });
 
   it("fails explicit unsupported environment modes", async () => {

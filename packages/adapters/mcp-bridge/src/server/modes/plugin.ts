@@ -15,13 +15,13 @@ export async function testPluginModeEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   return {
     adapterType: "mcp_bridge",
-    status: "pass",
+    status: "warn",
     testedAt: new Date().toISOString(),
     checks: [
       {
         code: "mcp_bridge_plugin_mode",
-        level: "info",
-        message: "Plugin bridge scaffold environment check passed.",
+        level: "warn",
+        message: "Plugin mode handler is present, but scaffold environment validation is not implemented yet.",
       },
     ],
   };
