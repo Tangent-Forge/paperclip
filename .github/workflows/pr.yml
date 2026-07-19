@@ -360,10 +360,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify runner Chrome
-        # GitHub's Ubuntu runner image already ships Google Chrome, so use that
-        # directly for the headless e2e lane instead of downloading Playwright
+        # Keep this lane on the system Chrome path to avoid downloading Playwright
         # browser bundles inside the 30 minute job budget.
         run: google-chrome --version
+
+      - name: Build workspace packages
+        run: pnpm build
 
       - name: Generate Paperclip config
         run: |

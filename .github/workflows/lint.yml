@@ -29,6 +29,12 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        # The fork's lockfile is maintained by refresh-lockfile.yml. Refresh
+        # it in CI before the frozen install so a PR never depends on a stale
+        # fork-side importer or patch resolution.
+        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
+      - name: Install dependencies (frozen)
         run: pnpm install --frozen-lockfile
 
       - name: Lint CSS

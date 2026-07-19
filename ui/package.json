@@ -29,6 +29,9 @@
   },
   "dependencies": {
     "@assistant-ui/react": "0.14.14",
+    "@assistant-ui/core": "0.2.10",
+    "@assistant-ui/store": "0.2.13",
+    "@assistant-ui/tap": "0.5.14",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -52,7 +55,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "hermes-paperclip-adapter": "^0.2.0",
+    "hermes-paperclip-adapter": "0.2.0",
     "i18next": "^26.3.1",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
