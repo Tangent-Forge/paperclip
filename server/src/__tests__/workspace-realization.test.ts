@@ -117,6 +117,36 @@ describe("validateWorkspaceRepositoryRouting", () => {
     expect(result).toBeNull();
   });
 
+  it("preserves case-sensitive repository paths outside GitHub", async () => {
+    const lowerCaseRepo = "https://gitlab.example/Team/repo.git";
+    const result = await validateWorkspaceRepositoryRouting({
+      request: makeRequest({ repoUrl: lowerCaseRepo }),
+      executionWorkspace: makeWorkspace({ repoUrl: lowerCaseRepo }),
+      persistedExecutionWorkspace: makePersistedWorkspace({ repoUrl: lowerCaseRepo }),
+      inspectLiveGit: async () => ({
+        repoRoot: "/workspace/project",
+        remoteUrl: "gitlab.example/Team/repo",
+        branchName: "tan-459/guard",
+      }),
+      projectPolicy: {
+        enabled: true,
+        pullRequestPolicy: {
+          enforcement: true,
+          destinationRepo: "git@gitlab.example:Team/Repo.git",
+          defaultBaseBranch: "main",
+          owningProjectId: "project-1",
+        },
+      },
+    });
+
+    expect(result?.mismatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "request.source.repoUrl" }),
+        expect.objectContaining({ field: "liveGit.remoteUrl" }),
+      ]),
+    );
+  });
+
   it("fails closed when required governed fields are missing", async () => {
     const result = await validateWorkspaceRepositoryRouting({
       request: makeRequest({ repoUrl: null, repoRef: null, projectId: null }),

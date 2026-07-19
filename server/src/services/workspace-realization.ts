@@ -41,10 +41,30 @@ function normalizeGithubRepoUrl(value: string): string | null {
   return null;
 }
 
+function stripRepoSuffix(value: string): string {
+  return value.replace(/\/$/, "").replace(/\.git$/, "");
+}
+
 function normalizeRepoIdentity(value: string | null | undefined): string | null {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return null;
-  return normalizeGithubRepoUrl(trimmed) ?? trimmed.replace(/\/$/, "").replace(/\.git$/i, "").toLowerCase();
+
+  const github = normalizeGithubRepoUrl(trimmed);
+  if (github) return github;
+
+  try {
+    const parsed = new URL(trimmed);
+    const repoPath = stripRepoSuffix(parsed.pathname.replace(/^\//, ""));
+    if (!parsed.hostname || !repoPath) return stripRepoSuffix(trimmed);
+    const authority = `${parsed.hostname.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}`;
+    return `${authority}/${repoPath}${parsed.search}${parsed.hash}`;
+  } catch {
+    const scpMatch = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
+    if (scpMatch) {
+      return `${scpMatch[1].toLowerCase()}/${stripRepoSuffix(scpMatch[2])}`;
+    }
+    return stripRepoSuffix(trimmed);
+  }
 }
 
 function readPolicyString(policy: Record<string, unknown> | null | undefined, key: string): string | null {
