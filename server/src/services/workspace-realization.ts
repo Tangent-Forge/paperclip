@@ -107,6 +107,10 @@ async function inspectLiveLocalGitRouting(cwd: string): Promise<{
   }
 }
 
+function actualMatchesExpected(expected: string | null, actual: string | null): boolean {
+  return expected !== null && actual === expected;
+}
+
 export async function validateWorkspaceRepositoryRouting(input: {
   request: WorkspaceRealizationRequest;
   executionWorkspace: RealizedExecutionWorkspace;
@@ -132,51 +136,65 @@ export async function validateWorkspaceRepositoryRouting(input: {
   const expectedProjectId = routingPolicy.owningProjectId ?? input.request.source.projectId ?? input.executionWorkspace.projectId ?? input.persistedExecutionWorkspace?.projectId ?? null;
   const expectedBranchName = input.request.source.branchName ?? input.persistedExecutionWorkspace?.branchName ?? input.executionWorkspace.branchName ?? null;
 
-  if (expectedBranchName && input.executionWorkspace.branchName && expectedBranchName !== input.executionWorkspace.branchName) {
-    mismatches.push({ field: "executionWorkspace.branchName", expected: expectedBranchName, actual: input.executionWorkspace.branchName });
-  }
-  if (expectedBranchName && input.persistedExecutionWorkspace?.branchName && expectedBranchName !== input.persistedExecutionWorkspace.branchName) {
-    mismatches.push({ field: "persistedExecutionWorkspace.branchName", expected: expectedBranchName, actual: input.persistedExecutionWorkspace.branchName });
-  }
+  if (!governed || !codeProducing) return null;
 
-  if (requestRepo && workspaceRepo && requestRepo !== workspaceRepo) {
-    mismatches.push({ field: "executionWorkspace.repoUrl", expected: requestRepo, actual: workspaceRepo });
-  }
-  if (requestRepo && persistedRepo && requestRepo !== persistedRepo) {
-    mismatches.push({ field: "persistedExecutionWorkspace.repoUrl", expected: requestRepo, actual: persistedRepo });
-  }
-  if (expectedRepo) {
-    if (!canonicalRepo) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: expectedRepo, actual: null });
-    } else if (expectedRepo !== canonicalRepo) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: expectedRepo, actual: canonicalRepo });
+  const requiredValues = (
+    expected: string | null,
+    entries: Array<{ field: string; actual: string | null }>,
+  ) => {
+    for (const entry of entries) {
+      if (!actualMatchesExpected(expected, entry.actual)) {
+        mismatches.push({ field: entry.field, expected, actual: entry.actual });
+      }
     }
-  } else if (governed && codeProducing) {
+  };
+
+  if (!expectedRepo) {
     mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: null, actual: canonicalRepo });
-  }
-  if (expectedBaseRef) {
-    const requestBase = input.request.source.repoRef ?? input.persistedExecutionWorkspace?.baseRef ?? null;
-    if (!requestBase) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: expectedBaseRef, actual: null });
-    } else if (expectedBaseRef !== requestBase) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: expectedBaseRef, actual: requestBase });
-    }
-  } else if (governed && codeProducing) {
-    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: null, actual: input.request.source.repoRef ?? input.persistedExecutionWorkspace?.baseRef ?? null });
-  }
-  if (routingPolicy.owningProjectId) {
-    const actualProjectId = input.request.source.projectId ?? input.executionWorkspace.projectId ?? input.persistedExecutionWorkspace?.projectId ?? null;
-    if (!actualProjectId) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: routingPolicy.owningProjectId, actual: null });
-    } else if (routingPolicy.owningProjectId !== actualProjectId) {
-      mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: routingPolicy.owningProjectId, actual: actualProjectId });
-    }
-  } else if (governed && codeProducing) {
-    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: null, actual: null });
+  } else {
+    requiredValues(expectedRepo, [
+      { field: "request.source.repoUrl", actual: requestRepo },
+      { field: "executionWorkspace.repoUrl", actual: workspaceRepo },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.repoUrl", actual: persistedRepo }]
+        : []),
+    ]);
   }
 
-  if (governed && codeProducing && !expectedBranchName) {
+  if (!expectedBaseRef) {
+    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: null, actual: input.request.source.repoRef ?? null });
+  } else {
+    requiredValues(expectedBaseRef, [
+      { field: "request.source.repoRef", actual: input.request.source.repoRef ?? null },
+      { field: "executionWorkspace.repoRef", actual: input.executionWorkspace.repoRef ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.baseRef", actual: input.persistedExecutionWorkspace.baseRef ?? null }]
+        : []),
+    ]);
+  }
+
+  if (!routingPolicy.owningProjectId) {
+    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: null, actual: null });
+  } else {
+    requiredValues(routingPolicy.owningProjectId, [
+      { field: "request.source.projectId", actual: input.request.source.projectId ?? null },
+      { field: "executionWorkspace.projectId", actual: input.executionWorkspace.projectId ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.projectId", actual: input.persistedExecutionWorkspace.projectId ?? null }]
+        : []),
+    ]);
+  }
+
+  if (!expectedBranchName) {
     mismatches.push({ field: "workspace.branchName", expected: "declared execution branch", actual: null });
+  } else {
+    requiredValues(expectedBranchName, [
+      { field: "request.source.branchName", actual: input.request.source.branchName ?? null },
+      { field: "executionWorkspace.branchName", actual: input.executionWorkspace.branchName ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.branchName", actual: input.persistedExecutionWorkspace.branchName ?? null }]
+        : []),
+    ]);
   }
 
   const liveGit = codeProducing

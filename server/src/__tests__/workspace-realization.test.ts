@@ -172,10 +172,40 @@ describe("validateWorkspaceRepositoryRouting", () => {
     expect(result).not.toBeNull();
     expect(result?.mismatches.map((m) => m.field)).toEqual(
       expect.arrayContaining([
-        "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo",
-        "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch",
-        "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId",
+        "request.source.repoUrl",
+        "request.source.repoRef",
+        "request.source.projectId",
         "executionWorkspace.branchName",
+      ]),
+    );
+  });
+
+  it("rejects contradictory realized and persisted metadata even when request metadata is correct", async () => {
+    const result = await validateWorkspaceRepositoryRouting({
+      request: makeRequest(),
+      executionWorkspace: makeWorkspace({ repoRef: "release", projectId: "project-2", branchName: "feature/wrong" }),
+      persistedExecutionWorkspace: makePersistedWorkspace({ repoUrl: "https://github.com/paperclipai/other.git", baseRef: "release", projectId: "project-2", branchName: "feature/wrong" }),
+      inspectLiveGit,
+      projectPolicy: {
+        enabled: true,
+        pullRequestPolicy: {
+          enforcement: true,
+          destinationRepo: "https://github.com/paperclipai/paperclip.git",
+          defaultBaseBranch: "main",
+          owningProjectId: "project-1",
+        },
+      },
+    });
+
+    expect(result?.mismatches.map((m) => m.field)).toEqual(
+      expect.arrayContaining([
+        "executionWorkspace.repoRef",
+        "executionWorkspace.projectId",
+        "executionWorkspace.branchName",
+        "persistedExecutionWorkspace.repoUrl",
+        "persistedExecutionWorkspace.baseRef",
+        "persistedExecutionWorkspace.projectId",
+        "persistedExecutionWorkspace.branchName",
       ]),
     );
   });
