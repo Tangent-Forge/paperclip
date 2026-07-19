@@ -40,7 +40,10 @@ import {
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
 } from "@paperclipai/adapter-utils/execution-target";
-import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
+import {
+  buildWorkspaceRealizationRequest,
+  validateWorkspaceRepositoryRouting,
+} from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { parseObject } from "../adapters/utils.js";
@@ -59,6 +62,7 @@ export type EnvironmentErrorCode =
   | "probe_failed"
   | "lease_acquire_failed"
   | "workspace_realization_failed"
+  | "repository_routing_guard_failed"
   | "transport_resolution_failed"
   | "lease_release_failed"
   | "lease_cleanup_failed";
@@ -69,6 +73,7 @@ export class EnvironmentRunError extends Error {
   driver?: string;
   provider?: string;
   cause?: unknown;
+  details?: Record<string, unknown>;
 
   constructor(
     code: EnvironmentErrorCode,
@@ -78,6 +83,7 @@ export class EnvironmentRunError extends Error {
       driver?: string;
       provider?: string;
       cause?: unknown;
+      details?: Record<string, unknown>;
     },
   ) {
     super(message);
@@ -87,6 +93,7 @@ export class EnvironmentRunError extends Error {
     this.driver = details?.driver;
     this.provider = details?.provider;
     this.cause = details?.cause;
+    this.details = details?.details;
   }
 }
 
@@ -344,6 +351,7 @@ export function environmentRunOrchestrator(
     executionWorkspace: RealizedExecutionWorkspace;
     effectiveExecutionWorkspaceMode: string | null;
     persistedExecutionWorkspace: ExecutionWorkspace | null;
+    projectPolicy: ProjectExecutionWorkspacePolicy | null;
   }): Promise<EnvironmentRealizationResult> {
     const {
       environment,
@@ -353,6 +361,7 @@ export function environmentRunOrchestrator(
       heartbeatRunId,
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
+      projectPolicy,
     } = input;
     let { lease, persistedExecutionWorkspace } = input;
 
@@ -368,6 +377,20 @@ export function environmentRunOrchestrator(
       workspace: executionWorkspace,
       workspaceConfig: persistedExecutionWorkspace?.config ?? null,
     });
+
+    const repositoryRoutingGuard = await validateWorkspaceRepositoryRouting({
+      request: workspaceRealizationRequest,
+      executionWorkspace,
+      projectPolicy,
+      persistedExecutionWorkspace,
+    });
+    if (repositoryRoutingGuard) {
+      throw new EnvironmentRunError("repository_routing_guard_failed", "Repository routing validation failed before adapter execution.", {
+        environmentId: environment.id,
+        driver: environment.driver,
+        details: repositoryRoutingGuard,
+      });
+    }
 
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
