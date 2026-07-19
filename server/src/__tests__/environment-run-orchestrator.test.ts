@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockAdapterExecutionTargetToRemoteSpec = vi.hoisted(() => vi.fn());
 const mockBuildWorkspaceRealizationRequest = vi.hoisted(() => vi.fn());
+const mockValidateWorkspaceRepositoryRouting = vi.hoisted(() => vi.fn());
 const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -22,6 +23,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
 
 vi.mock("../services/workspace-realization.js", () => ({
   buildWorkspaceRealizationRequest: mockBuildWorkspaceRealizationRequest,
+  validateWorkspaceRepositoryRouting: mockValidateWorkspaceRepositoryRouting,
 }));
 
 vi.mock("../services/environments.js", () => ({
@@ -154,6 +156,7 @@ function makeRealizeInput(overrides: {
   environment?: Environment;
   lease?: EnvironmentLease;
   persistedExecutionWorkspace?: ExecutionWorkspace | null;
+  projectPolicy?: Record<string, unknown> | null;
 } = {}): Parameters<ReturnType<typeof environmentRunOrchestrator>["realizeForRun"]>[0] {
   return {
     environment: overrides.environment ?? makeEnvironment("local"),
@@ -167,6 +170,7 @@ function makeRealizeInput(overrides: {
     persistedExecutionWorkspace: overrides.persistedExecutionWorkspace !== undefined
       ? overrides.persistedExecutionWorkspace
       : null,
+    projectPolicy: overrides.projectPolicy ?? null,
   };
 }
 
@@ -236,9 +240,77 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       leaseId: "lease-1",
     });
 
-    mockUpdateLeaseMetadata.mockResolvedValue(null);
+    mockValidateWorkspaceRepositoryRouting.mockResolvedValue(null);
     mockUpdateExecutionWorkspace.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("repository routing guard fails closed when repo or base branch disagree", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: "ew-1",
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: "project-1",
+        projectWorkspaceId: "ws-1",
+        repoUrl: "git@github.com:paperclipai/paperclip.git",
+        repoRef: "main",
+        strategy: "git_worktree",
+        branchName: "tan-459/guard",
+        worktreePath: "/workspace/project/.worktrees/tan-459",
+      },
+      runtimeOverlay: {
+        provisionCommand: null,
+      },
+    });
+
+    mockValidateWorkspaceRepositoryRouting.mockResolvedValue({
+      reason: "repository_routing_guard_failed",
+      codeProducing: true,
+      governed: true,
+      canonicalOwnerRepo: "github.com/paperclipai/paperclip",
+      owningProjectId: "project-1",
+      executionWorkspaceId: "ew-1",
+      mismatches: [
+        { field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: "github.com/paperclipai/paperclip", actual: "github.com/paperclipai/other-repo" },
+      ],
+    });
+
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await expect(
+      orchestrator.realizeForRun(
+        makeRealizeInput({
+          persistedExecutionWorkspace: makePersistedExecutionWorkspace({
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            baseRef: "master",
+          }),
+          projectPolicy: {
+            pullRequestPolicy: {
+              defaultBaseBranch: "master",
+              destinationRepo: "https://github.com/paperclipai/other-repo.git",
+            },
+          },
+        }),
+      ),
+    ).rejects.toSatisfy((err: unknown) =>
+      err instanceof EnvironmentRunError &&
+      err.code === "repository_routing_guard_failed" &&
+      Array.isArray(err.details?.mismatches) &&
+      err.details?.mismatches.length >= 1,
+    );
+
+    expect(runtime.realizeWorkspace).not.toHaveBeenCalled();
+    expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+    expect(mockValidateWorkspaceRepositoryRouting).toHaveBeenCalledOnce();
   });
 
   it("happy path: returns lease, executionTarget, and remoteExecution on successful realization", async () => {

@@ -296,6 +296,9 @@ A workspace-coherent adapter path means:
 - the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
 - the effective cwd exists or is provider-reachable, according to the workspace provider
 - when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+- before adapter execution, repository routing must be fail-closed: if the canonical owner/repo, base branch, project ownership, execution worktree remote/branch, or intended PR destination disagree, Paperclip must stop before code-producing execution and surface a structured routing failure instead of inferring a fallback target
+
+This guard covers only code-producing execution routed through Paperclip's environment-run orchestrator. Direct external runners, manually invoked adapters, or other execution systems can bypass this boundary and must enforce equivalent repository-routing controls independently; their activity must not be represented as protected by Paperclip's guard.
 
 The state `projectWorkspaceId` plus `executionWorkspaceId` without `projectId` is invalid for project-scoped execution. Paperclip may treat it as recoverable only when it can derive exactly one owning project from the execution workspace, project workspace, or source issue in the same company and then repair the persisted state before delivery. If the owning project is missing, ambiguous, or cross-company, the queued adapter run must not be counted as a live path.
 

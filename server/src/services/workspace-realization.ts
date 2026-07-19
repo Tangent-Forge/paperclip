@@ -1,11 +1,17 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type {
   Environment,
   EnvironmentLease,
   ExecutionWorkspaceConfig,
+  ExecutionWorkspace,
+  ProjectExecutionWorkspacePolicy,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
 } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
+
+const execFileAsync = promisify(execFile);
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -19,6 +25,256 @@ function readString(value: unknown): string | null {
 
 function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeGithubRepoUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const httpsMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (httpsMatch) {
+    return `github.com/${httpsMatch[1].toLowerCase()}/${httpsMatch[2].toLowerCase()}`;
+  }
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return `github.com/${sshMatch[1].toLowerCase()}/${sshMatch[2].toLowerCase()}`;
+  }
+  return null;
+}
+
+function stripRepoSuffix(value: string): string {
+  return value.replace(/\/$/, "").replace(/\.git$/, "");
+}
+
+function normalizeRepoIdentity(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return null;
+
+  const github = normalizeGithubRepoUrl(trimmed);
+  if (github) return github;
+
+  try {
+    const parsed = new URL(trimmed);
+    const repoPath = stripRepoSuffix(parsed.pathname.replace(/^\//, ""));
+    if (!parsed.hostname || !repoPath) return stripRepoSuffix(trimmed);
+    const authority = `${parsed.hostname.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}`;
+    return `${authority}/${repoPath}${parsed.search}${parsed.hash}`;
+  } catch {
+    const scpMatch = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
+    if (scpMatch) {
+      return `${scpMatch[1].toLowerCase()}/${stripRepoSuffix(scpMatch[2])}`;
+    }
+    return stripRepoSuffix(trimmed);
+  }
+}
+
+function readPolicyString(policy: Record<string, unknown> | null | undefined, key: string): string | null {
+  return policy && typeof policy[key] === "string" ? readString(policy[key]) : null;
+}
+
+type RepositoryRoutingPolicy = {
+  enforcement: boolean;
+  destinationRepo: string | null;
+  defaultBaseBranch: string | null;
+  owningProjectId: string | null;
+};
+
+export type RepositoryRoutingGuardFailure = {
+  reason: "repository_routing_guard_failed";
+  codeProducing: boolean;
+  governed: boolean;
+  canonicalOwnerRepo: string | null;
+  owningProjectId: string | null;
+  executionWorkspaceId: string | null;
+  mismatches: Array<{ field: string; expected: string | null; actual: string | null }>;
+};
+
+function parseRepositoryRoutingPolicy(projectPolicy: ProjectExecutionWorkspacePolicy | null | undefined): RepositoryRoutingPolicy {
+  const policy = projectPolicy?.pullRequestPolicy && typeof projectPolicy.pullRequestPolicy === "object"
+    ? projectPolicy.pullRequestPolicy as Record<string, unknown>
+    : null;
+  return {
+    enforcement: Boolean(policy && (policy.enforcement === true || policy.enabled === true || policy.enforce === true)),
+    destinationRepo: normalizeRepoIdentity(readPolicyString(policy, "destinationRepo") ?? readPolicyString(policy, "repoUrl") ?? readPolicyString(policy, "repositoryUrl")),
+    defaultBaseBranch: readPolicyString(policy, "defaultBaseBranch"),
+    owningProjectId: readPolicyString(policy, "owningProjectId") ?? readPolicyString(policy, "projectId") ?? null,
+  };
+}
+
+function isCodeProducingRoutedWork(request: WorkspaceRealizationRequest): boolean {
+  return request.source.kind === "project_primary" || request.source.strategy === "git_worktree";
+}
+
+type GitCommandRunner = (args: string[], cwd: string) => Promise<string | null>;
+
+async function runGitCommand(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd });
+    return readString(stdout);
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectLiveLocalGitRouting(
+  cwd: string,
+  runGit: GitCommandRunner = runGitCommand,
+): Promise<{
+  repoRoot: string | null;
+  remoteUrl: string | null;
+  branchName: string | null;
+} | null> {
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], cwd);
+  if (!repoRoot) return null;
+
+  const branchName = await runGit(["branch", "--show-current"], repoRoot);
+  const configuredRemote = branchName
+    ? (await runGit(["config", "--get", `branch.${branchName}.pushRemote`], repoRoot)) ??
+      (await runGit(["config", "--get", "remote.pushDefault"], repoRoot)) ??
+      (await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot))
+    : null;
+  const remoteNames = configuredRemote && configuredRemote !== "."
+    ? [configuredRemote]
+    : (await runGit(["remote"], repoRoot))?.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) ?? [];
+  const remoteName = remoteNames.length === 1 ? remoteNames[0] : null;
+  const remoteUrl = remoteName
+    ? normalizeRepoIdentity(await runGit(["remote", "get-url", remoteName], repoRoot))
+    : null;
+
+  return {
+    repoRoot,
+    remoteUrl,
+    branchName,
+  };
+}
+
+function actualMatchesExpected(expected: string | null, actual: string | null): boolean {
+  return expected !== null && actual === expected;
+}
+
+export async function validateWorkspaceRepositoryRouting(input: {
+  request: WorkspaceRealizationRequest;
+  executionWorkspace: RealizedExecutionWorkspace;
+  projectPolicy?: ProjectExecutionWorkspacePolicy | null;
+  persistedExecutionWorkspace?: ExecutionWorkspace | null;
+  inspectLiveGit?: typeof inspectLiveLocalGitRouting;
+}): Promise<RepositoryRoutingGuardFailure | null> {
+  const mismatches: RepositoryRoutingGuardFailure["mismatches"] = [];
+  const requestRepo = normalizeRepoIdentity(input.request.source.repoUrl);
+  const workspaceRepo = normalizeRepoIdentity(input.executionWorkspace.repoUrl);
+  const persistedRepo = normalizeRepoIdentity(input.persistedExecutionWorkspace?.repoUrl ?? null);
+  const canonicalRepo = requestRepo ?? persistedRepo ?? workspaceRepo;
+  const routingPolicy = parseRepositoryRoutingPolicy(input.projectPolicy);
+  const codeProducing = isCodeProducingRoutedWork(input.request);
+  const routingMetadataDeclared = Boolean(
+    routingPolicy.destinationRepo ||
+    routingPolicy.defaultBaseBranch ||
+    routingPolicy.owningProjectId,
+  );
+  const governed = routingPolicy.enforcement || (
+    input.projectPolicy?.enabled === true && routingMetadataDeclared
+  );
+  const expectedRepo = routingPolicy.destinationRepo;
+  const expectedBaseRef = routingPolicy.defaultBaseBranch;
+  const expectedProjectId = routingPolicy.owningProjectId ?? input.request.source.projectId ?? input.executionWorkspace.projectId ?? input.persistedExecutionWorkspace?.projectId ?? null;
+  const expectedBranchName = input.request.source.branchName ?? input.persistedExecutionWorkspace?.branchName ?? input.executionWorkspace.branchName ?? null;
+
+  if (!governed || !codeProducing) return null;
+
+  const requiredValues = (
+    expected: string | null,
+    entries: Array<{ field: string; actual: string | null }>,
+  ) => {
+    for (const entry of entries) {
+      if (!actualMatchesExpected(expected, entry.actual)) {
+        mismatches.push({ field: entry.field, expected, actual: entry.actual });
+      }
+    }
+  };
+
+  if (!expectedRepo) {
+    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: null, actual: canonicalRepo });
+  } else {
+    requiredValues(expectedRepo, [
+      { field: "request.source.repoUrl", actual: requestRepo },
+      { field: "executionWorkspace.repoUrl", actual: workspaceRepo },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.repoUrl", actual: persistedRepo }]
+        : []),
+    ]);
+  }
+
+  if (!expectedBaseRef) {
+    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: null, actual: input.request.source.repoRef ?? null });
+  } else {
+    requiredValues(expectedBaseRef, [
+      { field: "request.source.repoRef", actual: input.request.source.repoRef ?? null },
+      { field: "executionWorkspace.repoRef", actual: input.executionWorkspace.repoRef ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.baseRef", actual: input.persistedExecutionWorkspace.baseRef ?? null }]
+        : []),
+    ]);
+  }
+
+  if (!routingPolicy.owningProjectId) {
+    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: null, actual: null });
+  } else {
+    requiredValues(routingPolicy.owningProjectId, [
+      { field: "request.source.projectId", actual: input.request.source.projectId ?? null },
+      { field: "executionWorkspace.projectId", actual: input.executionWorkspace.projectId ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.projectId", actual: input.persistedExecutionWorkspace.projectId ?? null }]
+        : []),
+    ]);
+  }
+
+  if (!expectedBranchName) {
+    mismatches.push({ field: "workspace.branchName", expected: "declared execution branch", actual: null });
+  } else {
+    requiredValues(expectedBranchName, [
+      { field: "request.source.branchName", actual: input.request.source.branchName ?? null },
+      { field: "executionWorkspace.branchName", actual: input.executionWorkspace.branchName ?? null },
+      ...(input.persistedExecutionWorkspace
+        ? [{ field: "persistedExecutionWorkspace.branchName", actual: input.persistedExecutionWorkspace.branchName ?? null }]
+        : []),
+    ]);
+  }
+
+  const liveGit = codeProducing
+    ? await (input.inspectLiveGit ?? inspectLiveLocalGitRouting)(input.executionWorkspace.cwd)
+    : null;
+  if (codeProducing) {
+    if (!liveGit) {
+      if (governed) {
+        mismatches.push({ field: "liveGit", expected: "inspectable local git checkout", actual: null });
+      }
+    } else {
+      if (!liveGit.remoteUrl && governed) {
+        mismatches.push({ field: "liveGit.remoteUrl", expected: expectedRepo ?? requestRepo, actual: null });
+      } else if (requestRepo && liveGit.remoteUrl && requestRepo !== liveGit.remoteUrl) {
+        mismatches.push({ field: "liveGit.remoteUrl", expected: requestRepo, actual: liveGit.remoteUrl });
+      }
+      if (expectedRepo && liveGit.remoteUrl && expectedRepo !== liveGit.remoteUrl) {
+        mismatches.push({ field: "liveGit.remoteUrl", expected: expectedRepo, actual: liveGit.remoteUrl });
+      }
+      if (!liveGit.branchName && governed) {
+        mismatches.push({ field: "liveGit.branchName", expected: expectedBranchName, actual: null });
+      } else if (expectedBranchName && liveGit.branchName && expectedBranchName !== liveGit.branchName) {
+        mismatches.push({ field: "liveGit.branchName", expected: expectedBranchName, actual: liveGit.branchName });
+      }
+    }
+  }
+
+  if (!governed && mismatches.length === 0) return null;
+  if (mismatches.length === 0) return null;
+  return {
+    reason: "repository_routing_guard_failed",
+    codeProducing,
+    governed,
+    canonicalOwnerRepo: canonicalRepo,
+    owningProjectId: expectedProjectId,
+    executionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
+    mismatches,
+  };
 }
 
 function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
