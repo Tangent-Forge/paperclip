@@ -108,7 +108,9 @@ export async function inspectLiveLocalGitRouting(
 
   const branchName = await runGit(["branch", "--show-current"], repoRoot);
   const configuredRemote = branchName
-    ? await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot)
+    ? (await runGit(["config", "--get", `branch.${branchName}.pushRemote`], repoRoot)) ??
+      (await runGit(["config", "--get", "remote.pushDefault"], repoRoot)) ??
+      (await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot))
     : null;
   const remoteNames = configuredRemote && configuredRemote !== "."
     ? [configuredRemote]

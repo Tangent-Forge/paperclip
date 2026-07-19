@@ -325,6 +325,28 @@ describe("validateWorkspaceRepositoryRouting", () => {
     expect(calls).not.toContain("remote get-url origin");
   });
 
+  it("prefers the branch push remote when multiple remotes are configured", async () => {
+    const calls: string[] = [];
+    const result = await inspectLiveLocalGitRouting("/workspace/project", async (args) => {
+      const command = args.join(" ");
+      calls.push(command);
+      if (command === "rev-parse --show-toplevel") return "/workspace/project";
+      if (command === "branch --show-current") return "tan-459/guard";
+      if (command === "config --get branch.tan-459/guard.pushRemote") return "fork";
+      if (command === "remote get-url fork") return "git@github.com:tangent-forge/paperclip.git";
+      if (command === "remote") return "origin\nupstream\nfork";
+      return null;
+    });
+
+    expect(result).toEqual({
+      repoRoot: "/workspace/project",
+      remoteUrl: "github.com/tangent-forge/paperclip",
+      branchName: "tan-459/guard",
+    });
+    expect(calls).toContain("remote get-url fork");
+    expect(calls).not.toContain("remote");
+  });
+
   it("passes compatibility mode when no routing policy is present", async () => {
     const result = await validateWorkspaceRepositoryRouting({
       request: makeRequest({ repoUrl: null, repoRef: null, projectId: null, strategy: "project_primary" }),
