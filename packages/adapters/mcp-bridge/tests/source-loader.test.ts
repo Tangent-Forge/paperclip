@@ -33,7 +33,9 @@ describe("external adapter source-loader contract", () => {
     assert.equal(typeof adapterModule.execute, "function");
     assert.equal(typeof adapterModule.testEnvironment, "function");
     assert.equal(typeof adapterModule.detectModel, "function");
+    assert.ok(adapterModule.models);
     assert.equal(adapterModule.models.length, 0);
+    assert.ok(adapterModule.agentConfigurationDoc);
     assert.ok(adapterModule.agentConfigurationDoc.includes("Adapter: mcp_bridge"));
 
     const directModule = await import(pathToFileURL(path.join(packageRoot, "dist/index.js")).href);
