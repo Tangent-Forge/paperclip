@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  inspectLiveLocalGitRouting,
   validateWorkspaceRepositoryRouting,
   type RepositoryRoutingGuardFailure,
 } from "../services/workspace-realization.ts";
@@ -266,6 +267,62 @@ describe("validateWorkspaceRepositoryRouting", () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  it("fails closed when pull-request enforcement is true even if the top-level workspace policy is disabled", async () => {
+    const result = await validateWorkspaceRepositoryRouting({
+      request: makeRequest(),
+      executionWorkspace: makeWorkspace(),
+      persistedExecutionWorkspace: makePersistedWorkspace(),
+      inspectLiveGit,
+      projectPolicy: {
+        enabled: false,
+        pullRequestPolicy: {
+          enforcement: true,
+          destinationRepo: "https://github.com/paperclipai/other.git",
+          defaultBaseBranch: "main",
+          owningProjectId: "project-1",
+        },
+      },
+    });
+
+    expect(result?.governed).toBe(true);
+    expect(result?.mismatches).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "request.source.repoUrl" })]),
+    );
+  });
+
+  it("preserves compatibility for contradictory metadata when no routing policy exists", async () => {
+    const result = await validateWorkspaceRepositoryRouting({
+      request: makeRequest({ repoUrl: "https://github.com/paperclipai/request.git", repoRef: "request-base", projectId: "request-project" }),
+      executionWorkspace: makeWorkspace({ repoUrl: "https://github.com/paperclipai/execution.git", repoRef: "execution-base", projectId: "execution-project", branchName: "execution-branch" }),
+      persistedExecutionWorkspace: makePersistedWorkspace({ repoUrl: "https://github.com/paperclipai/persisted.git", baseRef: "persisted-base", projectId: "persisted-project", branchName: "persisted-branch" }),
+      inspectLiveGit,
+      projectPolicy: null,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("inspects the branch-configured Git remote instead of assuming origin", async () => {
+    const calls: string[] = [];
+    const result = await inspectLiveLocalGitRouting("/workspace/project", async (args) => {
+      const command = args.join(" ");
+      calls.push(command);
+      if (command === "rev-parse --show-toplevel") return "/workspace/project";
+      if (command === "branch --show-current") return "tan-459/guard";
+      if (command === "config --get branch.tan-459/guard.remote") return "upstream";
+      if (command === "remote get-url upstream") return "git@github.com:paperclipai/paperclip.git";
+      return null;
+    });
+
+    expect(result).toEqual({
+      repoRoot: "/workspace/project",
+      remoteUrl: "github.com/paperclipai/paperclip",
+      branchName: "tan-459/guard",
+    });
+    expect(calls).toContain("remote get-url upstream");
+    expect(calls).not.toContain("remote get-url origin");
   });
 
   it("passes compatibility mode when no routing policy is present", async () => {

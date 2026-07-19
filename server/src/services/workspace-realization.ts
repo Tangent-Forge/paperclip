@@ -84,27 +84,45 @@ function isCodeProducingRoutedWork(request: WorkspaceRealizationRequest): boolea
   return request.source.kind === "project_primary" || request.source.strategy === "git_worktree";
 }
 
-async function inspectLiveLocalGitRouting(cwd: string): Promise<{
+type GitCommandRunner = (args: string[], cwd: string) => Promise<string | null>;
+
+async function runGitCommand(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd });
+    return readString(stdout);
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectLiveLocalGitRouting(
+  cwd: string,
+  runGit: GitCommandRunner = runGitCommand,
+): Promise<{
   repoRoot: string | null;
   remoteUrl: string | null;
   branchName: string | null;
 } | null> {
-  try {
-    const { stdout: repoRootStdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd });
-    const repoRoot = readString(repoRootStdout);
-    if (!repoRoot) return null;
-    const [{ stdout: remoteStdout }, { stdout: branchStdout }] = await Promise.all([
-      execFileAsync("git", ["remote", "get-url", "origin"], { cwd: repoRoot }),
-      execFileAsync("git", ["branch", "--show-current"], { cwd: repoRoot }),
-    ]);
-    return {
-      repoRoot,
-      remoteUrl: normalizeRepoIdentity(readString(remoteStdout)),
-      branchName: readString(branchStdout),
-    };
-  } catch {
-    return null;
-  }
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], cwd);
+  if (!repoRoot) return null;
+
+  const branchName = await runGit(["branch", "--show-current"], repoRoot);
+  const configuredRemote = branchName
+    ? await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot)
+    : null;
+  const remoteNames = configuredRemote && configuredRemote !== "."
+    ? [configuredRemote]
+    : (await runGit(["remote"], repoRoot))?.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) ?? [];
+  const remoteName = remoteNames.length === 1 ? remoteNames[0] : null;
+  const remoteUrl = remoteName
+    ? normalizeRepoIdentity(await runGit(["remote", "get-url", remoteName], repoRoot))
+    : null;
+
+  return {
+    repoRoot,
+    remoteUrl,
+    branchName,
+  };
 }
 
 function actualMatchesExpected(expected: string | null, actual: string | null): boolean {
@@ -125,11 +143,13 @@ export async function validateWorkspaceRepositoryRouting(input: {
   const canonicalRepo = requestRepo ?? persistedRepo ?? workspaceRepo;
   const routingPolicy = parseRepositoryRoutingPolicy(input.projectPolicy);
   const codeProducing = isCodeProducingRoutedWork(input.request);
-  const governed = input.projectPolicy?.enabled === true && Boolean(
-    routingPolicy.enforcement ||
+  const routingMetadataDeclared = Boolean(
     routingPolicy.destinationRepo ||
     routingPolicy.defaultBaseBranch ||
     routingPolicy.owningProjectId,
+  );
+  const governed = routingPolicy.enforcement || (
+    input.projectPolicy?.enabled === true && routingMetadataDeclared
   );
   const expectedRepo = routingPolicy.destinationRepo;
   const expectedBaseRef = routingPolicy.defaultBaseBranch;
