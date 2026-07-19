@@ -44,7 +44,7 @@ import {
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir, seedCodexHome } from "./codex-home.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -349,6 +349,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  // An explicit per-agent CODEX_HOME override still needs shared credentials
+  // seeded into it. prepareManagedCodexHome (skipped above when the override is
+  // set) only seeds the company managed home, so without this the override home
+  // has no auth.json and Codex fails with 401 "Missing bearer" against the API.
+  // Seed the effective home directly, reusing the symlink-to-shared-source
+  // semantics (never a copy — codex refresh tokens rotate and are single-use).
+  if (configuredCodexHome) {
+    await seedCodexHome(effectiveCodexHome, process.env, onLog, {
+      apiKey: configuredOpenAiApiKey,
+    });
+  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.

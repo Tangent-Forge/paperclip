@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureSymlink, prepareManagedCodexHome } from "./codex-home.js";
+import { ensureSymlink, prepareManagedCodexHome, seedCodexHome } from "./codex-home.js";
 
 describe("codex managed home", () => {
   afterEach(() => {
@@ -188,6 +188,56 @@ describe("codex managed home", () => {
 
       expect((await fs.lstat(target)).isDirectory()).toBe(true);
       expect(await fs.readFile(path.join(target, "sentinel"), "utf8")).toBe("keep-me");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Regression for TAN-487: an explicit per-agent CODEX_HOME override (from
+  // adapter config env.CODEX_HOME) is not the company managed home, so
+  // prepareManagedCodexHome never seeded it — Codex ran against an empty home
+  // and failed with 401 "Missing bearer". seedCodexHome must symlink auth.json
+  // into whatever effective home Codex will actually use, with zero manual steps.
+  it("seedCodexHome symlinks auth.json into an explicit per-agent CODEX_HOME override", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const perAgentHome = path.join(root, "agents", "agent-1", "codex-home");
+      const sharedAuth = path.join(sharedCodexHome, "auth.json");
+      const perAgentAuth = path.join(perAgentHome, "auth.json");
+
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+
+      await seedCodexHome(perAgentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect((await fs.lstat(perAgentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(perAgentAuth)).toBe(await fs.realpath(sharedAuth));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Acceptance for TAN-487: seeding an override home must leave a symlink, not a
+  // copy, even when a stale regular-file auth.json was already present — copies
+  // break on the next run once the source refresh token rotates (#5028).
+  it("seedCodexHome replaces a stale regular-file auth.json in an override home with a symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-stale-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const perAgentHome = path.join(root, "agents", "agent-1", "codex-home");
+      const sharedAuth = path.join(sharedCodexHome, "auth.json");
+      const perAgentAuth = path.join(perAgentHome, "auth.json");
+
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(sharedAuth, '{"token":"fresh"}', "utf8");
+      await fs.mkdir(perAgentHome, { recursive: true });
+      await fs.writeFile(perAgentAuth, '{"token":"stale-copy"}', "utf8");
+
+      await seedCodexHome(perAgentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect((await fs.lstat(perAgentAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(perAgentAuth, "utf8")).toBe('{"token":"fresh"}');
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
