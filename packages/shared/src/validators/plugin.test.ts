@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { pluginApiRouteDeclarationSchema, pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -9,6 +9,19 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("accepts company resolution from a declared path parameter", () => {
+    const parsed = pluginApiRouteDeclarationSchema.parse({
+      routeKey: "portfolio.get",
+      method: "GET",
+      path: "/companies/:companyId/portfolio",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "path", param: "companyId" },
+    });
+
+    expect(parsed.companyResolution).toEqual({ from: "path", param: "companyId" });
+  });
+
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",

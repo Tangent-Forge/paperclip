@@ -89,7 +89,15 @@ const manifest: PaperclipPluginManifestV1 = {
       auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" }
-    }
+    },
+    {
+      routeKey: API_ROUTE_KEYS.portfolioInventory,
+      method: "GET",
+      path: "/companies/:companyId/portfolio-inventory",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "path", param: "companyId" }
+    },
   ]
 };
 

@@ -601,6 +601,11 @@ export function pluginRoutes(
       return typeof value === "string" ? value : null;
     }
 
+    if (resolution.from === "path") {
+      const value = params[resolution.param ?? ""];
+      return typeof value === "string" ? value : null;
+    }
+
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);

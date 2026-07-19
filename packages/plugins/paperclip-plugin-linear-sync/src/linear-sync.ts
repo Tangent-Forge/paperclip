@@ -1,6 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Issue } from "@paperclipai/plugin-sdk";
 import { ORIGIN_KIND_INCIDENT, ORIGIN_KIND_LINEAR_ISSUE, PLUGIN_ID } from "./constants.js";
+import type { LinearPaginationResult, PortfolioInventoryIssue, PortfolioInventoryProject } from "./portfolio-types.js";
 
 export type LinearSyncConfig = {
   enabled: boolean;
@@ -73,6 +74,8 @@ type SyncState = {
 export type LinearClient = {
   listCandidateIssues(input: { stateNames: string[]; first: number; updatedAfter?: string | null }): Promise<LinearIssue[]>;
   getIssue(issueId: string): Promise<LinearIssue | null>;
+  listAllProjects(input?: { pageSize?: number; maxPages?: number; maxRecords?: number }): Promise<LinearPaginationResult<PortfolioInventoryProject>>;
+  listAllIssues(input?: { pageSize?: number; maxPages?: number; maxRecords?: number }): Promise<LinearPaginationResult<PortfolioInventoryIssue>>;
   postImportComment(issueId: string, body: string): Promise<void>;
   moveIssueToState(issueId: string, stateId: string): Promise<void>;
 };

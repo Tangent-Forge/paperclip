@@ -1,6 +1,7 @@
 import { definePlugin, runWorker, type PluginApiRequestInput, type PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { API_ROUTE_KEYS, JOB_KEYS, WEBHOOK_KEYS } from "./constants.js";
 import { createLinearClient } from "./linear-client.js";
+import { collectPortfolioInventory } from "./portfolio-inventory.js";
 import { handleWebhookIssue, readConfig, readSyncStatus, runLinearSync, verifyLinearSignature } from "./linear-sync.js";
 
 let currentContext: Parameters<Parameters<typeof definePlugin>[0]["setup"]>[0] | null = null;
@@ -61,6 +62,18 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput) {
+    if (input.routeKey === API_ROUTE_KEYS.portfolioInventory) {
+      if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
+      const companyId = input.companyId;
+      const { linear } = await buildSyncDeps(companyId);
+      const snapshot = await collectPortfolioInventory(linear, {
+        source: { kind: "linear", label: "Linear", host: "api.linear.app", availability: "available" },
+        pageSize: 100,
+        maxPages: 50,
+        maxRecords: 5000,
+      });
+      return { status: 200, body: snapshot };
+    }
     if (input.routeKey === API_ROUTE_KEYS.status) {
       const companyId = stringField(input.query.companyId) ?? input.companyId;
       return { body: await readSyncStatus((await buildSyncDeps(companyId)).ctx, companyId) };
