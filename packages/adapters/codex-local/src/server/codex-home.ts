@@ -116,13 +116,23 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
-export async function prepareManagedCodexHome(
+/**
+ * Seeds shared credentials/config into a Codex home so the codex CLI can
+ * authenticate. `auth.json` (and any other SYMLINKED_SHARED_FILES) is symlinked
+ * to the shared source so it follows the live, rotating token; COPIED_SHARED_FILES
+ * are copied once. When an API key is supplied, an apikey-mode auth.json is
+ * written instead.
+ *
+ * Safe to call against either the Paperclip-managed company home or an explicit
+ * per-agent CODEX_HOME override — both need credentials, and seeding is a no-op
+ * when the target already equals the shared source.
+ */
+export async function seedCodexHome(
+  targetHome: string,
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
-  companyId?: string,
   options: { apiKey?: string | null } = {},
-): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
@@ -168,6 +178,15 @@ export async function prepareManagedCodexHome(
       `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
   }
+}
 
+export async function prepareManagedCodexHome(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId?: string,
+  options: { apiKey?: string | null } = {},
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  await seedCodexHome(targetHome, env, onLog, options);
   return targetHome;
 }
