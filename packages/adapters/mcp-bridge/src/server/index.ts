@@ -34,16 +34,27 @@ Core fields:
 - mode (string, optional): http | plugin | process. Defaults to process.
 - httpUrl (string, optional): target URL used by http mode
 - pluginName (string, optional): external plugin identifier used by plugin mode
-- command (string, optional): command used by process mode
-- args (string[], optional): extra command arguments for process mode
-- env (object, optional): KEY=VALUE environment variables
-- cwd (string, optional): working directory for process mode
-- timeoutSec (number, optional): execution timeout in seconds
+- process mode fields:
+  - command (string, required): executable path only; no shell string parsing
+  - args (string[], optional): extra command arguments passed literally
+  - env (object, optional): string-to-string environment overrides merged onto a safe inherited environment
+  - cwd (string, optional): working directory for the spawned process
+  - timeoutSec (number, optional): positive timeout in seconds, default 60, max 3600
+  - toolName (string, required): the single MCP tool Paperclip will call
+  - toolArguments (object, optional): extra JSON arguments merged into the tool call
+  - contextArgument (string, optional): argument name that receives the Paperclip task context, default "context"
+
+Process mode behavior:
+- Paperclip connects to the target over stdio using the MCP SDK.
+- Paperclip makes exactly one MCP tool call per execution.
+- The tool call includes a size-bounded, defense-in-depth-redacted task payload: runId, minimal agent/runtime identifiers, and only approved task-context fields. Adapter config, auth/session data, secret manifests, workspace internals, and unknown context keys are excluded.
+- stderr is relayed as adapter stderr logs and is never treated as protocol stdout.
+- The adapter returns bounded/redacted MCP content and structured content on success, preserves MCP tool errors, and marks timeouts explicitly. Redaction is defense in depth, not a substitute for governing the configured target.
+- Invalid or unknown config shapes fail closed before any spawn attempt.
 
 Notes:
-- This package is currently a scaffold.
-- The mode-specific executors return explicit scaffold failures until the bridge logic is implemented.
-- Environment checks return warn results for supported scaffold modes because validation is not implemented yet.
+- HTTP and plugin modes remain scaffolded for now.
+- Environment checks for process mode validate config shape only; live target probing happens at execution time.
 `;
 
 function getModeName(config: Record<string, unknown>): "http" | "plugin" | "process" {

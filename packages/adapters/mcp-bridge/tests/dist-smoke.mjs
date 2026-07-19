@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-const packageRoot = resolve(new URL("..", import.meta.url).pathname);
+const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const rootModule = await import(pathToFileURL(resolve(packageRoot, "dist/index.js")).href);
 const serverModule = await import(pathToFileURL(resolve(packageRoot, "dist/server/index.js")).href);
 
@@ -26,18 +26,17 @@ for (const adapter of [adapterFromRoot, adapterFromServer]) {
   const envResult = await adapter.testEnvironment({
     companyId: "company-1",
     adapterType: adapter.type,
-    config: {},
+    config: { mode: "process", command: process.execPath, toolName: "echo" },
   });
   assert.equal(envResult.status, "warn");
   assert.equal(envResult.checks[0]?.level, "warn");
   assert.equal(envResult.checks[0]?.code, "mcp_bridge_process_mode");
 
   const execResult = await adapter.execute({
-    config: {},
+    config: { mode: "process", command: "", toolName: "echo" },
     context: {},
   });
-  assert.equal(execResult.errorCode, "mcp_bridge_not_implemented");
-  assert.equal(execResult.resultJson?.implemented, false);
+  assert.equal(execResult.errorCode, "mcp_bridge_invalid_config");
 }
 
 const detectModelResult = await rootModule.detectModel();
