@@ -23,6 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
+  ProjectExecutionWorkspacePolicy,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import {
