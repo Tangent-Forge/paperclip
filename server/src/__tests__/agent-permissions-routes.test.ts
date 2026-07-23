@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -418,7 +419,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("redacts secret-like adapter config values from privileged board agent detail", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -449,7 +450,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
       command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      env: { PAPERCLIP_API_KEY: REDACTED_EVENT_VALUE },
     });
     expect(res.body.runtimeConfig).toMatchObject({
       modelProfiles: {
@@ -457,6 +458,102 @@ describe.sequential("agent permission routes", () => {
       },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+  }, 20_000);
+
+  it("redacts secret-like adapter config values from privileged company agent lists", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        ...baseAgent,
+        adapterConfig: {
+          command: "pnpm agent:run",
+          env: {
+            PAPERCLIP_API_KEY: "secret-test-key",
+            PAPERCLIP_API_URL: "http://localhost:3100",
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            default: {
+              enabled: true,
+              adapterConfig: {
+                model: "openai/gpt-5.4-mini",
+                apiKey: "runtime-secret",
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: agentId,
+        adapterConfig: {
+          command: "pnpm agent:run",
+          env: {
+            PAPERCLIP_API_KEY: REDACTED_EVENT_VALUE,
+            PAPERCLIP_API_URL: "http://localhost:3100",
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            default: {
+              enabled: true,
+              adapterConfig: {
+                model: "openai/gpt-5.4-mini",
+                apiKey: REDACTED_EVENT_VALUE,
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+    expect(JSON.stringify(res.body)).not.toContain("runtime-secret");
+  });
+
+  it("redacts secret-like adapter config values from standard agent self detail", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: {
+          PAPERCLIP_API_KEY: "secret-test-key",
+          PAPERCLIP_API_URL: "http://localhost:3100",
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({
+      command: "pnpm agent:run",
+      env: {
+        PAPERCLIP_API_KEY: REDACTED_EVENT_VALUE,
+        PAPERCLIP_API_URL: "http://localhost:3100",
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
