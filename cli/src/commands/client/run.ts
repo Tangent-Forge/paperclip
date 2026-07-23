@@ -38,6 +38,11 @@ interface RunWatchdogOptions extends BaseClientOptions {
   evaluationIssueId?: string;
 }
 
+interface RunRemediateOptions extends BaseClientOptions {
+  action?: string;
+  reason?: string;
+}
+
 interface RunIssueSummary extends Issue {
   runId?: string;
   runStatus?: string;
@@ -120,6 +125,28 @@ export function registerRunCommands(command: Command): void {
           const ctx = resolveCommandContext(opts);
           const run = await ctx.api.post<HeartbeatRun | null>(apiPath`/api/heartbeat-runs/${runId}/cancel`, {});
           printOutput(run, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    command
+      .command("remediate")
+      .description("Redact or purge retained heartbeat run logs and DB excerpts")
+      .argument("<runId>", "Heartbeat run ID")
+      .option("--action <action>", "Remediation action: redact or purge", "redact")
+      .option("--reason <text>", "Reason to retain in the audit event")
+      .action(async (runId: string, opts: RunRemediateOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const action = opts.action ?? "redact";
+          const result = await ctx.api.post(apiPath`/api/heartbeat-runs/${runId}/retention-remediation`, {
+            action,
+            reason: opts.reason,
+          });
+          printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }

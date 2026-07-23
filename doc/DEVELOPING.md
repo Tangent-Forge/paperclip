@@ -259,6 +259,27 @@ If a file intentionally remains workspace-only, create a work product with
 path in the final comment. Use browse/search only as the fallback for recovering
 that file, not as the main completion path for deliverables.
 
+## Safe Environment Inspection
+
+Do not run raw `env`, `printenv`, or equivalent commands in agent heartbeats
+when you only need to inspect available variables. Use the names-only helper:
+
+```sh
+pnpm paperclipai env:names
+pnpm paperclipai env:names --sensitive-only
+```
+
+The command prints variable names only. It never prints `KEY=value` pairs.
+
+If a retained heartbeat run captured sensitive output in its log, events, or DB
+excerpts, remediate it through Paperclip instead of editing the database or log
+files by hand:
+
+```sh
+pnpm paperclipai run remediate <run-id> --action redact --reason "sensitive env output"
+pnpm paperclipai run remediate <run-id> --action purge --reason "sensitive env output"
+```
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:

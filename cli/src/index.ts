@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { onboard } from "./commands/onboard.js";
 import { doctor } from "./commands/doctor.js";
-import { envCommand } from "./commands/env.js";
+import { envCommand, envNamesCommand } from "./commands/env.js";
 import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
@@ -91,6 +91,16 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(envCommand);
+
+program
+  .command("env:names")
+  .description("Print current environment variable names only")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("--prefix <prefix>", "Only include variable names with this prefix")
+  .option("--sensitive-only", "Only include variable names that look credential-related")
+  .option("--json", "Output raw JSON")
+  .action(envNamesCommand);
 
 program
   .command("configure")

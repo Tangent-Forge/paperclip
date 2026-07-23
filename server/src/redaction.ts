@@ -59,6 +59,23 @@ function sanitizeValue(value: unknown): unknown {
   return sanitizeRecord(value);
 }
 
+function redactRetainedValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map(redactRetainedValue);
+  if (!isPlainObject(value)) return value;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (SECRET_PAYLOAD_KEY_RE.test(key) && !isSecretRefBinding(entry)) {
+      redacted[key] = REDACTED_EVENT_VALUE;
+      continue;
+    }
+    redacted[key] = redactRetainedValue(entry);
+  }
+  return redacted;
+}
+
 function isSecretRefBinding(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "secret_ref" && typeof value.secretId === "string";
@@ -131,4 +148,10 @@ export function redactSensitiveText(input: string): string {
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,
   );
+}
+
+export function redactRetainedRunPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload) return null;
+  const redacted = redactRetainedValue(payload);
+  return isPlainObject(redacted) ? redacted : payload;
 }

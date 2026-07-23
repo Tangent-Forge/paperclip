@@ -23,6 +23,13 @@ type EnvVarRow = {
   note: string;
 };
 
+type EnvNameInventoryOptions = {
+  prefix?: string;
+  sensitiveOnly?: boolean;
+};
+
+const SENSITIVE_ENV_NAME_RE =
+  /(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const DEFAULT_AGENT_JWT_TTL_SECONDS = "172800";
 const DEFAULT_AGENT_JWT_ISSUER = "paperclip";
 const DEFAULT_AGENT_JWT_AUDIENCE = "paperclip-api";
@@ -107,6 +114,41 @@ export async function envCommand(opts: { config?: string }): Promise<void> {
     p.log.message(pc.green("All required deployment variables are present."));
   }
   p.outro("Done");
+}
+
+export function collectEnvNameInventory(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: EnvNameInventoryOptions = {},
+) {
+  const prefix = opts.prefix?.trim();
+  const names = Object.keys(env)
+    .filter((name) => !prefix || name.startsWith(prefix))
+    .filter((name) => !opts.sensitiveOnly || SENSITIVE_ENV_NAME_RE.test(name))
+    .sort((a, b) => a.localeCompare(b));
+  const sensitiveNameMatches = names.filter((name) => SENSITIVE_ENV_NAME_RE.test(name));
+  return {
+    count: names.length,
+    names,
+    sensitiveNameMatches,
+  };
+}
+
+export async function envNamesCommand(opts: { json?: boolean; prefix?: string; sensitiveOnly?: boolean }): Promise<void> {
+  const inventory = collectEnvNameInventory(process.env, {
+    prefix: opts.prefix,
+    sensitiveOnly: opts.sensitiveOnly,
+  });
+
+  if (opts.json) {
+    console.log(JSON.stringify(inventory, null, 2));
+    return;
+  }
+
+  console.log(`Environment variable names (${inventory.count})`);
+  for (const name of inventory.names) {
+    const marker = SENSITIVE_ENV_NAME_RE.test(name) ? " [sensitive-name]" : "";
+    console.log(`${name}${marker}`);
+  }
 }
 
 function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: string): EnvVarRow[] {
