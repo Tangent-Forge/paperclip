@@ -1139,7 +1139,16 @@ export function agentRoutes(
     if (adapterType !== "openclaw_gateway") return adapterConfig;
     const disableDeviceAuth = parseBooleanLike(adapterConfig.disableDeviceAuth) === true;
     if (disableDeviceAuth) return adapterConfig;
-    if (asNonEmptyString(adapterConfig.devicePrivateKeyPem)) return adapterConfig;
+    const env = asRecord(adapterConfig.env);
+    const envDevicePrivateKey = env?.OPENCLAW_DEVICE_PRIVATE_KEY;
+    const envDevicePrivateKeySecret = asRecord(envDevicePrivateKey);
+    if (
+      asNonEmptyString(adapterConfig.devicePrivateKeyPem) ||
+      asNonEmptyString(envDevicePrivateKey) ||
+      (envDevicePrivateKeySecret?.type === "secret_ref" && asNonEmptyString(envDevicePrivateKeySecret.secretId))
+    ) {
+      return adapterConfig;
+    }
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
   }
 

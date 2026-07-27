@@ -616,7 +616,8 @@ function buildDeviceAuthPayloadV3(params: {
 }
 
 function resolveDeviceIdentity(config: Record<string, unknown>): GatewayDeviceIdentity {
-  const configuredPrivateKey = nonEmpty(config.devicePrivateKeyPem);
+  const configuredPrivateKey =
+    nonEmpty(config.devicePrivateKeyPem) ?? nonEmpty(process.env.OPENCLAW_DEVICE_PRIVATE_KEY);
   if (configuredPrivateKey) {
     const privateKey = crypto.createPrivateKey(configuredPrivateKey);
     const publicKey = crypto.createPublicKey(privateKey);

@@ -12,10 +12,20 @@ export const httpAdapter: ServerAdapterModule = {
 Adapter: http
 
 Core fields:
-- url (string, required): endpoint to invoke
-- method (string, optional): HTTP method, default POST
-- headers (object, optional): request headers
-- payloadTemplate (object, optional): JSON payload template
-- timeoutSec (number, optional): request timeout in seconds
+- url (string, required): absolute http(s) endpoint to invoke with POST
+- headers (object, optional): JSON headers forwarded with each request
+- payloadTemplate (object, optional): JSON object shallow-merged into the request body
+- method (string, optional): HTTP method, defaults to POST
+- timeoutMs (number, optional): request timeout in milliseconds
+
+Default request body:
+- issue: issue title from the run context when available
+- description: issue description from the run context when available
+- tools: configured tools resolved for the run
+- agentId, agentName, companyId, runId: identifying metadata for the run
+
+Notes:
+- payloadTemplate overrides the default body fields when keys overlap
+- non-2xx responses are returned as adapter errors with the upstream body attached
 `,
 };

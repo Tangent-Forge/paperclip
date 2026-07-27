@@ -65,6 +65,7 @@ import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { LookupAddress } from "node:dns";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -143,12 +144,18 @@ function isPrivateIP(ip: string): boolean {
 interface ValidatedFetchTarget {
   parsedUrl: URL;
   resolvedAddress: string;
+  resolvedFamily: LookupAddress["family"];
   hostHeader: string;
   tlsServername?: string;
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+function selectPreferredPublicAddress(results: LookupAddress[]): LookupAddress | null {
+  const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+  return safeResults.find((entry) => entry.family === 4) ?? safeResults[0] ?? null;
+}
+
+export async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -185,19 +192,20 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     }
 
     // Filter to only non-private IPs instead of rejecting the entire request
-    // when some IPs are private. This handles multi-homed hosts that resolve
-    // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
-    if (safeResults.length === 0) {
+    // when some IPs are private. Prefer IPv4 for plugin HTTP routes because
+    // several integration endpoints publish IPv6 records even when the host
+    // network path is IPv4-only or has broken IPv6 egress.
+    const resolved = selectPreferredPublicAddress(results);
+    if (!resolved) {
       throw new Error(
-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
+        `No routable public IPs resolved for ${originalHostname}: all resolved IPs are in private/reserved ranges`,
       );
     }
 
-    const resolved = safeResults[0]!;
     return {
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
+      resolvedFamily: resolved.family,
       hostHeader,
       tlsServername: parsed.protocol === "https:" && isIP(originalHostname) === 0
         ? originalHostname
@@ -207,7 +215,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   } catch (err) {
     // Re-throw our own errors; wrap DNS failures
     if (err instanceof Error && (
-      err.message.startsWith("All resolved IPs") ||
+      err.message.startsWith("No routable public IPs") ||
       err.message.startsWith("DNS resolution returned") ||
       err.message.startsWith("DNS lookup timed out")
     )) throw err;
@@ -273,6 +281,14 @@ async function executePinnedHttpRequest(
       req.write(body);
     }
     req.end();
+  }).catch((err) => {
+    const code = typeof err === "object" && err && "code" in err ? String((err as { code?: unknown }).code) : "";
+    if (target.resolvedFamily === 6 && (code === "EHOSTUNREACH" || code === "ENETUNREACH")) {
+      throw new Error(
+        `Plugin HTTP request failed via IPv6 (${code}) for ${target.hostHeader}; no public IPv4 DNS answer was available for fallback`,
+      );
+    }
+    throw err;
   });
 
   const MAX_RESPONSE_BODY_BYTES = 200 * 1024 * 1024; // 200 MB

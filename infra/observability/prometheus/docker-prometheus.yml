@@ -60,8 +60,10 @@ scrape_configs:
     params:
       module: [http_2xx]
     static_configs:
+      # Probe the canonical public route so this measures DNS, TLS,
+      # Cloudflare Tunnel, the loopback origin, and Open WebUI together.
       - targets:
-          - http://host.docker.internal:3000
+          - https://owui.tf-hub.dev/health
         labels:
           component: openwebui
           collection_path: blackbox-http
