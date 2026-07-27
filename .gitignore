@@ -10,6 +10,7 @@ ui/storybook-static/
 .env.backup-*
 .env.local
 .env.*.local
+.env*.bak*
 *.key
 *.pem
 *.p12

@@ -179,43 +179,37 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 11. Tangent Forge Fork Model
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This checkout is the `Tangent-Forge/paperclip` fork of `paperclipai/paperclip`.
+`upstream/master` is read-only source history; `origin/master` is the approved
+Tangent Forge baseline. Do not treat an upstream branch, a historical fork, or
+an arbitrary local worktree as the deployment source.
 
-### Branch Strategy
+### Branch and deployment rules
 
-- `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
-- Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
+- Feature work lands through focused PRs into `origin/master`; stacked PRs merge
+  only after their declared base PR is merged and they are rebased.
+- Upstream changes enter only through the monthly upstream-review process. The
+  scheduled workflow gathers evidence; it does not merge, push a sync branch,
+  or open a pull request.
+- The TF-Home service must run from a clean, pinned deployment worktree at a
+  recorded `origin/master` commit. Developer worktrees and uncommitted files are
+  never a deployment source.
+- Preserve dirty worktrees before changing, cleaning, rebasing, or deleting
+  them. A branch without an owner, PR, or preservation record is a hygiene
+  finding, not an implicit deletion target.
 
-### Hermes (plugin only)
+### Tangent Forge extensions
 
-- Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
-- UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
+Keep Tangent Forge behavior in adapters or plugins whenever that does not weaken
+the upstream contract. Core changes require a PR rationale and targeted
+verification. External adapter/plugin packages must avoid hard-coded runtime
+credentials and retain the generic config-schema/UI parser boundary.
 
-### Local Dev
+### Fork-health guardrail
 
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
-
-### Fork QoL Patches (not in upstream)
-
-These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
-
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
-
-### Plugin System
-
-PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
-
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
-- The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
-- `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
-- Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
-- Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+Run `pnpm fork:health` before an upstream review, deployment handoff, or branch
+cleanup. It is read-only and reports fork divergence, worktree state, service
+health, stale instructions, and escalation findings. Policy and cadence live in
+the Agent Systems Hub document `docs/paperclip-fork-health-guardian.md`.
