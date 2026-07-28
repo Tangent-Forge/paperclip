@@ -1533,6 +1533,35 @@ export function agentRoutes(
     };
   }
 
+  function projectCompanyAgentRosterEntry(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      urlKey: agent.urlKey,
+      role: agent.role,
+      title: agent.title,
+      icon: agent.icon,
+      status: agent.status,
+      reportsTo: agent.reportsTo,
+      capabilities: agent.capabilities,
+      adapterType: agent.adapterType,
+      adapterConfig: REDACTED_EVENT_VALUE,
+      runtimeConfig: REDACTED_EVENT_VALUE,
+      defaultEnvironmentId: agent.defaultEnvironmentId,
+      budgetMonthlyCents: agent.budgetMonthlyCents,
+      spentMonthlyCents: agent.spentMonthlyCents,
+      pauseReason: agent.pauseReason,
+      pausedAt: agent.pausedAt,
+      permissions: agent.permissions,
+      lastHeartbeatAt: agent.lastHeartbeatAt,
+      metadata: agent.metadata,
+      orgChainHealth: agent.orgChainHealth,
+      createdAt: agent.createdAt,
+      updatedAt: agent.updatedAt,
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1868,12 +1897,7 @@ export function agentRoutes(
       return;
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result.map((agent) => suppressAgentDetailConfigFields(agent)));
-      return;
-    }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => projectCompanyAgentRosterEntry(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {

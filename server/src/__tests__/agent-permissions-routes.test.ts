@@ -64,6 +64,26 @@ const sensitiveConfigAgent = {
   },
 };
 
+const sensitiveRosterAgent = {
+  ...sensitiveConfigAgent,
+  adapterDiagnostics: {
+    env: {
+      ADAPTER_TOKEN: "adapter-token-value",
+    },
+  },
+  runtimeDiagnostics: {
+    modelProfiles: {
+      cheap: {
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: "runtime-openai-api-key-value",
+          },
+        },
+      },
+    },
+  },
+};
+
 function expectNoSensitiveConfigPayload(value: unknown) {
   const payload = JSON.stringify(value);
   expect(payload).not.toContain("paperclip-agent-api-key-value");
@@ -574,7 +594,7 @@ describe.sequential("agent permission routes", () => {
   }, 20_000);
 
   it("suppresses sensitive config fields from ordinary agent roster reads", async () => {
-    mockAgentService.list.mockResolvedValue([sensitiveConfigAgent]);
+    mockAgentService.list.mockResolvedValue([sensitiveRosterAgent]);
     mockAccessService.hasPermission.mockResolvedValue(false);
 
     const app = await createApp({
@@ -595,6 +615,8 @@ describe.sequential("agent permission routes", () => {
         runtimeConfig: REDACTED_EVENT_VALUE,
       }),
     ]);
+    expect(res.body[0].adapterDiagnostics).toBeUndefined();
+    expect(res.body[0].runtimeDiagnostics).toBeUndefined();
     expectNoSensitiveConfigPayload(res.body);
   });
 
