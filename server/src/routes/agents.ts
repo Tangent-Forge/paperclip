@@ -2212,11 +2212,7 @@ export function agentRoutes(
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
-    return {
-      ...agent,
-      adapterConfig: {},
-      runtimeConfig: {},
-    };
+    return suppressAgentDetailConfigFields(agent);
   }
 
   function suppressAgentDetailConfigFields<T extends { adapterConfig?: unknown; runtimeConfig?: unknown }>(agent: T): T {
