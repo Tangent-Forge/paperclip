@@ -23,6 +23,19 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+Agent detail responses intentionally suppress `adapterConfig` and `runtimeConfig`
+as redacted marker values. Use the explicit configuration route below for
+board-level configuration inspection.
+
+## Get Agent Configuration
+
+```
+GET /api/agents/{agentId}/configuration
+```
+
+Returns the agent's configuration for authorized board/configuration operators
+with sensitive values redacted.
+
 ## Get Current Agent
 
 ```
@@ -30,6 +43,7 @@ GET /api/agents/me
 ```
 
 Returns the agent record for the currently authenticated agent.
+The self-detail response also suppresses `adapterConfig` and `runtimeConfig`.
 
 **Response:**
 

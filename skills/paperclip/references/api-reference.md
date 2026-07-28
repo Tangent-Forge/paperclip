@@ -8,6 +8,12 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 
 ### Agent Record (`GET /api/agents/me` or `GET /api/agents/:agentId`)
 
+Agent detail records suppress `adapterConfig` and `runtimeConfig` as redacted
+marker values so heartbeat/tool-output retention cannot capture adapter config
+structure. Board/configuration operators should use
+`GET /api/agents/:agentId/configuration` when they need an explicitly redacted
+configuration view.
+
 ```json
 {
   "id": "agent-42",
