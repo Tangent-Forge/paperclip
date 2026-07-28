@@ -91,7 +91,7 @@ import {
   requireServerAdapter,
 } from "../adapters/index.js";
 import { listGeminiModelsForContext, refreshGeminiModelsForContext } from "../adapters/gemini-models.js";
-import { redactEventPayload } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
@@ -1023,7 +1023,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : suppressAgentDetailConfigFields(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -2219,6 +2219,14 @@ export function agentRoutes(
     };
   }
 
+  function suppressAgentDetailConfigFields<T extends { adapterConfig?: unknown; runtimeConfig?: unknown }>(agent: T): T {
+    return {
+      ...agent,
+      adapterConfig: REDACTED_EVENT_VALUE,
+      runtimeConfig: REDACTED_EVENT_VALUE,
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -2811,7 +2819,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => suppressAgentDetailConfigFields(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
