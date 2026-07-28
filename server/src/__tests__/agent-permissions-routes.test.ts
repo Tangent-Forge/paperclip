@@ -40,6 +40,44 @@ const baseAgent = {
   updatedAt: new Date("2026-03-19T00:00:00.000Z"),
 };
 
+const sensitiveConfigAgent = {
+  ...baseAgent,
+  adapterType: "openclaw_gateway",
+  adapterConfig: {
+    env: {
+      PAPERCLIP_API_KEY: "paperclip-agent-api-key-value",
+      ADAPTER_TOKEN: "adapter-token-value",
+    },
+    devicePrivateKeyPem: "-----BEGIN PRIVATE KEY-----\nsensitive-device-private-key\n-----END PRIVATE KEY-----",
+  },
+  runtimeConfig: {
+    modelProfiles: {
+      cheap: {
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: "runtime-openai-api-key-value",
+          },
+          devicePrivateKeyPem: "runtime-device-private-key-value",
+        },
+      },
+    },
+  },
+};
+
+function expectNoSensitiveConfigPayload(value: unknown) {
+  const payload = JSON.stringify(value);
+  expect(payload).not.toContain("paperclip-agent-api-key-value");
+  expect(payload).not.toContain("adapter-token-value");
+  expect(payload).not.toContain("sensitive-device-private-key");
+  expect(payload).not.toContain("runtime-openai-api-key-value");
+  expect(payload).not.toContain("runtime-device-private-key-value");
+  expect(payload).not.toContain("devicePrivateKeyPem");
+  expect(payload).not.toContain("PAPERCLIP_API_KEY");
+  expect(payload).not.toContain("OPENAI_API_KEY");
+  expect(payload).not.toContain("ADAPTER_TOKEN");
+  expect(payload).not.toContain("modelProfiles");
+}
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
@@ -533,6 +571,56 @@ describe.sequential("agent permission routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("PAPERCLIP_API_KEY");
     expect(JSON.stringify(res.body)).not.toContain("PAPERCLIP_API_URL");
     expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+  }, 20_000);
+
+  it("suppresses sensitive config fields from ordinary agent roster reads", async () => {
+    mockAgentService.list.mockResolvedValue([sensitiveConfigAgent]);
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: agentId,
+        adapterConfig: REDACTED_EVENT_VALUE,
+        runtimeConfig: REDACTED_EVENT_VALUE,
+      }),
+    ]);
+    expectNoSensitiveConfigPayload(res.body);
+  });
+
+  it("suppresses sensitive config fields from ordinary agent peer detail reads", async () => {
+    const peerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) return { ...sensitiveConfigAgent, id: peerAgentId };
+      if (id === agentId) return { ...baseAgent, permissions: { canCreateAgents: false } };
+      return null;
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${peerAgentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig).toBe(REDACTED_EVENT_VALUE);
+    expectNoSensitiveConfigPayload(res.body);
   }, 20_000);
 
   it("suppresses company agent list config for authenticated company members without agent admin permission", async () => {
