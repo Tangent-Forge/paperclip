@@ -70,6 +70,5 @@ failures.
 - `wrangler.toml` intentionally keeps the public routine trigger URL and default
   agent in tracked config; the authentication boundary is the untracked Worker
   secret.
-- The retired IMAP bridge under `archive/email-paperclip-bridge-retired-20260608/`
-  is not part of the maintained intake path. Restore it only if the Cloudflare
-  Email Routing Worker cannot satisfy intake liveness requirements.
+- The retired IMAP bridge archive was removed after the observation window. The
+  Cloudflare Email Routing Worker is the maintained intake path.
