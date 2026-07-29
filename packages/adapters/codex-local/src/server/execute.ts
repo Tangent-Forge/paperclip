@@ -783,14 +783,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           });
           gitBaseline = parseGitPorcelainPaths(stdout);
         } catch (err) {
-          if (denyGitMutation) {
-            throw new Error(
-              `executionConstraints.gitMutation=deny requires pre-run git status verification: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
-          gitBaseline = null;
+          throw new Error(
+            `executionConstraints write/git policy requires pre-run git status verification: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
         }
       }
 
@@ -827,18 +824,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           });
           afterPaths = parseGitPorcelainPaths(stdout);
         } catch (err) {
-          if (denyGitMutation) {
-            throw new Error(
-              `executionConstraints.gitMutation=deny requires post-run git status verification: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
+          throw new Error(
+            `executionConstraints write/git policy requires post-run git status verification: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
         }
-        const changed =
-          gitBaseline == null
-            ? afterPaths
-            : afterPaths.filter((p) => !(gitBaseline as string[]).includes(p));
+        const changed = afterPaths.filter((p) => !(gitBaseline as string[]).includes(p));
         const violations = findWritePolicyViolations(changed, writeAllowlist);
         if (violations.length > 0) {
           throw new Error(

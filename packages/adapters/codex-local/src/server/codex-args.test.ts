@@ -162,17 +162,21 @@ describe("buildCodexExecArgs", () => {
       },
       extraArgs: [
         "--search",
+        "--search=true",
         "--sandbox",
         "danger-full-access",
+        "--sandbox=danger-full-access",
         "-c",
         "sandbox_workspace_write.network_access=true",
         "--skip-git-repo-check",
       ],
     });
     expect(result.args).not.toContain("--search");
+    expect(result.args).not.toContain("--search=true");
     expect(result.args).toContain("--sandbox");
     expect(result.args).toContain("workspace-write");
     expect(result.args).not.toContain("danger-full-access");
+    expect(result.args).not.toContain("--sandbox=danger-full-access");
     expect(result.args.join(" ")).not.toContain("network_access=true");
     expect(result.args).toContain("--skip-git-repo-check");
   });

@@ -39,10 +39,12 @@ function sanitizeExtraArgs(extraArgs: string[], constrained: boolean): string[] 
     ) {
       continue;
     }
-    if (arg === "--search") continue;
-    if (arg === "--sandbox") {
-      const next = extraArgs[i + 1];
-      if (next && !next.startsWith("-")) i += 1;
+    if (arg === "--search" || arg.startsWith("--search=")) continue;
+    if (arg === "--sandbox" || arg.startsWith("--sandbox=")) {
+      if (arg === "--sandbox") {
+        const next = extraArgs[i + 1];
+        if (next && !next.startsWith("-")) i += 1;
+      }
       continue;
     }
     if (arg === "-c") {
@@ -51,6 +53,9 @@ function sanitizeExtraArgs(extraArgs: string[], constrained: boolean): string[] 
         i += 1;
         continue;
       }
+    }
+    if (arg.startsWith("-c") && /sandbox|shell_environment_policy|web_search|network/i.test(arg)) {
+      continue;
     }
     if (/^sandbox(_mode)?=/i.test(arg)) continue;
     out.push(arg);
