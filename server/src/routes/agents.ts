@@ -2604,9 +2604,15 @@ export function agentRoutes(
       existingConstraints?.canCreateTasks === false ||
       existingProfile === "canary_strict";
 
-    if (canAssignTasksDenied && (req.body.canAssignTasks === true || req.body.canCreateAgents === true)) {
+    if (
+      canAssignTasksDenied &&
+      (req.body.canAssignTasks === true ||
+        req.body.canCreateTasks === true ||
+        req.body.canCreateAgents === true)
+    ) {
       res.status(422).json({
-        error: "executionConstraints deny elevating canAssignTasks/canCreateAgents on this agent",
+        error:
+          "executionConstraints deny elevating canAssignTasks/canCreateTasks/canCreateAgents on this agent",
       });
       return;
     }

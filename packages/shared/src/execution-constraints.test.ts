@@ -127,6 +127,65 @@ describe("evaluateCanaryHireConsistency", () => {
     expect(result.ok).toBe(false);
     expect(result.issues.join(" ")).toContain("heartbeat.enabled");
   });
+
+  it("fails when sandboxMode is missing or not workspace-write", () => {
+    const result = evaluateCanaryHireConsistency({
+      adapterConfig: {
+        cwd: canaryWorkspace,
+        executionConstraints: validCanaryConstraints({ sandboxMode: "read-only" }),
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: false, maxConcurrentRuns: 1 },
+      },
+      permissions: {
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canCreateTasks: false,
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.issues.join(" ")).toContain("sandboxMode must be workspace-write");
+  });
+
+  it("fails when writeAllowlist is not exactly one safe relative path", () => {
+    const multi = evaluateCanaryHireConsistency({
+      adapterConfig: {
+        cwd: canaryWorkspace,
+        executionConstraints: validCanaryConstraints({
+          writeAllowlist: ["docs/a.md", "docs/b.md"],
+        }),
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: false, maxConcurrentRuns: 1 },
+      },
+      permissions: {
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canCreateTasks: false,
+      },
+    });
+    expect(multi.ok).toBe(false);
+    expect(multi.issues.join(" ")).toContain("exactly one relative path");
+
+    const abs = evaluateCanaryHireConsistency({
+      adapterConfig: {
+        cwd: canaryWorkspace,
+        executionConstraints: validCanaryConstraints({
+          writeAllowlist: ["/tmp/evil.md"],
+        }),
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: false, maxConcurrentRuns: 1 },
+      },
+      permissions: {
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canCreateTasks: false,
+      },
+    });
+    expect(abs.ok).toBe(false);
+    expect(abs.issues.join(" ")).toContain("safe relative path");
+  });
 });
 
 describe("createAgentHireSchema + executionConstraints", () => {

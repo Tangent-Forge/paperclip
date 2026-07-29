@@ -148,6 +148,9 @@ export function evaluateCanaryHireConsistency(input: {
   if (constraints.inheritProcessEnv !== false) issues.push("inheritProcessEnv must be false");
   if (constraints.forbidSecretEnvBindings !== true) issues.push("forbidSecretEnvBindings must be true");
   if (constraints.network !== "deny") issues.push("network must be deny");
+  if (constraints.sandboxMode !== "workspace-write") {
+    issues.push("sandboxMode must be workspace-write");
+  }
   if (constraints.gitMutation !== "deny") issues.push("gitMutation must be deny");
   if (constraints.canCreateTasks !== false) issues.push("canCreateTasks must be false");
   if (constraints.canAssignTasks !== false) issues.push("canAssignTasks must be false");
@@ -166,7 +169,13 @@ export function evaluateCanaryHireConsistency(input: {
   if (input.adapterConfig.search === true) issues.push("search must be false when network is denied");
 
   if (!constraints.workspaceAllowlist?.length) issues.push("workspaceAllowlist must be non-empty");
-  if (!constraints.writeAllowlist?.length) issues.push("writeAllowlist must be non-empty");
+  if (!constraints.writeAllowlist?.length) {
+    issues.push("writeAllowlist must be non-empty");
+  } else if (constraints.writeAllowlist.length !== 1) {
+    issues.push("writeAllowlist must contain exactly one relative path for canary_strict");
+  } else if (!isSafeRelativeWritePath(constraints.writeAllowlist[0] ?? "")) {
+    issues.push("writeAllowlist entry must be a safe relative path");
+  }
   if (
     typeof input.adapterConfig.cwd !== "string" ||
     !assertPathInAllowlist(input.adapterConfig.cwd, constraints.workspaceAllowlist ?? [])

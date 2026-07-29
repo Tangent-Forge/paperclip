@@ -762,6 +762,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      // Write/git policy residual: Codex sandboxMode (workspace-write) is the primary
+      // filesystem boundary. Pre/post git porcelain delta is a fail-closed secondary
+      // check for durable tree changes. It is not kernel MAC and cannot detect
+      // temporary write-then-revert mutations within the sandbox during the run.
       const enforceWriteGitPolicy = denyGitMutation || writeAllowlist.length > 0;
       if (enforceWriteGitPolicy && executionTargetIsRemote) {
         throw new Error(
