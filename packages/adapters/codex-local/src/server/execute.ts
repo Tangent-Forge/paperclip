@@ -39,6 +39,12 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  buildMinimalProcessEnv,
+  assertPathInAllowlist,
+  parseGitPorcelainPaths,
+  findWritePolicyViolations,
+} from "@paperclipai/shared";
+import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
@@ -528,11 +534,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         Object.assign(env, paperclipBridge.env);
       }
     }
-    const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
+    const executionConstraints = parseObject(config.executionConstraints);
+    const workspaceAllowlist = Array.isArray(executionConstraints.workspaceAllowlist)
+      ? executionConstraints.workspaceAllowlist.filter((entry: unknown): entry is string => typeof entry === "string")
+      : [];
+    if (workspaceAllowlist.length > 0 && !assertPathInAllowlist(cwd, workspaceAllowlist)) {
+      throw new Error("Current cwd is outside executionConstraints.workspaceAllowlist");
+    }
+    const writeAllowlist = Array.isArray(executionConstraints.writeAllowlist)
+      ? executionConstraints.writeAllowlist.filter((entry: unknown): entry is string => typeof entry === "string")
+      : [];
+    const denyGitMutation = executionConstraints.gitMutation === "deny";
+    const replaceEnv = executionConstraints.inheritProcessEnv === false;
+    const configuredEnvAllowlist = Array.isArray(executionConstraints.envAllowlist)
+      ? executionConstraints.envAllowlist.filter((entry: unknown): entry is string => typeof entry === "string")
+      : undefined;
+    const effectiveEnv = replaceEnv
+      ? buildMinimalProcessEnv(env, configuredEnvAllowlist)
+      : Object.fromEntries(
+          Object.entries({ ...process.env, ...env }).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        );
     const billingType = resolveCodexBillingType(effectiveEnv);
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(
@@ -739,13 +762,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      // Write/git policy residual: Codex sandboxMode (workspace-write) is the primary
+      // filesystem boundary. Pre/post git porcelain delta is a fail-closed secondary
+      // check for durable tree changes. It is not kernel MAC and cannot detect
+      // temporary write-then-revert mutations within the sandbox during the run.
+      const enforceWriteGitPolicy = denyGitMutation || writeAllowlist.length > 0;
+      if (enforceWriteGitPolicy && executionTargetIsRemote) {
+        throw new Error(
+          "executionConstraints write/git policy requires local execution; remote targets are not supported for constrained canary runs",
+        );
+      }
+
+      let gitBaseline: string[] | null = null;
+      if (enforceWriteGitPolicy) {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execFileAsync = promisify(execFile);
+        try {
+          const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
+            cwd,
+            env: runtimeEnv,
+            timeout: 15_000,
+            maxBuffer: 2_000_000,
+          });
+          gitBaseline = parseGitPorcelainPaths(stdout);
+        } catch (err) {
+          throw new Error(
+            `executionConstraints write/git policy requires pre-run git status verification: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
-        env,
+        env: runtimeEnv,
         stdin: prompt,
         timeoutSec,
         graceSec,
         onSpawn,
+        envMode: replaceEnv ? "replace" : "inherit",
         onLog: async (stream, chunk) => {
           if (stream !== "stderr") {
             await onLog(stream, chunk);
@@ -756,6 +813,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await onLog(stream, cleaned);
         },
       });
+
+      if (enforceWriteGitPolicy) {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execFileAsync = promisify(execFile);
+        let afterPaths: string[] = [];
+        try {
+          const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
+            cwd,
+            env: runtimeEnv,
+            timeout: 15_000,
+            maxBuffer: 2_000_000,
+          });
+          afterPaths = parseGitPorcelainPaths(stdout);
+        } catch (err) {
+          throw new Error(
+            `executionConstraints write/git policy requires post-run git status verification: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        const changed = afterPaths.filter((p) => !(gitBaseline as string[]).includes(p));
+        const violations = findWritePolicyViolations(changed, writeAllowlist);
+        if (violations.length > 0) {
+          throw new Error(
+            `executionConstraints write/git policy violated by unexpected paths: ${violations.slice(0, 12).join(", ")}`,
+          );
+        }
+      }
+
       const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
       return {
         proc: {

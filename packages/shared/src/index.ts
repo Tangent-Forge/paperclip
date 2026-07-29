@@ -1,5 +1,17 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  parseExecutionConstraints,
+  isSafeRelativeWritePath,
+  assertPathInAllowlist,
+  buildMinimalProcessEnv,
+  detectForbiddenEnvSecrets,
+  isGitPathAllowed,
+  parseGitPorcelainPaths,
+  findWritePolicyViolations,
+  evaluateCanaryHireConsistency,
+  type ExecutionConstraints,
+} from "./execution-constraints.js";
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,

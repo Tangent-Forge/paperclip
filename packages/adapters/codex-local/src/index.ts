@@ -81,6 +81,17 @@ Core fields:
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- executionConstraints (object, optional): first-class run/hire controls for constrained agents
+  - profile: optional "canary_strict" requiring the full canary control set at hire time
+  - inheritProcessEnv (boolean): false disables host process env inheritance
+  - envAllowlist (string[], optional): when set with inheritProcessEnv=false, only these configured env keys are kept
+  - forbidSecretEnvBindings (boolean): reject secret_ref / secret-named env bindings
+  - network: "allow" | "deny" (deny forces Codex sandbox and disables --search)
+  - sandboxMode: "read-only" | "workspace-write" | "danger-full-access"
+  - workspaceAllowlist (string[]): absolute paths; run cwd must stay inside one
+  - writeAllowlist (string[]): relative paths permitted to change under gitMutation/write checks
+  - gitMutation: "allow" | "deny"
+  - canCreateTasks / canAssignTasks / canCreateAgents (booleans): mirrored control-plane authority
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 
@@ -97,4 +108,7 @@ Notes:
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- When executionConstraints.inheritProcessEnv=false, Codex runs with envMode=replace (no host env merge) and a minimal PATH/HOME plus configured env only.
+- When executionConstraints.network=deny, Paperclip forces --sandbox (default workspace-write) and rejects bypass flags.
+- When gitMutation=deny or writeAllowlist is set, local runs fail closed if git status shows unexpected paths outside the allowlist.
 `;

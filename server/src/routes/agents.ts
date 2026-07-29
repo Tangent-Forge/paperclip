@@ -28,6 +28,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  evaluateCanaryHireConsistency,
 } from "@paperclipai/shared";
 import {
   resolvePaperclipInstanceRootForAdapter,
@@ -515,11 +516,26 @@ export function agentRoutes(
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+    const constraints = asRecord(agent.adapterConfig)?.executionConstraints as Record<string, unknown> | undefined;
+    const permissions = asRecord(agent.permissions);
+    const canAssignTasksDenied =
+      permissions?.canAssignTasks === false ||
+      constraints?.canAssignTasks === false ||
+      constraints?.canCreateTasks === false;
 
     if (agent.role === "ceo") {
       return {
         canAssignTasks: true,
         taskAssignSource: "ceo_role" as const,
+        membership,
+        grants,
+      };
+    }
+
+    if (canAssignTasksDenied) {
+      return {
+        canAssignTasks: false,
+        taskAssignSource: "none" as const,
         membership,
         grants,
       };
@@ -643,7 +659,9 @@ export function agentRoutes(
     companyId: string,
     agentId: string,
     grantedByUserId: string | null,
+    enabled = true,
   ) {
+    if (!enabled) return;
     await access.ensureMembership(companyId, "agent", agentId, "member", "active");
     await access.setPrincipalPermission(
       companyId,
@@ -2259,6 +2277,19 @@ export function agentRoutes(
       runtimeConfig: normalizedRuntimeConfig,
     };
 
+    const canaryConsistency = evaluateCanaryHireConsistency({
+      adapterConfig: normalizedAdapterConfig as Record<string, unknown>,
+      runtimeConfig: (normalizedRuntimeConfig ?? {}) as Record<string, unknown>,
+      permissions: (normalizedHireInput.permissions ?? {}) as Record<string, unknown>,
+    });
+    if (!canaryConsistency.ok) {
+      res.status(422).json({
+        error: "executionConstraints canary hire consistency failed",
+        issues: canaryConsistency.issues,
+      });
+      return;
+    }
+
     const company = await db
       .select()
       .from(companies)
@@ -2368,6 +2399,12 @@ export function agentRoutes(
       companyId,
       agent.id,
       actor.actorType === "user" ? actor.actorId : null,
+      !(
+        agent.permissions?.canAssignTasks === false ||
+        agent.permissions?.canCreateTasks === false ||
+        (asRecord(agent.adapterConfig)?.executionConstraints as Record<string, unknown> | undefined)?.canAssignTasks === false ||
+        (asRecord(agent.adapterConfig)?.executionConstraints as Record<string, unknown> | undefined)?.canCreateTasks === false
+      ),
     );
 
     if (approval) {
@@ -2446,6 +2483,18 @@ export function agentRoutes(
       normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
+    const createCanaryConsistency = evaluateCanaryHireConsistency({
+      adapterConfig: normalizedAdapterConfig as Record<string, unknown>,
+      runtimeConfig: (normalizedRuntimeConfig ?? {}) as Record<string, unknown>,
+      permissions: (createInput.permissions ?? {}) as Record<string, unknown>,
+    });
+    if (!createCanaryConsistency.ok) {
+      res.status(422).json({
+        error: "executionConstraints canary hire consistency failed",
+        issues: createCanaryConsistency.issues,
+      });
+      return;
+    }
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -2496,6 +2545,12 @@ export function agentRoutes(
       companyId,
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      !(
+        agent.permissions?.canAssignTasks === false ||
+        agent.permissions?.canCreateTasks === false ||
+        (asRecord(agent.adapterConfig)?.executionConstraints as Record<string, unknown> | undefined)?.canAssignTasks === false ||
+        (asRecord(agent.adapterConfig)?.executionConstraints as Record<string, unknown> | undefined)?.canCreateTasks === false
+      ),
     );
 
     if (agent.budgetMonthlyCents > 0) {
@@ -2537,14 +2592,40 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
+    const existingConstraints = asRecord(existing.adapterConfig)?.executionConstraints as
+      | Record<string, unknown>
+      | undefined;
+    const existingProfile =
+      typeof existingConstraints?.profile === "string" ? existingConstraints.profile : "";
+    const canAssignTasksDenied =
+      existing.permissions?.canAssignTasks === false ||
+      existing.permissions?.canCreateTasks === false ||
+      existingConstraints?.canAssignTasks === false ||
+      existingConstraints?.canCreateTasks === false ||
+      existingProfile === "canary_strict";
+
+    if (
+      canAssignTasksDenied &&
+      (req.body.canAssignTasks === true ||
+        req.body.canCreateTasks === true ||
+        req.body.canCreateAgents === true)
+    ) {
+      res.status(422).json({
+        error:
+          "executionConstraints deny elevating canAssignTasks/canCreateTasks/canCreateAgents on this agent",
+      });
+      return;
+    }
+
     const agent = await svc.updatePermissions(id, req.body);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanAssignTasks = canAssignTasksDenied
+      ? false
+      : agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || Boolean(req.body.canAssignTasks);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
@@ -9,9 +10,27 @@ import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
+import { isSafeRelativeWritePath } from "../execution-constraints.js";
+
+export const executionConstraintsSchema = z.object({
+  profile: z.enum(["canary_strict"]).optional(),
+  inheritProcessEnv: z.boolean(),
+  envAllowlist: z.array(z.string().min(1)).optional(),
+  forbidSecretEnvBindings: z.boolean(),
+  network: z.enum(["allow", "deny"]),
+  sandboxMode: z.enum(["read-only", "workspace-write", "danger-full-access"]).optional(),
+  workspaceAllowlist: z.array(z.string().min(1)).min(1),
+  writeAllowlist: z.array(z.string().min(1)).min(1),
+  gitMutation: z.enum(["allow", "deny"]),
+  canCreateTasks: z.boolean(),
+  canAssignTasks: z.boolean(),
+  canCreateAgents: z.boolean(),
+}).strict();
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
+  canAssignTasks: z.boolean().optional(),
+  canCreateTasks: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
@@ -37,14 +56,107 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+
+  const constraintsValue = value.executionConstraints;
+  if (constraintsValue === undefined) return;
+  const parsedConstraints = executionConstraintsSchema.safeParse(constraintsValue);
+  if (!parsedConstraints.success) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
+      message: "adapterConfig.executionConstraints must match the execution constraints schema",
+      path: ["executionConstraints"],
     });
+    return;
+  }
+
+  const constraints = parsedConstraints.data;
+  for (const entry of constraints.writeAllowlist) {
+    if (!isSafeRelativeWritePath(entry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "executionConstraints.writeAllowlist entries must be relative POSIX paths without ..",
+        path: ["executionConstraints", "writeAllowlist"],
+      });
+      break;
+    }
+  }
+  for (const entry of constraints.workspaceAllowlist) {
+    if (!path.isAbsolute(entry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "executionConstraints.workspaceAllowlist entries must be absolute paths",
+        path: ["executionConstraints", "workspaceAllowlist"],
+      });
+      break;
+    }
+  }
+  if (constraints.network === "deny" && Boolean(value.search)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "search must be false when network is denied", path: ["search"] });
+  }
+  if (constraints.network === "deny" && constraints.sandboxMode === "danger-full-access") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sandboxMode cannot be danger-full-access when network is denied",
+      path: ["executionConstraints", "sandboxMode"],
+    });
+  }
+  if (
+    (constraints.profile === "canary_strict" || constraints.network === "deny" || constraints.gitMutation === "deny") &&
+    (value.dangerouslyBypassApprovalsAndSandbox === true || value.dangerouslyBypassSandbox === true)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "bypass flags must be false when canary restrictions are active",
+      path: ["dangerouslyBypassApprovalsAndSandbox"],
+    });
+  }
+  if (constraints.forbidSecretEnvBindings && envValue && typeof envValue === "object" && !Array.isArray(envValue)) {
+    for (const [key, envBinding] of Object.entries(envValue as Record<string, unknown>)) {
+      const keyLooksSecret = /(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|API_KEY)/i.test(key);
+      const stringBinding = typeof envBinding === "string" ? envBinding : "";
+      const plainEmptyOpenAi =
+        key === "OPENAI_API_KEY" &&
+        (stringBinding === "" ||
+          (typeof envBinding === "object" &&
+            envBinding !== null &&
+            (envBinding as { type?: string; value?: string }).type === "plain" &&
+            (envBinding as { value?: string }).value === ""));
+      const isSecretRef =
+        typeof envBinding === "object" &&
+        envBinding !== null &&
+        (envBinding as { type?: string }).type === "secret_ref";
+      if ((keyLooksSecret && !plainEmptyOpenAi) || isSecretRef) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "secret env bindings are forbidden under execution constraints",
+          path: ["env", key],
+        });
+        break;
+      }
+    }
+  }
+  if (constraints.profile === "canary_strict") {
+    const issues: Array<[string[], string]> = [];
+    if (constraints.inheritProcessEnv !== false) issues.push([["executionConstraints", "inheritProcessEnv"], "inheritProcessEnv must be false"]);
+    if (constraints.forbidSecretEnvBindings !== true) issues.push([["executionConstraints", "forbidSecretEnvBindings"], "forbidSecretEnvBindings must be true"]);
+    if (constraints.network !== "deny") issues.push([["executionConstraints", "network"], "network must be deny"]);
+    if (constraints.gitMutation !== "deny") issues.push([["executionConstraints", "gitMutation"], "gitMutation must be deny"]);
+    if (constraints.canCreateTasks !== false) issues.push([["executionConstraints", "canCreateTasks"], "canCreateTasks must be false"]);
+    if (constraints.canAssignTasks !== false) issues.push([["executionConstraints", "canAssignTasks"], "canAssignTasks must be false"]);
+    if (constraints.canCreateAgents !== false) issues.push([["executionConstraints", "canCreateAgents"], "canCreateAgents must be false"]);
+    for (const [pathParts, message] of issues) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: pathParts });
+    }
   }
 });
 
