@@ -6,6 +6,8 @@ export {
   buildMinimalProcessEnv,
   detectForbiddenEnvSecrets,
   isGitPathAllowed,
+  parseGitPorcelainPaths,
+  findWritePolicyViolations,
   evaluateCanaryHireConsistency,
   type ExecutionConstraints,
 } from "./execution-constraints.js";

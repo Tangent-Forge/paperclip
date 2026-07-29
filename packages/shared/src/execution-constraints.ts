@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 
 export type ExecutionConstraints = {
   profile?: "canary_strict";
@@ -33,9 +34,17 @@ export function isSafeRelativeWritePath(candidate: string): boolean {
 }
 
 export function assertPathInAllowlist(cwd: string, allowlist: string[]): boolean {
-  const resolved = path.resolve(cwd);
+  const resolveCandidate = (value: string): string => {
+    try {
+      // Prefer realpath when available so symlink escapes cannot satisfy string-prefix checks.
+      return fs.realpathSync(path.resolve(value));
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const resolved = resolveCandidate(cwd);
   return allowlist.some((allowed) => {
-    const allowedResolved = path.resolve(allowed);
+    const allowedResolved = resolveCandidate(allowed);
     return resolved === allowedResolved || resolved.startsWith(`${allowedResolved}${path.sep}`);
   });
 }
@@ -101,6 +110,27 @@ export function isGitPathAllowed(changedPath: string, writeAllowlist: string[]):
     const a = path.posix.normalize(allowed);
     return normalized === a || normalized.startsWith(`${a}/`);
   });
+}
+
+export function parseGitPorcelainPaths(porcelain: string): string[] {
+  const paths: string[] = [];
+  for (const line of porcelain.split("\n")) {
+    if (!line.trim()) continue;
+    const moved = line.slice(3).split(" -> ");
+    const filePath = (moved[moved.length - 1] ?? "").trim().replace(/^"|"$/g, "");
+    if (filePath) paths.push(filePath);
+  }
+  return paths;
+}
+
+export function findWritePolicyViolations(
+  changedPaths: string[],
+  writeAllowlist: string[],
+): string[] {
+  if (writeAllowlist.length === 0) {
+    return [...changedPaths];
+  }
+  return changedPaths.filter((filePath) => !isGitPathAllowed(filePath, writeAllowlist));
 }
 
 export function evaluateCanaryHireConsistency(input: {

@@ -5,8 +5,9 @@ import {
   buildMinimalProcessEnv,
   detectForbiddenEnvSecrets,
   evaluateCanaryHireConsistency,
-  isGitPathAllowed,
+  findWritePolicyViolations,
   isSafeRelativeWritePath,
+  parseGitPorcelainPaths,
 } from "./execution-constraints.js";
 
 const canaryWorkspace = "/tmp/tan-575-paperclip-canary";
@@ -68,10 +69,22 @@ describe("executionConstraints helpers", () => {
     ).toEqual(expect.arrayContaining(["GITHUB_TOKEN", "AWS_KEY"]));
   });
 
-  it("allows only writeAllowlist git paths", () => {
-    const allow = ["tools/podcast-to-action/docs/TAN-575-assessment-fulfillment-os-canary-draft.md"];
-    expect(isGitPathAllowed(allow[0], allow)).toBe(true);
-    expect(isGitPathAllowed("README.md", allow)).toBe(false);
+  it("detects write policy violations from git path deltas", () => {
+    expect(
+      findWritePolicyViolations(
+        ["tools/podcast-to-action/docs/TAN-575-assessment-fulfillment-os-canary-draft.md", "README.md"],
+        ["tools/podcast-to-action/docs/TAN-575-assessment-fulfillment-os-canary-draft.md"],
+      ),
+    ).toEqual(["README.md"]);
+  });
+
+  it("parses git porcelain paths including renames", () => {
+    expect(
+      parseGitPorcelainPaths(" M README.md\nR  old.md -> tools/podcast-to-action/docs/TAN-575-assessment-fulfillment-os-canary-draft.md\n"),
+    ).toEqual([
+      "README.md",
+      "tools/podcast-to-action/docs/TAN-575-assessment-fulfillment-os-canary-draft.md",
+    ]);
   });
 });
 

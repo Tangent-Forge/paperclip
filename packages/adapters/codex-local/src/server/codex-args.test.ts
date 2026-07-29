@@ -152,4 +152,28 @@ describe("buildCodexExecArgs", () => {
       }),
     ).toThrow(/forbid Codex bypass/);
   });
+
+  it("strips extraArgs that would reintroduce search or widen sandbox under constraints", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      executionConstraints: {
+        network: "deny",
+        sandboxMode: "workspace-write",
+      },
+      extraArgs: [
+        "--search",
+        "--sandbox",
+        "danger-full-access",
+        "-c",
+        "sandbox_workspace_write.network_access=true",
+        "--skip-git-repo-check",
+      ],
+    });
+    expect(result.args).not.toContain("--search");
+    expect(result.args).toContain("--sandbox");
+    expect(result.args).toContain("workspace-write");
+    expect(result.args).not.toContain("danger-full-access");
+    expect(result.args.join(" ")).not.toContain("network_access=true");
+    expect(result.args).toContain("--skip-git-repo-check");
+  });
 });

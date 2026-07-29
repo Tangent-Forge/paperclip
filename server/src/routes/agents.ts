@@ -2592,14 +2592,34 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
+    const existingConstraints = asRecord(existing.adapterConfig)?.executionConstraints as
+      | Record<string, unknown>
+      | undefined;
+    const existingProfile =
+      typeof existingConstraints?.profile === "string" ? existingConstraints.profile : "";
+    const canAssignTasksDenied =
+      existing.permissions?.canAssignTasks === false ||
+      existing.permissions?.canCreateTasks === false ||
+      existingConstraints?.canAssignTasks === false ||
+      existingConstraints?.canCreateTasks === false ||
+      existingProfile === "canary_strict";
+
+    if (canAssignTasksDenied && (req.body.canAssignTasks === true || req.body.canCreateAgents === true)) {
+      res.status(422).json({
+        error: "executionConstraints deny elevating canAssignTasks/canCreateAgents on this agent",
+      });
+      return;
+    }
+
     const agent = await svc.updatePermissions(id, req.body);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
 
-    const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+    const effectiveCanAssignTasks = canAssignTasksDenied
+      ? false
+      : agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || Boolean(req.body.canAssignTasks);
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,

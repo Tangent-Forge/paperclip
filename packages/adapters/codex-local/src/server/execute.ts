@@ -41,7 +41,8 @@ import {
 import {
   buildMinimalProcessEnv,
   assertPathInAllowlist,
-  isGitPathAllowed,
+  parseGitPorcelainPaths,
+  findWritePolicyViolations,
 } from "@paperclipai/shared";
 import {
   parseCodexJsonl,
@@ -761,6 +762,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      const enforceWriteGitPolicy = denyGitMutation || writeAllowlist.length > 0;
+      if (enforceWriteGitPolicy && executionTargetIsRemote) {
+        throw new Error(
+          "executionConstraints write/git policy requires local execution; remote targets are not supported for constrained canary runs",
+        );
+      }
+
+      let gitBaseline: string[] | null = null;
+      if (enforceWriteGitPolicy) {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execFileAsync = promisify(execFile);
+        try {
+          const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
+            cwd,
+            env: runtimeEnv,
+            timeout: 15_000,
+            maxBuffer: 2_000_000,
+          });
+          gitBaseline = parseGitPorcelainPaths(stdout);
+        } catch (err) {
+          if (denyGitMutation) {
+            throw new Error(
+              `executionConstraints.gitMutation=deny requires pre-run git status verification: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+          gitBaseline = null;
+        }
+      }
+
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: runtimeEnv,
@@ -779,10 +812,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await onLog(stream, cleaned);
         },
       });
-      if ((denyGitMutation || writeAllowlist.length > 0) && !executionTargetIsRemote) {
+
+      if (enforceWriteGitPolicy) {
         const { execFile } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execFileAsync = promisify(execFile);
+        let afterPaths: string[] = [];
         try {
           const { stdout } = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=all"], {
             cwd,
@@ -790,36 +825,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             timeout: 15_000,
             maxBuffer: 2_000_000,
           });
-          const violations: string[] = [];
-          for (const line of stdout.split("\n")) {
-            if (!line.trim()) continue;
-            // porcelain: XY PATH or XY ORIG -> PATH
-            const moved = line.slice(3).split(" -> ");
-            const filePath = (moved[moved.length - 1] ?? "").trim().replace(/^"|"$/g, "");
-            if (!filePath) continue;
-            if (writeAllowlist.length === 0 || !isGitPathAllowed(filePath, writeAllowlist)) {
-              violations.push(filePath);
-            }
-          }
-          if (violations.length > 0) {
-            throw new Error(
-              `executionConstraints write/git policy violated by unexpected paths: ${violations.slice(0, 12).join(", ")}`,
-            );
-          }
+          afterPaths = parseGitPorcelainPaths(stdout);
         } catch (err) {
-          if (err instanceof Error && err.message.startsWith("executionConstraints write/git policy violated")) {
-            throw err;
-          }
-          // If git is unavailable, fail closed only when git mutation is denied.
           if (denyGitMutation) {
             throw new Error(
-              `executionConstraints.gitMutation=deny requires git status verification: ${
+              `executionConstraints.gitMutation=deny requires post-run git status verification: ${
                 err instanceof Error ? err.message : String(err)
               }`,
             );
           }
         }
+        const changed =
+          gitBaseline == null
+            ? afterPaths
+            : afterPaths.filter((p) => !(gitBaseline as string[]).includes(p));
+        const violations = findWritePolicyViolations(changed, writeAllowlist);
+        if (violations.length > 0) {
+          throw new Error(
+            `executionConstraints write/git policy violated by unexpected paths: ${violations.slice(0, 12).join(", ")}`,
+          );
+        }
       }
+
       const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
       return {
         proc: {
