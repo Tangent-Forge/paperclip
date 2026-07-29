@@ -91,7 +91,7 @@ describe("buildCodexExecArgs", () => {
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex",
+      model: "gpt-5.3-codex-spark",
       fastMode: true,
     });
 
@@ -104,7 +104,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
       "-",
     ]);
   });
@@ -125,5 +125,31 @@ describe("buildCodexExecArgs", () => {
       "gpt-5.3-codex",
       "-",
     ]);
+  });
+
+  it("applies workspace-write sandbox and blocks bypass under network deny", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      search: true,
+      dangerouslyBypassApprovalsAndSandbox: false,
+      executionConstraints: {
+        network: "deny",
+        sandboxMode: "workspace-write",
+      },
+    });
+    expect(result.args).toContain("--sandbox");
+    expect(result.args).toContain("workspace-write");
+    expect(result.args).not.toContain("--search");
+    expect(result.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
+
+  it("throws when bypass is requested under denied network", () => {
+    expect(() =>
+      buildCodexExecArgs({
+        model: "gpt-5.4",
+        dangerouslyBypassApprovalsAndSandbox: true,
+        executionConstraints: { network: "deny" },
+      }),
+    ).toThrow(/forbid Codex bypass/);
   });
 });

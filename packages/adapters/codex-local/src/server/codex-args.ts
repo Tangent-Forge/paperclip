@@ -36,6 +36,7 @@ export function buildCodexExecArgs(
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
+  const constraints = asRecord(record.executionConstraints);
   const model = asString(record.model, "").trim();
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
@@ -48,11 +49,30 @@ export function buildCodexExecArgs(
     record.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
-  const extraArgs = readExtraArgs(record);
+  const networkDenied = asString(constraints.network, "") === "deny";
+  const gitDenied = asString(constraints.gitMutation, "") === "deny";
+  const profileStrict = asString(constraints.profile, "") === "canary_strict";
+  if ((networkDenied || gitDenied || profileStrict) && bypass) {
+    throw new Error("executionConstraints forbid Codex bypass flags");
+  }
+  const sandboxMode = asString(
+    constraints.sandboxMode,
+    networkDenied || profileStrict ? "workspace-write" : "",
+  ).trim();
+  const extraArgs = readExtraArgs(record).filter(
+    (arg) =>
+      !arg.includes("dangerously-bypass-approvals-and-sandbox") &&
+      !arg.includes("dangerously-bypass-sandbox"),
+  );
 
   const args = ["exec", "--json"];
   if (options.skipGitRepoCheck) args.push("--skip-git-repo-check");
-  if (search) args.unshift("--search");
+  if (search && !networkDenied) args.unshift("--search");
+  if (networkDenied || profileStrict) {
+    args.push("--sandbox", sandboxMode || "workspace-write");
+    // Keep shell env lean inside Codex sandbox sessions.
+    args.push("-c", "shell_environment_policy.inherit=core");
+  }
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
   if (model) args.push("--model", model);
   if (modelReasoningEffort) {
