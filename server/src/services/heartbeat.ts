@@ -1508,7 +1508,9 @@ function isActiveWakeupIdempotencyConflict(error: unknown): boolean {
     if (!entry || typeof entry !== "object") continue;
     const maybe = entry as { code?: string; constraint?: string };
     if (maybe.code !== "23505") continue;
-    if (!maybe.constraint || maybe.constraint.includes("agent_wakeup_requests_active_idempotency")) {
+    // Require the exact active-idempotency constraint. Do not treat bare/unknown
+    // unique violations as wake replay opportunities.
+    if (maybe.constraint === "agent_wakeup_requests_active_idempotency_uq") {
       return true;
     }
   }
