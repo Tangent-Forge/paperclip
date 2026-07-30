@@ -6,6 +6,7 @@ workers_dev = false
 [vars]
 PAPERCLIP_TRIGGER_URL = "https://paperclip-webhook.tf-hub.dev/api/routine-triggers/public/8e4af92cfd6cf0b2e52bc524/fire"
 DEFAULT_AGENT = "hermes"
+ALLOWED_RECIPIENT_PATTERNS = 'ingest\+'
 
 [observability]
 enabled = true
