@@ -1464,6 +1464,23 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+
+export function listAdapterWorkspaceCandidates(adapterConfig: unknown): string[] {
+  const config = parseObject(adapterConfig);
+  const constraints = parseObject(config.executionConstraints);
+  const candidates: string[] = [];
+  const push = (value: unknown) => {
+    const text = readNonEmptyString(value);
+    if (text && !candidates.includes(text)) candidates.push(text);
+  };
+  push(config.cwd);
+  const allowlist = constraints.workspaceAllowlist;
+  if (Array.isArray(allowlist)) {
+    for (const entry of allowlist) push(entry);
+  }
+  return candidates;
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -4376,23 +4393,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
-    const adapterConfig = parseObject(agent.adapterConfig);
-    const executionConstraints = parseObject(adapterConfig.executionConstraints);
-    const adapterWorkspaceCandidates = [
-      readNonEmptyString(adapterConfig.cwd),
-      ...([].concat(executionConstraints.workspaceAllowlist ?? []) as unknown[])
-        .map((value) => readNonEmptyString(value))
-        .filter((value): value is string => Boolean(value)),
-    ];
-    for (const candidate of adapterWorkspaceCandidates) {
-      const candidateExists = await fs
-        .stat(candidate)
-        .then((stats) => stats.isDirectory())
-        .catch(() => false);
-      if (candidateExists) {
-        const warnings = resolvedProjectId
-          ? ["No project workspace was available for this run; using the agent adapter cwd."]
-          : [];
+    // Prefer project/session workspaces first. Adapter cwd/allowlist is only a
+    // last-resort override before agent-home fallback (canary agents bind cwd
+    // without a project workspace row).
+    const tryAdapterConfiguredWorkspace = async (
+      warnings: string[] = [],
+    ): Promise<ResolvedWorkspaceForRun | null> => {
+      for (const candidate of listAdapterWorkspaceCandidates(agent.adapterConfig)) {
+        const candidateExists = await fs
+          .stat(candidate)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false);
+        if (!candidateExists) continue;
         return {
           cwd: candidate,
           source: "agent_adapter_cwd" as const,
@@ -4404,7 +4416,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           warnings,
         };
       }
-    }
+      return null;
+    };
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -4462,8 +4475,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
       if (preferredWorkspaceWarning) {
         warnings.push(preferredWorkspaceWarning);
@@ -4473,14 +4484,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
         warnings.push(
           extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
+            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet.`
+            : `Project workspace path "${firstMissing}" is not available yet.`,
         );
       } else if (!hasConfiguredProjectCwd) {
-        warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
+        warnings.push("Project workspace has no local cwd configured.");
       }
+      const adapterWorkspaceFromProjectMiss = await tryAdapterConfiguredWorkspace([
+        ...warnings,
+        "Using the agent adapter cwd because no project workspace directory was available.",
+      ]);
+      if (adapterWorkspaceFromProjectMiss) return adapterWorkspaceFromProjectMiss;
+
+      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      await fs.mkdir(fallbackCwd, { recursive: true });
+      warnings.push(`Using fallback workspace "${fallbackCwd}" for this run.`);
       return {
         cwd: fallbackCwd,
         source: "project_primary" as const,
@@ -4532,26 +4550,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
+    const preAdapterWarnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+      preAdapterWarnings.push(
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted.`,
       );
     } else if (sessionCwd) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push(`Saved session workspace "${sessionCwd}" is not available.`);
     } else if (resolvedProjectId) {
-      warnings.push(
-        `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push("No project workspace directory is currently available for this issue.");
     } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push("No project or prior session workspace was available.");
     }
+
+    const adapterWorkspace = await tryAdapterConfiguredWorkspace([
+      ...preAdapterWarnings,
+      "Using the agent adapter cwd for this run.",
+    ]);
+    if (adapterWorkspace) return adapterWorkspace;
+
+    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    await fs.mkdir(cwd, { recursive: true });
     return {
       cwd,
       source: "agent_home" as const,
@@ -4560,7 +4579,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: null,
       repoRef: null,
       workspaceHints,
-      warnings,
+      warnings: [
+        ...preAdapterWarnings,
+        `Using fallback workspace "${cwd}" for this run.`,
+      ],
     };
   }
 

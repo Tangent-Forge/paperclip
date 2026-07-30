@@ -47,7 +47,7 @@ type IssueRow = Pick<
   typeof issues.$inferSelect,
   "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
 >;
-type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
+type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status" | "adapterConfig" | "runtimeConfig">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
 type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">;
 type NoticeAgent = Pick<typeof agents.$inferSelect, "id" | "name">;
@@ -373,13 +373,12 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
-  const agentRecord = agent as unknown as Record<string, unknown>;
-  const adapterConfig = readRecord(agentRecord.adapterConfig);
+  const adapterConfig = readRecord(agent.adapterConfig);
   const executionConstraints = readRecord(adapterConfig.executionConstraints);
   const canaryStrict = readString(executionConstraints.profile) === "canary_strict";
   const runContext = readRecord(run.contextSnapshot);
   const oneShotCanary = runContext.oneShotCanary === true || runContext.oneShot === true;
-  const heartbeatConfig = readRecord(readRecord(agentRecord.runtimeConfig).heartbeat);
+  const heartbeatConfig = readRecord(readRecord(agent.runtimeConfig).heartbeat);
   const heartbeatDisabledCanary =
     heartbeatConfig.enabled === false &&
     heartbeatConfig.maxConcurrentRuns === 1 &&

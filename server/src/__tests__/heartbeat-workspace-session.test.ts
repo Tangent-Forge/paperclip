@@ -25,6 +25,7 @@ import {
   stripConfiguredModelFromSessionParams,
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
+  listAdapterWorkspaceCandidates,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
@@ -1508,5 +1509,38 @@ describe("parseSessionCompactionPolicy", () => {
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
     });
+  });
+});
+
+describe("listAdapterWorkspaceCandidates", () => {
+  it("prefers adapter cwd then unique workspaceAllowlist entries", () => {
+    expect(
+      listAdapterWorkspaceCandidates({
+        cwd: "/tmp/canary-worktree",
+        executionConstraints: {
+          workspaceAllowlist: [
+            "/tmp/canary-worktree",
+            "/tmp/other-allowed",
+            "",
+            "/tmp/other-allowed",
+          ],
+        },
+      }),
+    ).toEqual(["/tmp/canary-worktree", "/tmp/other-allowed"]);
+  });
+
+  it("returns allowlist-only candidates when cwd is absent", () => {
+    expect(
+      listAdapterWorkspaceCandidates({
+        executionConstraints: {
+          workspaceAllowlist: ["/tmp/allow-only"],
+        },
+      }),
+    ).toEqual(["/tmp/allow-only"]);
+  });
+
+  it("returns an empty list when no adapter workspace is configured", () => {
+    expect(listAdapterWorkspaceCandidates({})).toEqual([]);
+    expect(listAdapterWorkspaceCandidates(null)).toEqual([]);
   });
 });
