@@ -1432,7 +1432,7 @@ export interface ModelProfileApplication {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_adapter_cwd" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -4375,6 +4375,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+
+    const adapterConfig = parseObject(agent.adapterConfig);
+    const executionConstraints = parseObject(adapterConfig.executionConstraints);
+    const adapterWorkspaceCandidates = [
+      readNonEmptyString(adapterConfig.cwd),
+      ...([].concat(executionConstraints.workspaceAllowlist ?? []) as unknown[])
+        .map((value) => readNonEmptyString(value))
+        .filter((value): value is string => Boolean(value)),
+    ];
+    for (const candidate of adapterWorkspaceCandidates) {
+      const candidateExists = await fs
+        .stat(candidate)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (candidateExists) {
+        const warnings = resolvedProjectId
+          ? ["No project workspace was available for this run; using the agent adapter cwd."]
+          : [];
+        return {
+          cwd: candidate,
+          source: "agent_adapter_cwd" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
+        };
+      }
+    }
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -10349,6 +10379,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    const idempotencyKey = readNonEmptyString(opts.idempotencyKey);
+    if (idempotencyKey) {
+      const existingWakeup = await db
+        .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingWakeup?.runId) {
+        const existingRun = await getRun(existingWakeup.runId);
+        if (
+          existingRun &&
+          (EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(existingRun.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number]) ||
+            HEARTBEAT_RUN_TERMINAL_STATUSES.includes(existingRun.status as typeof HEARTBEAT_RUN_TERMINAL_STATUSES[number]))
+        ) {
+          await db
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "wakeup_idempotency_replay",
+              payload,
+              status: "coalesced",
+              coalescedCount: 1,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey,
+              runId: existingRun.id,
+              finishedAt: new Date(),
+            })
+            .catch(() => null);
+          return existingRun;
+        }
+      }
     }
 
     if (issueId) {

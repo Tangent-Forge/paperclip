@@ -373,6 +373,20 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  const agentRecord = agent as unknown as Record<string, unknown>;
+  const adapterConfig = readRecord(agentRecord.adapterConfig);
+  const executionConstraints = readRecord(adapterConfig.executionConstraints);
+  const canaryStrict = readString(executionConstraints.profile) === "canary_strict";
+  const runContext = readRecord(run.contextSnapshot);
+  const oneShotCanary = runContext.oneShotCanary === true || runContext.oneShot === true;
+  const heartbeatConfig = readRecord(readRecord(agentRecord.runtimeConfig).heartbeat);
+  const heartbeatDisabledCanary =
+    heartbeatConfig.enabled === false &&
+    heartbeatConfig.maxConcurrentRuns === 1 &&
+    readString(executionConstraints.network) === "deny";
+  if (canaryStrict || oneShotCanary || heartbeatDisabledCanary) {
+    return { kind: "skip", reason: "canary disposition handoff is suppressed" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
