@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
+import { createEdgeRequestMetrics, edgeRequestMetricsMiddleware } from "../http/edge-request-metrics.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
@@ -62,6 +63,31 @@ describe("GET /health", () => {
       version: serverVersion,
       error: "database_unreachable"
     });
+  });
+
+  it("exposes Prometheus edge request counters by status class", async () => {
+    const metrics = createEdgeRequestMetrics();
+    const app = express();
+    app.use(edgeRequestMetricsMiddleware(metrics));
+    app.use(
+      "/health",
+      healthRoutes(undefined, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        edgeMetrics: metrics,
+      }),
+    );
+
+    await request(app).get("/health").expect(200);
+
+    const res = await request(app).get("/health/metrics");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("# TYPE paperclip_edge_requests_total counter");
+    expect(res.text).toContain('paperclip_edge_requests_total{status_class="2xx"} 1');
+    expect(res.text).toContain('paperclip_edge_requests_total{status_class="5xx"} 0');
   });
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {

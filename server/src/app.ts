@@ -67,6 +67,7 @@ import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
+import { edgeRequestMetrics, edgeRequestMetricsMiddleware } from "./http/edge-request-metrics.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { traceContextMiddleware } from "./telemetry/trace-context.js";
 
@@ -209,6 +210,13 @@ export async function createApp(
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
+  });
+  app.use(edgeRequestMetricsMiddleware());
+  app.get("/api/health/metrics", (_req, res) => {
+    res
+      .status(200)
+      .set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+      .send(edgeRequestMetrics.renderPrometheus());
   });
   app.use(
     privateHostnameGuard({

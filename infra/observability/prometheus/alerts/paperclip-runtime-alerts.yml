@@ -1,0 +1,260 @@
+groups:
+  - name: paperclip-runtime
+    rules:
+      - record: paperclip_host_cpu_usage_ratio
+        expr: avg by (plane) (1 - rate(node_cpu_seconds_total{mode="idle", job="paperclip-host"}[5m]))
+
+      - record: paperclip_host_memory_used_bytes
+        expr: node_memory_MemTotal_bytes{job="paperclip-host"} - node_memory_MemAvailable_bytes{job="paperclip-host"}
+
+      - record: paperclip_host_memory_total_bytes
+        expr: node_memory_MemTotal_bytes{job="paperclip-host"}
+
+      - record: paperclip_host_load1
+        expr: node_load1{job="paperclip-host"}
+
+      - record: paperclip_container_running
+        expr: max by (plane, name) ((time() - container_last_seen{job="paperclip-containers", name=~".*(paperclip|postgres|prometheus|grafana|blackbox).*"}) < bool 90)
+
+      - record: paperclip_container_restart_events_15m
+        expr: changes(container_start_time_seconds{job="paperclip-containers", name=~".*(paperclip|postgres|prometheus|grafana|blackbox).*"}[15m])
+
+      - alert: PaperclipServiceProbeDownWarning
+        expr: probe_success{job="paperclip-service-probes"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: service-probe
+        annotations:
+          summary: "Paperclip service probe is failing for {{ $labels.service }}"
+          description: "Blackbox probe {{ $labels.instance }} has returned probe_success=0 for 2 minutes."
+          dashboard_panel: "Service Probe Status"
+          runbook_url: "doc/observability.md#paperclipserviceprobedownwarning--paperclipserviceprobedowncritical"
+
+      - alert: PaperclipServiceProbeDownCritical
+        expr: probe_success{job="paperclip-service-probes"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: service-probe
+        annotations:
+          summary: "Paperclip service probe remains down for {{ $labels.service }}"
+          description: "Blackbox probe {{ $labels.instance }} has returned probe_success=0 for 5 minutes."
+          dashboard_panel: "Service Probe Status"
+          runbook_url: "doc/observability.md#paperclipserviceprobedownwarning--paperclipserviceprobedowncritical"
+
+      - alert: PaperclipServiceProbeLatencyWarning
+        expr: probe_http_duration_seconds{job="paperclip-service-probes", phase="total"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: service-probe
+        annotations:
+          summary: "Paperclip service probe latency is elevated for {{ $labels.service }}"
+          description: "Blackbox total HTTP probe latency has exceeded 2 seconds for 5 minutes."
+          dashboard_panel: "Service Probe Latency"
+          runbook_url: "doc/observability.md#paperclipserviceprobelatencywarning--paperclipserviceprobelatencycritical"
+
+      - alert: PaperclipServiceProbeLatencyCritical
+        expr: probe_http_duration_seconds{job="paperclip-service-probes", phase="total"} > 5
+        for: 5m
+        labels:
+          severity: critical
+          component: service-probe
+        annotations:
+          summary: "Paperclip service probe latency is critical for {{ $labels.service }}"
+          description: "Blackbox total HTTP probe latency has exceeded 5 seconds for 5 minutes."
+          dashboard_panel: "Service Probe Latency"
+          runbook_url: "doc/observability.md#paperclipserviceprobelatencywarning--paperclipserviceprobelatencycritical"
+
+      - alert: PaperclipHostCpuHighWarning
+        expr: avg(paperclip_host_cpu_usage_ratio) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Paperclip host CPU is above 80 percent"
+          description: "paperclip_host_cpu_usage_ratio averaged above 80 percent for 10 minutes."
+          dashboard_panel: "Host CPU Usage"
+          runbook_url: "doc/observability.md#papercliphostcpuhighwarning--papercliphostcpuhighcritical"
+
+      - alert: PaperclipHostCpuHighCritical
+        expr: avg(paperclip_host_cpu_usage_ratio) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "Paperclip host CPU is above 95 percent"
+          description: "paperclip_host_cpu_usage_ratio averaged above 95 percent for 5 minutes."
+          dashboard_panel: "Host CPU Usage"
+          runbook_url: "doc/observability.md#papercliphostcpuhighwarning--papercliphostcpuhighcritical"
+
+      - alert: PaperclipHostMemoryHighWarning
+        expr: avg(paperclip_host_memory_used_bytes / paperclip_host_memory_total_bytes) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: host
+        annotations:
+          summary: "Paperclip host memory is above 85 percent"
+          description: "paperclip_host_memory_used_bytes / paperclip_host_memory_total_bytes averaged above 85 percent for 10 minutes."
+          dashboard_panel: "Host Memory Usage"
+          runbook_url: "doc/observability.md#papercliphostmemoryhighwarning--papercliphostmemoryhighcritical"
+
+      - alert: PaperclipHostMemoryHighCritical
+        expr: avg(paperclip_host_memory_used_bytes / paperclip_host_memory_total_bytes) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: host
+        annotations:
+          summary: "Paperclip host memory is above 95 percent"
+          description: "paperclip_host_memory_used_bytes / paperclip_host_memory_total_bytes averaged above 95 percent for 5 minutes."
+          dashboard_panel: "Host Memory Usage"
+          runbook_url: "doc/observability.md#papercliphostmemoryhighwarning--papercliphostmemoryhighcritical"
+
+      - alert: PaperclipContainerDownWarning
+        expr: paperclip_container_running == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "Paperclip container is not running: {{ $labels.name }}"
+          description: "paperclip_container_running has been 0 for 2 minutes."
+          dashboard_panel: "Container Running State"
+          runbook_url: "doc/observability.md#paperclipcontainerdownwarning--paperclipcontainerdowncritical"
+
+      - alert: PaperclipContainerDownCritical
+        expr: paperclip_container_running == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: container
+        annotations:
+          summary: "Paperclip container remains down: {{ $labels.name }}"
+          description: "paperclip_container_running has been 0 for 5 minutes."
+          dashboard_panel: "Container Running State"
+          runbook_url: "doc/observability.md#paperclipcontainerdownwarning--paperclipcontainerdowncritical"
+
+      - alert: PaperclipContainerRestartWarning
+        expr: paperclip_container_restart_events_15m > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "Paperclip container restarted: {{ $labels.name }}"
+          description: "paperclip_container_restart_events_15m is above zero for the last 15 minutes."
+          dashboard_panel: "Container Restarts"
+          runbook_url: "doc/observability.md#paperclipcontainerrestartwarning--paperclipcontainerrestartcritical"
+
+      - alert: PaperclipContainerRestartCritical
+        expr: paperclip_container_restart_events_15m > 3
+        for: 0m
+        labels:
+          severity: critical
+          component: container
+        annotations:
+          summary: "Paperclip container is restart-looping: {{ $labels.name }}"
+          description: "paperclip_container_restart_events_15m is above 3 for the last 15 minutes."
+          dashboard_panel: "Container Restarts"
+          runbook_url: "doc/observability.md#paperclipcontainerrestartwarning--paperclipcontainerrestartcritical"
+
+      - alert: PaperclipTunnelDownWarning
+        expr: up{job="cloudflared"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Cloudflared metrics target is down"
+          description: "Prometheus cannot scrape cloudflared metrics for 2 minutes."
+          dashboard_panel: "Tunnel Availability"
+          runbook_url: "doc/observability.md#papercliptunneldownwarning--papercliptunneldowncritical"
+
+      - alert: PaperclipTunnelDownCritical
+        expr: up{job="cloudflared"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: tunnel
+        annotations:
+          summary: "Cloudflared metrics target remains down"
+          description: "Prometheus cannot scrape cloudflared metrics for 5 minutes."
+          dashboard_panel: "Tunnel Availability"
+          runbook_url: "doc/observability.md#papercliptunneldownwarning--papercliptunneldowncritical"
+
+      - alert: PaperclipTunnelNoHaConnectionsWarning
+        expr: cloudflared_tunnel_ha_connections < 1
+        for: 2m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Cloudflared has no active HA connections"
+          description: "cloudflared_tunnel_ha_connections has been below 1 for 2 minutes."
+          dashboard_panel: "Tunnel HA Connections"
+          runbook_url: "doc/observability.md#papercliptunnelnohaconnectionswarning--papercliptunnelnohaconnectionscritical"
+
+      - alert: PaperclipTunnelNoHaConnectionsCritical
+        expr: cloudflared_tunnel_ha_connections < 1
+        for: 5m
+        labels:
+          severity: critical
+          component: tunnel
+        annotations:
+          summary: "Cloudflared still has no active HA connections"
+          description: "cloudflared_tunnel_ha_connections has been below 1 for 5 minutes."
+          dashboard_panel: "Tunnel HA Connections"
+          runbook_url: "doc/observability.md#papercliptunnelnohaconnectionswarning--papercliptunnelnohaconnectionscritical"
+
+      - alert: PaperclipEdge5xxRateWarning
+        expr: sum(rate(paperclip_edge_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(paperclip_edge_requests_total[5m])), 1) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+          component: edge
+        annotations:
+          summary: "Paperclip edge 5xx rate is above 2 percent"
+          description: "paperclip_edge_requests_total 5xx ratio has exceeded 2 percent for 5 minutes."
+          dashboard_panel: "Edge 5xx Rate"
+          runbook_url: "doc/observability.md#paperclipedge5xxratewarning--paperclipedge5xxratecritical"
+
+      - alert: PaperclipEdge5xxRateCritical
+        expr: sum(rate(paperclip_edge_requests_total{status_class="5xx"}[5m])) / clamp_min(sum(rate(paperclip_edge_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: edge
+        annotations:
+          summary: "Paperclip edge 5xx rate is above 5 percent"
+          description: "paperclip_edge_requests_total 5xx ratio has exceeded 5 percent for 5 minutes."
+          dashboard_panel: "Edge 5xx Rate"
+          runbook_url: "doc/observability.md#paperclipedge5xxratewarning--paperclipedge5xxratecritical"
+
+      - alert: PaperclipCaddy5xxRateWarning
+        expr: sum(rate(caddy_http_requests_total{code=~"5.."}[5m])) / clamp_min(sum(rate(caddy_http_requests_total[5m])), 1) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+          component: caddy
+        annotations:
+          summary: "Caddy 5xx rate is above 2 percent"
+          description: "caddy_http_requests_total 5xx ratio has exceeded 2 percent for 5 minutes."
+          dashboard_panel: "Caddy 5xx Rate"
+          runbook_url: "doc/observability.md#paperclipcaddy5xxratewarning--paperclipcaddy5xxratecritical"
+
+      - alert: PaperclipCaddy5xxRateCritical
+        expr: sum(rate(caddy_http_requests_total{code=~"5.."}[5m])) / clamp_min(sum(rate(caddy_http_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: caddy
+        annotations:
+          summary: "Caddy 5xx rate is above 5 percent"
+          description: "caddy_http_requests_total 5xx ratio has exceeded 5 percent for 5 minutes."
+          dashboard_panel: "Caddy 5xx Rate"
+          runbook_url: "doc/observability.md#paperclipcaddy5xxratewarning--paperclipcaddy5xxratecritical"

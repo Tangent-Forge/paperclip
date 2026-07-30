@@ -8,6 +8,7 @@ import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRe
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import { edgeRequestMetrics, type EdgeRequestMetrics } from "../http/edge-request-metrics.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -35,6 +36,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    edgeMetrics?: EdgeRequestMetrics;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -43,6 +45,14 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+  const metrics = opts.edgeMetrics ?? edgeRequestMetrics;
+
+  router.get("/metrics", (_req, res) => {
+    res
+      .status(200)
+      .set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+      .send(metrics.renderPrometheus());
+  });
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
