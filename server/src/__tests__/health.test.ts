@@ -4,6 +4,7 @@ import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import { createEdgeRequestMetrics, edgeRequestMetricsMiddleware } from "../http/edge-request-metrics.js";
+import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
@@ -70,7 +71,14 @@ describe("GET /health", () => {
     const app = express();
     app.use(edgeRequestMetricsMiddleware(metrics));
     app.use(
-      "/health",
+      privateHostnameGuard({
+        enabled: true,
+        allowedHostnames: [],
+        bindHost: "0.0.0.0",
+      }),
+    );
+    app.use(
+      "/api/health",
       healthRoutes(undefined, {
         deploymentMode: "local_trusted",
         deploymentExposure: "private",
@@ -80,14 +88,45 @@ describe("GET /health", () => {
       }),
     );
 
-    await request(app).get("/health").expect(200);
+    await request(app).get("/api/health").set("Host", "localhost:3100").expect(200);
 
-    const res = await request(app).get("/health/metrics");
+    const res = await request(app).get("/api/health/metrics").set("Host", "localhost:3100");
 
     expect(res.status).toBe(200);
     expect(res.text).toContain("# TYPE paperclip_edge_requests_total counter");
     expect(res.text).toContain('paperclip_edge_requests_total{status_class="2xx"} 1');
     expect(res.text).toContain('paperclip_edge_requests_total{status_class="5xx"} 0');
+  });
+
+  it("keeps Prometheus metrics behind the private hostname guard", async () => {
+    const metrics = createEdgeRequestMetrics();
+    const app = express();
+    app.use(edgeRequestMetricsMiddleware(metrics));
+    app.use(
+      privateHostnameGuard({
+        enabled: true,
+        allowedHostnames: [],
+        bindHost: "0.0.0.0",
+      }),
+    );
+    app.use(
+      "/api/health",
+      healthRoutes(undefined, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        edgeMetrics: metrics,
+      }),
+    );
+
+    const res = await request(app)
+      .get("/api/health/metrics")
+      .set("Host", "public.example.com:3100");
+
+    expect(res.status).toBe(403);
+    expect(res.body?.error).toContain("Hostname 'public.example.com' is not allowed");
+    expect(res.text).not.toContain("paperclip_edge_requests_total");
   });
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
