@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 describe("buildCodexExecArgs", () => {
   it("enables Codex fast mode overrides for GPT-5.4", () => {
@@ -70,7 +71,15 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("falls blank/omitted model config through to DEFAULT_CODEX_LOCAL_MODEL with --model", () => {
+    for (const config of [{}, { model: "" }, { model: "   " }, { model: null }, { model: undefined }]) {
+      const result = buildCodexExecArgs(config as Record<string, unknown>);
+      expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+      expect(result.args).toEqual(["exec", "--json", "--model", DEFAULT_CODEX_LOCAL_MODEL, "-"]);
+    }
+  });
+
+  it("enables Codex fast mode overrides when model is omitted (resolved default)", () => {
     const result = buildCodexExecArgs({
       fastMode: true,
     });
@@ -81,6 +90,8 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-c",
       'service_tier="fast"',
       "-c",
@@ -89,9 +100,11 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("ignores fast mode for unsupported models", () => {
+  it("ignores fast mode for known models outside the fast-mode allowlist", () => {
+    // o3 is picker-listed but not in CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.
+    // Spark is also known/non-fast; use o3 so the case is not confused with the cheap profile.
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex-spark",
+      model: "o3",
       fastMode: true,
     });
 
@@ -104,7 +117,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex-spark",
+      "o3",
       "-",
     ]);
   });
