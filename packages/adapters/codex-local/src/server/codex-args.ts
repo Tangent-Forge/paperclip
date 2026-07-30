@@ -1,6 +1,7 @@
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
+  DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
   normalizeCodexModel,
 } from "../index.js";
@@ -66,7 +67,8 @@ export function buildCodexExecArgs(
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
-  const model = normalizeCodexModel(asString(record.model, ""));
+  // MC-0.15: blank/whitespace model must not fall through to the CLI default.
+  const model = normalizeCodexModel(asString(record.model, "")) || DEFAULT_CODEX_LOCAL_MODEL;
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
