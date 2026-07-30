@@ -4,6 +4,8 @@ export interface Env {
   PAPERCLIP_TRIGGER_SECRET: string;
   PAPERCLIP_TRIGGER_URL: string;
   DEFAULT_AGENT: string;
+  ALLOWED_SENDER_DOMAINS?: string;
+  ALLOWED_RECIPIENT_PATTERNS?: string;
 }
 
 const AGENT_MAP: Record<string, string> = {
@@ -83,6 +85,44 @@ function logError(event: string, fields: Record<string, string | number>) {
   console.error(JSON.stringify({ event, ...fields }));
 }
 
+function splitConfigList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function emailDomain(value: string): string | null {
+  const match = value.match(/@([^>\s]+)>?$/);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function matchesAny(value: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => {
+    try {
+      return new RegExp(pattern, "i").test(value);
+    } catch {
+      return value.toLowerCase().includes(pattern.toLowerCase());
+    }
+  });
+}
+
+export function isAllowedSender(from: string, allowedSenderDomains: string[]): boolean {
+  if (allowedSenderDomains.length === 0) return true;
+  const senderDomain = emailDomain(from);
+  return Boolean(senderDomain && allowedSenderDomains.some((domain) => senderDomain === domain || senderDomain.endsWith(`.${domain}`)));
+}
+
+export function isAllowedRecipient(recipients: string[], allowedRecipientPatterns: string[]): boolean {
+  if (allowedRecipientPatterns.length === 0) return true;
+  return matchesAny(recipients.join("\n"), allowedRecipientPatterns);
+}
+
+function paperclipErrorClass(status: number): string {
+  return status >= 500 ? "paperclip_http_5xx" : "paperclip_http_4xx";
+}
+
 export default {
   async email(message: ForwardableEmailMessage, env: Env, _ctx: ExecutionContext) {
     const parser = new PostalMime();
@@ -110,12 +150,21 @@ export default {
       payload.from,
       payload.received_at,
     );
+    const allowedSenderDomains = splitConfigList(env.ALLOWED_SENDER_DOMAINS).map((domain) => domain.toLowerCase());
+    const allowedRecipientPatterns = splitConfigList(env.ALLOWED_RECIPIENT_PATTERNS);
+    if (!isAllowedSender(payload.from, allowedSenderDomains) || !isAllowedRecipient(toValues, allowedRecipientPatterns)) {
+      logInfo("email_ingest_skipped", {
+        deliveryId,
+        agent,
+        status: "filtered",
+      });
+      return;
+    }
 
     logInfo("email_ingest_received", {
       deliveryId,
       agent,
-      from: truncateForLog(payload.from),
-      subject: truncateForLog(payload.subject),
+      status: "received",
     });
 
     // Keep this compatible with Python json.dumps(sort_keys=True, separators=(",", ":")).
@@ -127,6 +176,7 @@ export default {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "Idempotency-Key": deliveryId,
         "X-Paperclip-Timestamp": ts,
         "X-Paperclip-Signature": `sha256=${sig}`,
       },
@@ -134,13 +184,11 @@ export default {
     });
 
     if (!(res.status >= 200 && res.status < 300)) {
-      const text = await res.text();
       logError("email_ingest_paperclip_post_failed", {
         deliveryId,
         agent,
         status: res.status,
-        responseBody: truncateForLog(text, 300),
-        subject: truncateForLog(payload.subject),
+        errorClass: paperclipErrorClass(res.status),
       });
       // Throwing lets Cloudflare Email Routing retry transient delivery failures.
       throw new Error(`Paperclip POST failed: ${res.status}`);
@@ -149,7 +197,6 @@ export default {
       deliveryId,
       agent,
       status: res.status,
-      subject: truncateForLog(payload.subject),
     });
   },
 };
