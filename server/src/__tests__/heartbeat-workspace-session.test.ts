@@ -26,6 +26,7 @@ import {
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
   listAdapterWorkspaceCandidates,
+  isWakeupIdempotencyReplayStatus,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
@@ -1513,10 +1514,10 @@ describe("parseSessionCompactionPolicy", () => {
 });
 
 describe("listAdapterWorkspaceCandidates", () => {
-  it("prefers adapter cwd then unique workspaceAllowlist entries", () => {
+  it("uses unique workspaceAllowlist entries and ignores off-list cwd", () => {
     expect(
       listAdapterWorkspaceCandidates({
-        cwd: "/tmp/canary-worktree",
+        cwd: "/tmp/outside",
         executionConstraints: {
           workspaceAllowlist: [
             "/tmp/canary-worktree",
@@ -1539,8 +1540,28 @@ describe("listAdapterWorkspaceCandidates", () => {
     ).toEqual(["/tmp/allow-only"]);
   });
 
+  it("falls back to cwd only when no allowlist is configured", () => {
+    expect(
+      listAdapterWorkspaceCandidates({
+        cwd: "/tmp/adapter-cwd-only",
+      }),
+    ).toEqual(["/tmp/adapter-cwd-only"]);
+  });
+
   it("returns an empty list when no adapter workspace is configured", () => {
     expect(listAdapterWorkspaceCandidates({})).toEqual([]);
     expect(listAdapterWorkspaceCandidates(null)).toEqual([]);
+  });
+});
+
+describe("isWakeupIdempotencyReplayStatus", () => {
+  it("treats queued deferred claimed completed and coalesced as replayable", () => {
+    expect(isWakeupIdempotencyReplayStatus("queued")).toBe(true);
+    expect(isWakeupIdempotencyReplayStatus("deferred_issue_execution")).toBe(true);
+    expect(isWakeupIdempotencyReplayStatus("claimed")).toBe(true);
+    expect(isWakeupIdempotencyReplayStatus("completed")).toBe(true);
+    expect(isWakeupIdempotencyReplayStatus("coalesced")).toBe(true);
+    expect(isWakeupIdempotencyReplayStatus("failed")).toBe(false);
+    expect(isWakeupIdempotencyReplayStatus("skipped")).toBe(false);
   });
 });

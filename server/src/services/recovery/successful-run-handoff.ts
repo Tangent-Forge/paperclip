@@ -378,12 +378,9 @@ export function decideSuccessfulRunHandoff(input: {
   const canaryStrict = readString(executionConstraints.profile) === "canary_strict";
   const runContext = readRecord(run.contextSnapshot);
   const oneShotCanary = runContext.oneShotCanary === true || runContext.oneShot === true;
-  const heartbeatConfig = readRecord(readRecord(agent.runtimeConfig).heartbeat);
-  const heartbeatDisabledCanary =
-    heartbeatConfig.enabled === false &&
-    heartbeatConfig.maxConcurrentRuns === 1 &&
-    readString(executionConstraints.network) === "deny";
-  if (canaryStrict || oneShotCanary || heartbeatDisabledCanary) {
+  // Only explicit canary markers suppress disposition handoff. Do not infer
+  // canary intent from generic heartbeat/network settings alone.
+  if (canaryStrict || oneShotCanary) {
     return { kind: "skip", reason: "canary disposition handoff is suppressed" };
   }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {

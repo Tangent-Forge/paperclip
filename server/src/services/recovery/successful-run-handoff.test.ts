@@ -233,10 +233,7 @@ describe("successful run handoff decision", () => {
         adapterConfig: { executionConstraints: { network: "deny" } },
         runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
       } as any,
-    })).toEqual({
-      kind: "skip",
-      reason: "canary disposition handoff is suppressed",
-    });
+    }).kind).toBe("enqueue");
   });
 
   it("uses a stable one-attempt idempotency key", () => {

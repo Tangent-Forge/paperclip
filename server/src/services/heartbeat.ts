@@ -1473,12 +1473,30 @@ export function listAdapterWorkspaceCandidates(adapterConfig: unknown): string[]
     const text = readNonEmptyString(value);
     if (text && !candidates.includes(text)) candidates.push(text);
   };
-  push(config.cwd);
-  const allowlist = constraints.workspaceAllowlist;
-  if (Array.isArray(allowlist)) {
+  const allowlist = Array.isArray(constraints.workspaceAllowlist)
+    ? constraints.workspaceAllowlist
+        .map((entry) => readNonEmptyString(entry))
+        .filter((entry): entry is string => Boolean(entry))
+    : [];
+  // When an allowlist is present, only those paths are eligible (cwd must match
+  // an allowlist entry to be used). Without an allowlist, fall back to cwd alone.
+  if (allowlist.length > 0) {
     for (const entry of allowlist) push(entry);
+    return candidates;
   }
+  push(config.cwd);
   return candidates;
+}
+
+export function isWakeupIdempotencyReplayStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (
+    status === "queued" ||
+    status === "deferred_issue_execution" ||
+    status === "claimed" ||
+    status === "completed" ||
+    status === "coalesced"
+  );
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -10413,38 +10431,88 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(agentWakeupRequests.companyId, agent.companyId),
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            inArray(agentWakeupRequests.status, [
+              "queued",
+              "deferred_issue_execution",
+              "claimed",
+              "completed",
+              "coalesced",
+            ]),
           ),
         )
         .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (existingWakeup?.runId) {
-        const existingRun = await getRun(existingWakeup.runId);
-        if (
-          existingRun &&
-          (EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(existingRun.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number]) ||
-            HEARTBEAT_RUN_TERMINAL_STATUSES.includes(existingRun.status as typeof HEARTBEAT_RUN_TERMINAL_STATUSES[number]))
-        ) {
-          await db
-            .insert(agentWakeupRequests)
-            .values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "wakeup_idempotency_replay",
-              payload,
-              status: "coalesced",
-              coalescedCount: 1,
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey,
-              runId: existingRun.id,
-              finishedAt: new Date(),
-            })
-            .catch(() => null);
-          return existingRun;
+
+      if (existingWakeup && isWakeupIdempotencyReplayStatus(existingWakeup.status)) {
+        if (existingWakeup.runId) {
+          const existingRun = await getRun(existingWakeup.runId);
+          if (
+            existingRun &&
+            (EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(existingRun.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number]) ||
+              HEARTBEAT_RUN_TERMINAL_STATUSES.includes(existingRun.status as typeof HEARTBEAT_RUN_TERMINAL_STATUSES[number]))
+          ) {
+            await db
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "wakeup_idempotency_replay",
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey,
+                runId: existingRun.id,
+                finishedAt: new Date(),
+              })
+              .catch(() => null);
+            return existingRun;
+          }
         }
+
+        // Same-key wake already accepted but has not stamped a run yet
+        // (queued/deferred/claimed). Do not create another execution path.
+        const linkedRun = existingWakeup.runId
+          ? await getRun(existingWakeup.runId)
+          : await db
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, agent.companyId),
+                  eq(heartbeatRuns.agentId, agentId),
+                  eq(heartbeatRuns.wakeupRequestId, existingWakeup.id),
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+
+        await db
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "wakeup_idempotency_replay",
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey,
+            runId: linkedRun?.id ?? existingWakeup.runId ?? null,
+            finishedAt: new Date(),
+          })
+          .catch(() => null);
+
+        if (linkedRun) return linkedRun;
+        return null;
       }
     }
 
