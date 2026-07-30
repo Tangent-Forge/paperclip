@@ -1499,6 +1499,22 @@ export function isWakeupIdempotencyReplayStatus(status: string | null | undefine
   );
 }
 
+function isActiveWakeupIdempotencyConflict(error: unknown): boolean {
+  const chain: unknown[] = [error];
+  if (error && typeof error === "object" && "cause" in error) {
+    chain.push((error as { cause?: unknown }).cause);
+  }
+  for (const entry of chain) {
+    if (!entry || typeof entry !== "object") continue;
+    const maybe = entry as { code?: string; constraint?: string };
+    if (maybe.code !== "23505") continue;
+    if (!maybe.constraint || maybe.constraint.includes("agent_wakeup_requests_active_idempotency")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -10266,6 +10282,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function resolveExistingWakeupIdempotencyRun(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) {
+    const existingWakeup = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+          inArray(agentWakeupRequests.status, [
+            "queued",
+            "deferred_issue_execution",
+            "claimed",
+            "completed",
+            "coalesced",
+          ]),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingWakeup) return null;
+    if (existingWakeup.runId) {
+      return (await getRun(existingWakeup.runId)) ?? null;
+    }
+    return (
+      (await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.agentId, input.agentId),
+            eq(heartbeatRuns.wakeupRequestId, existingWakeup.id),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)) ?? null
+    );
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -10470,7 +10532,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 finishedAt: new Date(),
               })
               .catch(() => null);
-            return existingRun;
+            return existingRun ?? null;
           }
         }
 
@@ -10511,7 +10573,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .catch(() => null);
 
-        if (linkedRun) return linkedRun;
+        if (linkedRun) return linkedRun ?? null;
         return null;
       }
     }
@@ -10569,7 +10631,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
-      const outcome = await db.transaction(async (tx) => {
+      let outcome: {
+        kind: "skipped" | "deferred" | "coalesced" | "queued";
+        run?: typeof heartbeatRuns.$inferSelect;
+      };
+      try {
+      outcome = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -11076,13 +11143,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      } catch (error) {
+        if (!(idempotencyKey && isActiveWakeupIdempotencyConflict(error))) throw error;
+        const replayed = await resolveExistingWakeupIdempotencyRun({
+          companyId: agent.companyId,
+          agentId,
+          idempotencyKey,
+        });
+        if (replayed) return replayed;
+        throw error;
+      }
+
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
-        return outcome.run;
+        return outcome.run ?? null;
       }
 
       const newRun = outcome.run;
+      if (!newRun) return null;
       publishLiveEvent({
         companyId: newRun.companyId,
         type: "heartbeat.run.queued",
@@ -11162,46 +11241,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
+    let wakeupRequest!: typeof agentWakeupRequests.$inferSelect;
+    let newRun!: typeof heartbeatRuns.$inferSelect;
+    try {
+      wakeupRequest = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      newRun = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          continuationAttempt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          runId: newRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+    } catch (error) {
+      if (!(idempotencyKey && isActiveWakeupIdempotencyConflict(error))) throw error;
+      const replayed = await resolveExistingWakeupIdempotencyRun({
         companyId: agent.companyId,
         agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-        continuationAttempt,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        idempotencyKey,
+      });
+      if (replayed) return replayed;
+      throw error;
+    }
+    if (!newRun) return null;
 
     publishLiveEvent({
       companyId: newRun.companyId,
