@@ -201,6 +201,41 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue canary disposition rewakes", () => {
+    expect(decide({
+      agent: {
+        ...agent,
+        adapterConfig: {
+          executionConstraints: {
+            profile: "canary_strict",
+          },
+        },
+        runtimeConfig: {
+          heartbeat: { enabled: true, maxConcurrentRuns: 1 },
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "canary disposition handoff is suppressed",
+    });
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: { issueId: "issue-1", oneShotCanary: true },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "canary disposition handoff is suppressed",
+    });
+    expect(decide({
+      agent: {
+        ...agent,
+        adapterConfig: { executionConstraints: { network: "deny" } },
+        runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } },
+      } as any,
+    }).kind).toBe("enqueue");
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",
@@ -210,8 +245,10 @@ describe("successful run handoff decision", () => {
 
   it("allows failed or cancelled corrective wakes to be retried", () => {
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("queued")).toBe(true);
+    expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("deferred_issue_execution")).toBe(true);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("claimed")).toBe(true);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("completed")).toBe(true);
+    expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("coalesced")).toBe(true);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("failed")).toBe(false);
     expect(isIdempotentFinishSuccessfulRunHandoffWakeStatus("cancelled")).toBe(false);
   });

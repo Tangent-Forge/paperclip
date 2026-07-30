@@ -1432,7 +1432,7 @@ export interface ModelProfileApplication {
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
-  source: "project_primary" | "task_session" | "agent_home";
+  source: "project_primary" | "task_session" | "agent_adapter_cwd" | "agent_home";
   projectId: string | null;
   workspaceId: string | null;
   repoUrl: string | null;
@@ -1462,6 +1462,59 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+
+export function listAdapterWorkspaceCandidates(adapterConfig: unknown): string[] {
+  const config = parseObject(adapterConfig);
+  const constraints = parseObject(config.executionConstraints);
+  const candidates: string[] = [];
+  const push = (value: unknown) => {
+    const text = readNonEmptyString(value);
+    if (text && !candidates.includes(text)) candidates.push(text);
+  };
+  const allowlist = Array.isArray(constraints.workspaceAllowlist)
+    ? constraints.workspaceAllowlist
+        .map((entry) => readNonEmptyString(entry))
+        .filter((entry): entry is string => Boolean(entry))
+    : [];
+  // When an allowlist is present, only those paths are eligible (cwd must match
+  // an allowlist entry to be used). Without an allowlist, fall back to cwd alone.
+  if (allowlist.length > 0) {
+    for (const entry of allowlist) push(entry);
+    return candidates;
+  }
+  push(config.cwd);
+  return candidates;
+}
+
+export function isWakeupIdempotencyReplayStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (
+    status === "queued" ||
+    status === "deferred_issue_execution" ||
+    status === "claimed" ||
+    status === "completed" ||
+    status === "coalesced"
+  );
+}
+
+function isActiveWakeupIdempotencyConflict(error: unknown): boolean {
+  const chain: unknown[] = [error];
+  if (error && typeof error === "object" && "cause" in error) {
+    chain.push((error as { cause?: unknown }).cause);
+  }
+  for (const entry of chain) {
+    if (!entry || typeof entry !== "object") continue;
+    const maybe = entry as { code?: string; constraint?: string };
+    if (maybe.code !== "23505") continue;
+    // Require the exact active-idempotency constraint. Do not treat bare/unknown
+    // unique violations as wake replay opportunities.
+    if (maybe.constraint === "agent_wakeup_requests_active_idempotency_uq") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -4376,6 +4429,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
+    // Prefer project/session workspaces first. Adapter cwd/allowlist is only a
+    // last-resort override before agent-home fallback (canary agents bind cwd
+    // without a project workspace row).
+    const tryAdapterConfiguredWorkspace = async (
+      warnings: string[] = [],
+    ): Promise<ResolvedWorkspaceForRun | null> => {
+      for (const candidate of listAdapterWorkspaceCandidates(agent.adapterConfig)) {
+        const candidateExists = await fs
+          .stat(candidate)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false);
+        if (!candidateExists) continue;
+        return {
+          cwd: candidate,
+          source: "agent_adapter_cwd" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
+        };
+      }
+      return null;
+    };
+
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
         ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
@@ -4432,8 +4511,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
       if (preferredWorkspaceWarning) {
         warnings.push(preferredWorkspaceWarning);
@@ -4443,14 +4520,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
         warnings.push(
           extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
+            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet.`
+            : `Project workspace path "${firstMissing}" is not available yet.`,
         );
       } else if (!hasConfiguredProjectCwd) {
-        warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
+        warnings.push("Project workspace has no local cwd configured.");
       }
+      const adapterWorkspaceFromProjectMiss = await tryAdapterConfiguredWorkspace([
+        ...warnings,
+        "Using the agent adapter cwd because no project workspace directory was available.",
+      ]);
+      if (adapterWorkspaceFromProjectMiss) return adapterWorkspaceFromProjectMiss;
+
+      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      await fs.mkdir(fallbackCwd, { recursive: true });
+      warnings.push(`Using fallback workspace "${fallbackCwd}" for this run.`);
       return {
         cwd: fallbackCwd,
         source: "project_primary" as const,
@@ -4502,26 +4586,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
+    const preAdapterWarnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+      preAdapterWarnings.push(
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted.`,
       );
     } else if (sessionCwd) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push(`Saved session workspace "${sessionCwd}" is not available.`);
     } else if (resolvedProjectId) {
-      warnings.push(
-        `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push("No project workspace directory is currently available for this issue.");
     } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
-      );
+      preAdapterWarnings.push("No project or prior session workspace was available.");
     }
+
+    const adapterWorkspace = await tryAdapterConfiguredWorkspace([
+      ...preAdapterWarnings,
+      "Using the agent adapter cwd for this run.",
+    ]);
+    if (adapterWorkspace) return adapterWorkspace;
+
+    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    await fs.mkdir(cwd, { recursive: true });
     return {
       cwd,
       source: "agent_home" as const,
@@ -4530,7 +4615,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: null,
       repoRef: null,
       workspaceHints,
-      warnings,
+      warnings: [
+        ...preAdapterWarnings,
+        `Using fallback workspace "${cwd}" for this run.`,
+      ],
     };
   }
 
@@ -10196,6 +10284,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function resolveExistingWakeupIdempotencyRun(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) {
+    const existingWakeup = await db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+          inArray(agentWakeupRequests.status, [
+            "queued",
+            "deferred_issue_execution",
+            "claimed",
+            "completed",
+            "coalesced",
+          ]),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingWakeup) return null;
+    if (existingWakeup.runId) {
+      return (await getRun(existingWakeup.runId)) ?? null;
+    }
+    return (
+      (await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.agentId, input.agentId),
+            eq(heartbeatRuns.wakeupRequestId, existingWakeup.id),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)) ?? null
+    );
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -10351,6 +10485,101 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const idempotencyKey = readNonEmptyString(opts.idempotencyKey);
+    if (idempotencyKey) {
+      const existingWakeup = await db
+        .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            inArray(agentWakeupRequests.status, [
+              "queued",
+              "deferred_issue_execution",
+              "claimed",
+              "completed",
+              "coalesced",
+            ]),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.createdAt), desc(agentWakeupRequests.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (existingWakeup && isWakeupIdempotencyReplayStatus(existingWakeup.status)) {
+        if (existingWakeup.runId) {
+          const existingRun = await getRun(existingWakeup.runId);
+          if (
+            existingRun &&
+            (EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(existingRun.status as typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES[number]) ||
+              HEARTBEAT_RUN_TERMINAL_STATUSES.includes(existingRun.status as typeof HEARTBEAT_RUN_TERMINAL_STATUSES[number]))
+          ) {
+            await db
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "wakeup_idempotency_replay",
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey,
+                runId: existingRun.id,
+                finishedAt: new Date(),
+              })
+              .catch(() => null);
+            return existingRun ?? null;
+          }
+        }
+
+        // Same-key wake already accepted but has not stamped a run yet
+        // (queued/deferred/claimed). Do not create another execution path.
+        const linkedRun = existingWakeup.runId
+          ? await getRun(existingWakeup.runId)
+          : await db
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, agent.companyId),
+                  eq(heartbeatRuns.agentId, agentId),
+                  eq(heartbeatRuns.wakeupRequestId, existingWakeup.id),
+                ),
+              )
+              .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+
+        await db
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "wakeup_idempotency_replay",
+            payload,
+            status: "coalesced",
+            coalescedCount: 1,
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey,
+            runId: linkedRun?.id ?? existingWakeup.runId ?? null,
+            finishedAt: new Date(),
+          })
+          .catch(() => null);
+
+        if (linkedRun) return linkedRun ?? null;
+        return null;
+      }
+    }
+
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
       if (activePauseHold) {
@@ -10404,7 +10633,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
-      const outcome = await db.transaction(async (tx) => {
+      let outcome: {
+        kind: "skipped" | "deferred" | "coalesced" | "queued";
+        run?: typeof heartbeatRuns.$inferSelect;
+      };
+      try {
+      outcome = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -10911,13 +11145,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      } catch (error) {
+        if (!(idempotencyKey && isActiveWakeupIdempotencyConflict(error))) throw error;
+        const replayed = await resolveExistingWakeupIdempotencyRun({
+          companyId: agent.companyId,
+          agentId,
+          idempotencyKey,
+        });
+        if (replayed) return replayed;
+        throw error;
+      }
+
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
-        return outcome.run;
+        return outcome.run ?? null;
       }
 
       const newRun = outcome.run;
+      if (!newRun) return null;
       publishLiveEvent({
         companyId: newRun.companyId,
         type: "heartbeat.run.queued",
@@ -10997,46 +11243,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
+    let wakeupRequest!: typeof agentWakeupRequests.$inferSelect;
+    let newRun!: typeof heartbeatRuns.$inferSelect;
+    try {
+      wakeupRequest = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      newRun = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          continuationAttempt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          runId: newRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+    } catch (error) {
+      if (!(idempotencyKey && isActiveWakeupIdempotencyConflict(error))) throw error;
+      const replayed = await resolveExistingWakeupIdempotencyRun({
         companyId: agent.companyId,
         agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-        continuationAttempt,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        idempotencyKey,
+      });
+      if (replayed) return replayed;
+      throw error;
+    }
+    if (!newRun) return null;
 
     publishLiveEvent({
       companyId: newRun.companyId,

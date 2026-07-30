@@ -35,6 +35,7 @@ const IDEMPOTENT_HANDOFF_WAKE_STATUSES = [
   "deferred_issue_execution",
   "claimed",
   "completed",
+  "coalesced",
 ];
 const IDEMPOTENT_HANDOFF_WAKE_STATUS_SET = new Set<string>(IDEMPOTENT_HANDOFF_WAKE_STATUSES);
 
@@ -47,7 +48,7 @@ type IssueRow = Pick<
   typeof issues.$inferSelect,
   "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
 >;
-type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
+type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status" | "adapterConfig" | "runtimeConfig">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
 type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">;
 type NoticeAgent = Pick<typeof agents.$inferSelect, "id" | "name">;
@@ -373,6 +374,16 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  const adapterConfig = readRecord(agent.adapterConfig);
+  const executionConstraints = readRecord(adapterConfig.executionConstraints);
+  const canaryStrict = readString(executionConstraints.profile) === "canary_strict";
+  const runContext = readRecord(run.contextSnapshot);
+  const oneShotCanary = runContext.oneShotCanary === true || runContext.oneShot === true;
+  // Only explicit canary markers suppress disposition handoff. Do not infer
+  // canary intent from generic heartbeat/network settings alone.
+  if (canaryStrict || oneShotCanary) {
+    return { kind: "skip", reason: "canary disposition handoff is suppressed" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
