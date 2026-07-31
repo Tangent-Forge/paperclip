@@ -458,6 +458,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       adapterKey: "cursor",
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
+      hostApiUrl: "http://127.0.0.1:3100",
       onLog,
     });
     if (paperclipBridge) {
