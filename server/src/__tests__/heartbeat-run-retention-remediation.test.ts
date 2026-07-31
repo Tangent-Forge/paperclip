@@ -54,7 +54,7 @@ describeEmbeddedPostgres("heartbeat run retention remediation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function seedRetainedRun() {
     const companyId = randomUUID();
