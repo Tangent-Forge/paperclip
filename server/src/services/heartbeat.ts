@@ -55,7 +55,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { getRunLogStore, type RunLogHandle, type RunLogRemediationAction } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -174,7 +174,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactRetainedRunPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -1289,6 +1289,34 @@ const heartbeatRunIssueSummaryColumns = {
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
+}
+
+function remediateRetainedText(value: string | null, action: RunLogRemediationAction): string | null {
+  if (value === null) return null;
+  return action === "purge" ? null : redactSensitiveText(value);
+}
+
+function remediateRetainedPayload(
+  value: Record<string, unknown> | null | undefined,
+  action: RunLogRemediationAction,
+  redactedAt: string,
+): Record<string, unknown> | null {
+  if (action === "purge") {
+    return {
+      redacted: true,
+      redactionMode: "purge",
+      redactionReason: "retained_run_remediation",
+      redactedAt,
+    };
+  }
+  const redacted = redactRetainedRunPayload(value ?? null);
+  return {
+    ...(redacted ?? {}),
+    redacted: true,
+    redactionMode: "redact",
+    redactionReason: "retained_run_remediation",
+    redactedAt,
+  };
 }
 
 function truncateRunEventString(value: string) {
@@ -11780,6 +11808,112 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null);
       return row?.message ?? null;
+    },
+
+    remediateRunRetention: async (
+      runId: string,
+      opts: { action: RunLogRemediationAction; reason?: string | null },
+    ) => {
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) throw notFound("Heartbeat run not found");
+
+      const redactedAt = new Date().toISOString();
+      const action = opts.action;
+      const reason = opts.reason ? redactSensitiveText(opts.reason) : null;
+      const logRemediation = run.logStore && run.logRef
+        ? await runLogStore.remediate(
+            { store: run.logStore as "local_file", logRef: run.logRef },
+            { action, redactText: redactSensitiveText },
+          ).catch((error) => {
+            if (error instanceof HttpError && error.status === 404) return null;
+            throw error;
+          })
+        : null;
+
+      const nextResultJson = remediateRetainedPayload(parseObject(run.resultJson), action, redactedAt);
+      const nextStdoutExcerpt = remediateRetainedText(run.stdoutExcerpt, action);
+      const nextStderrExcerpt = remediateRetainedText(run.stderrExcerpt, action);
+      const nextError = remediateRetainedText(run.error, action);
+
+      const updatedRun = await db
+        .update(heartbeatRuns)
+        .set({
+          resultJson: nextResultJson,
+          stdoutExcerpt: nextStdoutExcerpt,
+          stderrExcerpt: nextStderrExcerpt,
+          error: nextError,
+          ...(logRemediation
+            ? {
+                logBytes: logRemediation.bytesAfter,
+                logSha256: logRemediation.sha256 ?? null,
+                logCompressed: logRemediation.compressed,
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id))
+        .returning()
+        .then((rows) => rows[0] ?? run);
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run.id));
+      let eventRowsUpdated = 0;
+      for (const event of events) {
+        const nextMessage = action === "purge"
+          ? null
+          : (event.message ? redactSensitiveText(event.message) : event.message);
+        const nextPayload = action === "purge"
+          ? null
+          : redactRetainedRunPayload(event.payload ?? null);
+        if (nextMessage === event.message && JSON.stringify(nextPayload ?? null) === JSON.stringify(event.payload ?? null)) {
+          continue;
+        }
+        await db
+          .update(heartbeatRunEvents)
+          .set({
+            message: nextMessage,
+            payload: nextPayload,
+          })
+          .where(eq(heartbeatRunEvents.id, event.id));
+        eventRowsUpdated += 1;
+      }
+
+      await appendRunEvent(updatedRun, await nextRunEventSeq(updatedRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `retained run ${action === "purge" ? "purged" : "redacted"}`,
+        payload: {
+          action,
+          reason,
+          redactedAt,
+          logRemediation,
+          eventRowsUpdated,
+          resultJsonRemediated: true,
+          stdoutExcerptRemediated: run.stdoutExcerpt !== nextStdoutExcerpt,
+          stderrExcerptRemediated: run.stderrExcerpt !== nextStderrExcerpt,
+          errorRemediated: run.error !== nextError,
+        },
+      });
+
+      return {
+        runId: updatedRun.id,
+        companyId: updatedRun.companyId,
+        action,
+        redactedAt,
+        logRemediation,
+        eventRowsUpdated,
+        resultJsonRemediated: true,
+        stdoutExcerptRemediated: run.stdoutExcerpt !== nextStdoutExcerpt,
+        stderrExcerptRemediated: run.stderrExcerpt !== nextStderrExcerpt,
+        errorRemediated: run.error !== nextError,
+      };
     },
 
     readLog: async (
