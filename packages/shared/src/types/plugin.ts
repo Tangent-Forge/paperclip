@@ -479,6 +479,7 @@ export interface PluginDatabaseDeclaration {
 export type PluginApiRouteCompanyResolution =
   | { from: "body"; key: string }
   | { from: "query"; key: string }
+  | { from: "path"; param: string }
   | { from: "issue"; param: string };
 
 export interface PluginApiRouteDeclaration {
