@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { redactSensitiveText } from "../redaction.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -27,6 +28,17 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+export type RunLogRemediationAction = "redact" | "purge";
+
+export interface RunLogRemediationSummary {
+  action: RunLogRemediationAction;
+  bytesBefore: number;
+  bytesAfter: number;
+  sha256?: string;
+  compressed: boolean;
+  redactedChunks: number;
+}
+
 export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
@@ -35,6 +47,10 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  remediate(
+    handle: RunLogHandle,
+    input: { action: RunLogRemediationAction; redactText: (text: string) => string },
+  ): Promise<RunLogRemediationSummary>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -109,10 +125,13 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
+      // Defense-in-depth write-path scrub: never persist credential-shaped output
+      // even if a caller skipped compactRunLogChunk.
+      const scrubbedChunk = redactSensitiveText(event.chunk);
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: scrubbedChunk,
       });
       const persisted = `${line}\n`;
       await fs.appendFile(absPath, persisted, "utf8");
@@ -144,14 +163,66 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const limitBytes = opts?.limitBytes ?? 256_000;
       return readFileRange(absPath, offset, limitBytes);
     },
+
+    async remediate(handle, input) {
+      if (handle.store !== "local_file") {
+        throw notFound("Run log not found");
+      }
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const statBefore = await fs.stat(absPath).catch(() => null);
+      if (!statBefore) throw notFound("Run log not found");
+
+      let redactedChunks = 0;
+      if (input.action === "purge") {
+        await fs.writeFile(absPath, "", "utf8");
+      } else {
+        const before = await fs.readFile(absPath, "utf8");
+        const after = before
+          .split("\n")
+          .map((line) => {
+            if (line.length === 0) return line;
+            try {
+              const parsed = JSON.parse(line) as Record<string, unknown>;
+              if (typeof parsed.chunk !== "string") return line;
+              const chunk = input.redactText(parsed.chunk);
+              if (chunk !== parsed.chunk) redactedChunks += 1;
+              return JSON.stringify({ ...parsed, chunk });
+            } catch {
+              const redactedLine = input.redactText(line);
+              if (redactedLine !== line) redactedChunks += 1;
+              return redactedLine;
+            }
+          })
+          .join("\n");
+        await fs.writeFile(absPath, after, "utf8");
+      }
+
+      const statAfter = await fs.stat(absPath);
+      const hash = await sha256File(absPath);
+      return {
+        action: input.action,
+        bytesBefore: statBefore.size,
+        bytesAfter: statAfter.size,
+        sha256: hash,
+        compressed: false,
+        redactedChunks,
+      };
+    },
   };
 }
 
 let cachedStore: RunLogStore | null = null;
+let cachedBasePath: string | null = null;
 
 export function getRunLogStore() {
-  if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  if (cachedStore && cachedBasePath === basePath) return cachedStore;
   cachedStore = createLocalFileRunLogStore(basePath);
+  cachedBasePath = basePath;
   return cachedStore;
+}
+
+export function resetRunLogStoreForTests() {
+  cachedStore = null;
+  cachedBasePath = null;
 }
