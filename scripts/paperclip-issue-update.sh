@@ -80,16 +80,25 @@ elif [[ ! -t 0 ]]; then
   comment="$(cat)"
 fi
 
-require_command jq
+require_command python3
 
 payload="$(
-  jq -nc \
-    --arg status "$status" \
-    --arg comment "$comment" \
-    '
-      (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
-    '
+  STATUS="$status" COMMENT="$comment" python3 - <<'PY'
+import json
+import os
+
+payload = {}
+status = os.environ.get("STATUS", "")
+comment = os.environ.get("COMMENT", "")
+
+if status:
+    payload["status"] = status
+
+if comment:
+    payload["comment"] = comment
+
+print(json.dumps(payload))
+PY
 )"
 
 if [[ "$dry_run" == "1" ]]; then
