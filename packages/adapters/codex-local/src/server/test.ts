@@ -230,34 +230,51 @@ export async function testEnvironment(
 
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
-    const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
+  // Local-only auth file check. On remote targets, the probe will surface any
+  // missing-auth errors directly from the remote `codex` invocation.
+  //
+  // Native auth.json (ChatGPT-subscription mode, or a previously seeded
+  // API-key mode) takes precedence over an ambient server-wide
+  // OPENAI_API_KEY: Paperclip injects OPENAI_API_KEY into every service
+  // process via the shared tf-secrets/runtime.env pipeline, so its mere
+  // presence in process.env does not mean this agent is meant to
+  // authenticate with it — most agents run on a seeded ChatGPT-mode
+  // auth.json instead, which `readCodexAuthInfo` below already detects
+  // correctly for real executions. Checking native auth first here avoids a
+  // false "auth required" probe failure for agents that are actually
+  // working, and avoids masking a working chatgpt-mode credential behind an
+  // org-wide API key that may not even be entitled to the Responses API
+  // codex actually calls.
+  const codexHomeOverride = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
+  const codexAuth = targetIsRemote ? null : await readCodexAuthInfo(codexHomeOverride).catch(() => null);
+  if (isNonEmpty(configOpenAiKey)) {
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: `Detected in ${source}.`,
+      detail: "Detected in adapter config env.",
+    });
+  } else if (codexAuth) {
+    checks.push({
+      code: "codex_native_auth_present",
+      level: "info",
+      message: "Codex is authenticated via its own auth configuration.",
+      detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHomeOverride ?? codexHomeDir(), "auth.json")}.`,
+    });
+  } else if (isNonEmpty(hostOpenAiKey)) {
+    checks.push({
+      code: "codex_openai_api_key_present",
+      level: "info",
+      message: "OPENAI_API_KEY is set for Codex authentication.",
+      detail: "Detected in server environment.",
     });
   } else if (!targetIsRemote) {
-    // Local-only auth file check. On remote targets, the probe will surface
-    // any missing-auth errors directly from the remote `codex` invocation.
-    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
-    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
-    if (codexAuth) {
-      checks.push({
-        code: "codex_native_auth_present",
-        level: "info",
-        message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
-      });
-    } else {
-      checks.push({
-        code: "codex_openai_api_key_missing",
-        level: "warn",
-        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
-      });
-    }
+    checks.push({
+      code: "codex_openai_api_key_missing",
+      level: "warn",
+      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+    });
   }
 
   const canRunProbe =
@@ -299,11 +316,19 @@ export async function testEnvironment(
       // wrap the probe with a shell that materializes a per-run auth.json so
       // the CLI can authenticate. The key content is passed via env (not on
       // the command line) to avoid leaking it into process listings.
+      //
+      // Skip that wrapping when native auth.json already exists (codexAuth):
+      // let the probe run against the agent's real, already-seeded home
+      // instead of shadowing a working chatgpt-mode credential with an
+      // ambient server-wide OPENAI_API_KEY that was never configured for
+      // this agent specifically.
       const probeApiKey = isNonEmpty(configOpenAiKey)
         ? configOpenAiKey
-        : isNonEmpty(hostOpenAiKey)
-          ? hostOpenAiKey
-          : null;
+        : codexAuth
+          ? null
+          : isNonEmpty(hostOpenAiKey)
+            ? hostOpenAiKey
+            : null;
       const preparedProbe = await prepareCodexHelloProbe({
         runId,
         companyId: ctx.companyId,
