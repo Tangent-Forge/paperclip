@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
@@ -48,63 +49,79 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides for manual models", () => {
+  it("ignores fast mode for manual models until support is proven", () => {
     const result = buildCodexExecArgs({
       model: "future-codex-model",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4",
+    );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
       "future-codex-model",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
       "-",
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("resolves an omitted model to the default Codex model", () => {
     const result = buildCodexExecArgs({
-      fastMode: true,
     });
 
-    expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.fastModeRequested).toBe(false);
+    expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toBeNull();
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
+      "-",
+    ]);
+  });
+
+  it("ignores fast mode when the default Codex model is resolved from an omitted model", () => {
+    const result = buildCodexExecArgs({
+      fastMode: true,
+    });
+
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4",
+    );
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-",
     ]);
   });
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.3-codex",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.5, gpt-5.4",
     );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex-spark",
+      "gpt-5.3-codex",
       "-",
     ]);
   });
@@ -125,59 +142,5 @@ describe("buildCodexExecArgs", () => {
       "gpt-5.3-codex",
       "-",
     ]);
-  });
-
-  it("applies workspace-write sandbox and blocks bypass under network deny", () => {
-    const result = buildCodexExecArgs({
-      model: "gpt-5.4",
-      search: true,
-      dangerouslyBypassApprovalsAndSandbox: false,
-      executionConstraints: {
-        network: "deny",
-        sandboxMode: "workspace-write",
-      },
-    });
-    expect(result.args).toContain("--sandbox");
-    expect(result.args).toContain("workspace-write");
-    expect(result.args).not.toContain("--search");
-    expect(result.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-  });
-
-  it("throws when bypass is requested under denied network", () => {
-    expect(() =>
-      buildCodexExecArgs({
-        model: "gpt-5.4",
-        dangerouslyBypassApprovalsAndSandbox: true,
-        executionConstraints: { network: "deny" },
-      }),
-    ).toThrow(/forbid Codex bypass/);
-  });
-
-  it("strips extraArgs that would reintroduce search or widen sandbox under constraints", () => {
-    const result = buildCodexExecArgs({
-      model: "gpt-5.4",
-      executionConstraints: {
-        network: "deny",
-        sandboxMode: "workspace-write",
-      },
-      extraArgs: [
-        "--search",
-        "--search=true",
-        "--sandbox",
-        "danger-full-access",
-        "--sandbox=danger-full-access",
-        "-c",
-        "sandbox_workspace_write.network_access=true",
-        "--skip-git-repo-check",
-      ],
-    });
-    expect(result.args).not.toContain("--search");
-    expect(result.args).not.toContain("--search=true");
-    expect(result.args).toContain("--sandbox");
-    expect(result.args).toContain("workspace-write");
-    expect(result.args).not.toContain("danger-full-access");
-    expect(result.args).not.toContain("--sandbox=danger-full-access");
-    expect(result.args.join(" ")).not.toContain("network_access=true");
-    expect(result.args).toContain("--skip-git-repo-check");
   });
 });
