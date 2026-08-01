@@ -13,6 +13,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
+import { isUniqueLivenessRecoveryConflict } from "../services/recovery/service.ts";
 
 const companyId = "company-1";
 const agentId = "agent-1";
@@ -244,5 +245,22 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("recognizes wrapped liveness recovery unique conflicts", () => {
+    const wrappedError = {
+      name: "DrizzleQueryError",
+      message: "Failed query: insert into \"issues\" (...)",
+      cause: {
+        name: "PostgresError",
+        message: "duplicate key value violates unique constraint \"issues_active_liveness_recovery_incident_uq\"",
+        cause: {
+          code: "23505",
+          constraint: "issues_active_liveness_recovery_incident_uq",
+        },
+      },
+    };
+
+    expect(isUniqueLivenessRecoveryConflict(wrappedError)).toBe(true);
   });
 });

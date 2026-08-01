@@ -314,31 +314,31 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
 function unwrapDatabaseConflictError(error: unknown) {
   if (!error || typeof error !== "object") return null;
 
-  const candidate = error as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-    message?: string;
-    cause?: unknown;
-  };
+  const seen = new Set<unknown>();
+  let current: unknown = error;
 
-  if (
-    typeof candidate.code === "string" ||
-    typeof candidate.constraint === "string" ||
-    typeof candidate.constraint_name === "string"
-  ) {
-    return candidate;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      message?: string;
+      cause?: unknown;
+    };
+
+    if (
+      typeof candidate.code === "string" ||
+      typeof candidate.constraint === "string" ||
+      typeof candidate.constraint_name === "string"
+    ) {
+      return candidate;
+    }
+
+    current = candidate.cause;
   }
 
-  const cause = candidate.cause;
-  if (!cause || typeof cause !== "object") return candidate;
-
-  return cause as {
-    code?: string;
-    constraint?: string;
-    constraint_name?: string;
-    message?: string;
-  };
+  return null;
 }
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
@@ -394,9 +394,9 @@ function livenessRecoveryLeafKey(companyId: string, state: string, leafIssueId: 
   return buildIssueGraphLivenessLeafKey({ companyId, state, leafIssueId });
 }
 
-function isUniqueLivenessRecoveryConflict(error: unknown) {
-  if (!error || typeof error !== "object") return false;
-  const maybe = error as { code?: string; constraint?: string; message?: string };
+export function isUniqueLivenessRecoveryConflict(error: unknown) {
+  const maybe = unwrapDatabaseConflictError(error);
+  if (!maybe) return false;
   return maybe.code === "23505" &&
     (
       maybe.constraint === "issues_active_liveness_recovery_incident_uq" ||
