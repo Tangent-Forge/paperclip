@@ -3220,22 +3220,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
-  async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
+  async function removeRecoveryBlockersFromSources(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
-    if (!parsed) return false;
-    const sourceIssue = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, recovery.companyId), eq(issues.id, parsed.issueId)))
-      .then((rows) => rows[0] ?? null);
-    if (!sourceIssue) return false;
+    const sourceIssueIds = new Set<string>();
+    if (parsed?.issueId) {
+      sourceIssueIds.add(parsed.issueId);
+    }
 
-    const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
-    if (!blockerIds.includes(recovery.id)) return false;
-    await issuesSvc.update(sourceIssue.id, {
-      blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
-    });
-    return true;
+    const relatedSources = await db
+      .select({ sourceIssueId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, recovery.companyId),
+          eq(issueRelations.issueId, recovery.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    for (const row of relatedSources) {
+      sourceIssueIds.add(row.sourceIssueId);
+    }
+
+    let removed = 0;
+    for (const sourceIssueId of sourceIssueIds) {
+      const sourceIssue = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, recovery.companyId), eq(issues.id, sourceIssueId)))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue) continue;
+
+      const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
+      if (!blockerIds.includes(recovery.id)) continue;
+
+      await issuesSvc.update(sourceIssue.id, {
+        blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
+      });
+      removed += 1;
+    }
+
+    return removed;
   }
 
   async function hasActiveRunForIssueId(companyId: string, issueId: string) {
@@ -3324,8 +3348,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
       }
-      if (await removeRecoveryBlockerFromSource(recovery)) {
-        result.blockerRelationsRemoved += 1;
+      const removedCount = await removeRecoveryBlockersFromSources(recovery);
+      if (removedCount > 0) {
+        result.blockerRelationsRemoved += removedCount;
       }
       if (await hasActiveRunForIssueId(recovery.companyId, recovery.id)) {
         result.activeSkipped += 1;
@@ -3353,8 +3378,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     let blockerRelationsRemoved = 0;
     for (const recovery of closedRecoveries) {
-      if (await removeRecoveryBlockerFromSource(recovery)) {
-        blockerRelationsRemoved += 1;
+      const removedCount = await removeRecoveryBlockersFromSources(recovery);
+      if (removedCount > 0) {
+        blockerRelationsRemoved += removedCount;
       }
     }
 

@@ -743,6 +743,70 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
+  it("removes a done shared escalation from every dependent source issue", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const secondBlockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueTimestamp = new Date(Date.now() - 60 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: secondBlockedIssueId,
+      companyId,
+      title: "Second blocked parent",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+      createdAt: issueTimestamp,
+      updatedAt: issueTimestamp,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: secondBlockedIssueId,
+      type: "blocks",
+    });
+
+    const first = await heartbeatService(db).reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
+    const [sharedEscalation] = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(sharedEscalation).toBeTruthy();
+
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, sharedEscalation!.id));
+    await db
+      .update(issues)
+      .set({ status: "done", blockedByIssueIds: [] })
+      .where(eq(issues.id, blockerIssueId));
+
+    const second = await heartbeatService(db).reconcileIssueGraphLiveness();
+    expect(second.doneRecoveryBlockerRelationsRemoved).toBe(2);
+
+    const firstBlockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(firstBlockers.map((row) => row.blockerIssueId).sort()).toEqual([blockerIssueId]);
+
+    const secondBlockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, secondBlockedIssueId));
+    expect(secondBlockers.map((row) => row.blockerIssueId).sort()).toEqual([blockerIssueId]);
+  });
+
   it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
