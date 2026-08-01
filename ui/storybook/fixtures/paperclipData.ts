@@ -1252,6 +1252,7 @@ export const storybookSidebarBadges: SidebarBadges = {
   inbox: 7,
   approvals: 2,
   failedRuns: 1,
+  agentOperations: 1,
   joinRequests: 1,
 };
 

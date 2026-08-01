@@ -78,6 +78,7 @@ export interface InboxBadgeData {
   inbox: number;
   approvals: number;
   failedRuns: number;
+  agentOperations: number;
   joinRequests: number;
   mineIssues: number;
   alerts: number;
@@ -1258,9 +1259,10 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
+    agentOperations: failedRuns + alerts,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,

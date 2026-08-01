@@ -329,9 +329,10 @@ describe("inbox helpers", () => {
     });
 
     expect(result).toEqual({
-      inbox: 5,
+      inbox: 3,
       approvals: 1,
       failedRuns: 2,
+      agentOperations: 3,
       joinRequests: 1,
       mineIssues: 1,
       alerts: 1,
@@ -354,6 +355,7 @@ describe("inbox helpers", () => {
       inbox: 0,
       approvals: 0,
       failedRuns: 0,
+      agentOperations: 0,
       joinRequests: 0,
       mineIssues: 0,
       alerts: 0,
