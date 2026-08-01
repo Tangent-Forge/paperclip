@@ -84,8 +84,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 }
 
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
-  // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
-  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
+  // An OpenRouter key or endpoint is an API-billed route even when Codex is
+  // configured to read a provider-specific env var instead of OPENAI_API_KEY.
+  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") || inferOpenAiCompatibleBiller(env, null) === "openrouter"
+    ? "api"
+    : "subscription";
 }
 
 function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "subscription"): string {
@@ -845,6 +848,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model,
         billingType,
         costUsd: null,
+        costStatus: billingType === "subscription" ? "subscription_included" : "unknown",
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,

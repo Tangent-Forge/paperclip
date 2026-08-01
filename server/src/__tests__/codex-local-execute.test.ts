@@ -93,6 +93,60 @@ function createLocalSandboxRunner() {
 }
 
 describe("codex execute", () => {
+  it("classifies ChatGPT login sessions as subscription-included zero marginal cost", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-subscription-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    const previousOpenAiBaseUrl = process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    try {
+      const result = await execute({
+        runId: "run-subscription",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, promptTemplate: "Follow the paperclip heartbeat." },
+        context: {}, authToken: "run-jwt-token", onLog: async () => {},
+      });
+      expect(result).toMatchObject({ biller: "chatgpt", billingType: "subscription", costUsd: null, costStatus: "subscription_included" });
+    } finally {
+      if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousOpenAiKey;
+      if (previousOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+      if (previousOpenAiBaseUrl === undefined) delete process.env.OPENAI_BASE_URL; else process.env.OPENAI_BASE_URL = previousOpenAiBaseUrl;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies direct OpenAI and OpenRouter keys as metered routes with unknown cost until reconciliation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-metered-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    try {
+      const base = {
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: commandPath, cwd: workspace, promptTemplate: "Follow the paperclip heartbeat." },
+        context: {}, authToken: "run-jwt-token", onLog: async () => {},
+      };
+      const [openAi, openRouter] = await Promise.all([
+        execute({ ...base, runId: "run-openai", config: { ...base.config, env: { OPENAI_API_KEY: "test-key" } } }),
+        execute({ ...base, runId: "run-openrouter", config: { ...base.config, env: { OPENROUTER_API_KEY: "test-key" } } }),
+      ]);
+      expect(openAi).toMatchObject({ biller: "openai", billingType: "api", costUsd: null, costStatus: "unknown" });
+      expect(openRouter).toMatchObject({ biller: "openrouter", billingType: "api", costUsd: null, costStatus: "unknown" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");

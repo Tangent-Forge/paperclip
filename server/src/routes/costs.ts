@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  reconcileFinanceEventSchema,
   normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
@@ -169,6 +170,43 @@ export function costRoutes(
 
     res.status(201).json(event);
   });
+
+  router.post(
+    "/companies/:companyId/finance-events/reconcile",
+    validate(reconcileFinanceEventSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+
+      const reconciliation = await finance.reconcileProviderExport(companyId, {
+        ...req.body,
+        occurredAt: new Date(req.body.occurredAt),
+      });
+      const actor = getActorInfo(req);
+      if (reconciliation.created) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "finance_event.reconciled",
+          entityType: "finance_event",
+          entityId: reconciliation.event.id,
+          details: {
+            biller: reconciliation.event.biller,
+            externalInvoiceId: reconciliation.event.externalInvoiceId,
+            reconciliationVersion: req.body.reconciliationVersion,
+            sourceEventKey: req.body.sourceEventKey,
+          },
+        });
+      }
+      res.status(reconciliation.created ? 201 : 200).json({
+        ...reconciliation.event,
+        reconciled: reconciliation.created,
+      });
+    },
+  );
 
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;

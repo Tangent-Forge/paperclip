@@ -50,6 +50,15 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  const meteredUnknownRunExpr = sql<number>`count(distinct case
+    when ${costEvents.billingType} = ${METERED_BILLING_TYPE}
+      and coalesce(${heartbeatRuns.usageJson} ->> 'costStatus', 'unknown') = 'unknown'
+    then ${costEvents.heartbeatRunId}
+  end)::int`;
+  const subscriptionIncludedRunExpr = sql<number>`count(distinct case
+    when ${costEvents.billingType} = 'subscription_included'
+    then ${costEvents.heartbeatRunId}
+  end)::int`;
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
@@ -114,11 +123,14 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, unknownMeteredRunCount, subscriptionIncludedRunCount }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unknownMeteredRunCount: meteredUnknownRunExpr,
+          subscriptionIncludedRunCount: subscriptionIncludedRunExpr,
         })
         .from(costEvents)
+        .leftJoin(heartbeatRuns, eq(costEvents.heartbeatRunId, heartbeatRuns.id))
         .where(and(...conditions));
 
       const spendCents = Number(total);
@@ -130,6 +142,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return {
         companyId,
         spendCents,
+        recordedSpendCents: spendCents,
+        unknownMeteredRunCount: Number(unknownMeteredRunCount ?? 0),
+        subscriptionIncludedRunCount: Number(subscriptionIncludedRunCount ?? 0),
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
       };

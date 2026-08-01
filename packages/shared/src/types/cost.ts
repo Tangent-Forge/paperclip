@@ -24,6 +24,10 @@ export interface CostEvent {
 export interface CostSummary {
   companyId: string;
   spendCents: number;
+  /** Known recorded spend only; unknown metered runs never contribute to this total. */
+  recordedSpendCents: number;
+  unknownMeteredRunCount: number;
+  subscriptionIncludedRunCount: number;
   budgetCents: number;
   utilizationPercent: number;
 }

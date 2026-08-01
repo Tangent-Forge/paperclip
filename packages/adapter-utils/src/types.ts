@@ -43,6 +43,13 @@ export type AdapterBillingType =
   | "fixed"
   | "unknown";
 
+/**
+ * How confidently an adapter knows the monetary amount for a completed run.
+ * This is deliberately separate from billing type: a metered API call may be
+ * known only after its provider export is reconciled.
+ */
+export type AdapterCostStatus = "actual" | "estimated" | "unknown" | "subscription_included";
+
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
   projectId?: string | null;
@@ -87,6 +94,7 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  costStatus?: AdapterCostStatus | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;

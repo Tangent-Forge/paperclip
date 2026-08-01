@@ -475,7 +475,9 @@ export {
 
 export {
   createFinanceEventSchema,
+  reconcileFinanceEventSchema,
   type CreateFinanceEvent,
+  type ReconcileFinanceEvent,
 } from "./finance.js";
 
 export {

@@ -1733,6 +1733,16 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+function normalizeCostStatus(
+  value: AdapterExecutionResult["costStatus"],
+  billingType: BillingType,
+  costUsd: number | null | undefined,
+): "actual" | "estimated" | "unknown" | "subscription_included" {
+  if (billingType === "subscription_included") return "subscription_included";
+  if (value === "actual" || value === "estimated" || value === "unknown") return value;
+  return typeof costUsd === "number" && Number.isFinite(costUsd) ? "actual" : "unknown";
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -9245,6 +9255,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              costStatus: normalizeCostStatus(
+                adapterResult.costStatus,
+                normalizeLedgerBillingType(adapterResult.billingType),
+                adapterResult.costUsd,
+              ),
             } as Record<string, unknown>)
           : null;
 

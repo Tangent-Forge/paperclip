@@ -60,6 +60,7 @@ import {
   // Cost / budget
   createCostEventSchema,
   createFinanceEventSchema,
+  reconcileFinanceEventSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
@@ -2221,6 +2222,18 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createFinanceEventSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/finance-events/reconcile",
+  tags: ["costs"],
+  summary: "Import a versioned provider export into the finance ledger",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(reconcileFinanceEventSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });

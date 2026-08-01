@@ -33,6 +33,8 @@ export interface FinanceEvent {
 export interface FinanceSummary {
   companyId: string;
   debitCents: number;
+  /** Authoritative provider/import charges; excludes estimates. */
+  recordedDebitCents: number;
   creditCents: number;
   netCents: number;
   estimatedDebitCents: number;

@@ -32,3 +32,15 @@ export const createFinanceEventSchema = z.object({
 }));
 
 export type CreateFinanceEvent = z.infer<typeof createFinanceEventSchema>;
+
+/**
+ * A provider export is immutable source evidence. The version and source key
+ * make replay safe without changing raw heartbeat usage or historical costs.
+ */
+export const reconcileFinanceEventSchema = createFinanceEventSchema.and(z.object({
+  externalInvoiceId: z.string().min(1),
+  reconciliationVersion: z.string().min(1).max(100),
+  sourceEventKey: z.string().min(1).max(500),
+}));
+
+export type ReconcileFinanceEvent = z.infer<typeof reconcileFinanceEventSchema>;

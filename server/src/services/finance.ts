@@ -38,29 +38,62 @@ export function financeService(db: Db) {
   const debitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
   const creditExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'credit' then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
   const estimatedDebitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' and ${financeEvents.estimated} = true then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
+  const recordedDebitExpr = sql<number>`coalesce(sum(case when ${financeEvents.direction} = 'debit' and ${financeEvents.estimated} = false then ${financeEvents.amountCents} else 0 end), 0)::double precision`;
+  const createEvent = async (companyId: string, data: Omit<typeof financeEvents.$inferInsert, "companyId">) => {
+    if (data.agentId) await assertBelongsToCompany(db, agents, data.agentId, companyId, "Agent");
+    if (data.issueId) await assertBelongsToCompany(db, issues, data.issueId, companyId, "Issue");
+    if (data.projectId) await assertBelongsToCompany(db, projects, data.projectId, companyId, "Project");
+    if (data.goalId) await assertBelongsToCompany(db, goals, data.goalId, companyId, "Goal");
+    if (data.heartbeatRunId) await assertBelongsToCompany(db, heartbeatRuns, data.heartbeatRunId, companyId, "Heartbeat run");
+    if (data.costEventId) await assertBelongsToCompany(db, costEvents, data.costEventId, companyId, "Cost event");
+
+    return db
+      .insert(financeEvents)
+      .values({
+        ...data,
+        companyId,
+        currency: data.currency ?? "USD",
+        direction: data.direction ?? "debit",
+        estimated: data.estimated ?? false,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+  };
 
   return {
-    createEvent: async (companyId: string, data: Omit<typeof financeEvents.$inferInsert, "companyId">) => {
-      if (data.agentId) await assertBelongsToCompany(db, agents, data.agentId, companyId, "Agent");
-      if (data.issueId) await assertBelongsToCompany(db, issues, data.issueId, companyId, "Issue");
-      if (data.projectId) await assertBelongsToCompany(db, projects, data.projectId, companyId, "Project");
-      if (data.goalId) await assertBelongsToCompany(db, goals, data.goalId, companyId, "Goal");
-      if (data.heartbeatRunId) await assertBelongsToCompany(db, heartbeatRuns, data.heartbeatRunId, companyId, "Heartbeat run");
-      if (data.costEventId) await assertBelongsToCompany(db, costEvents, data.costEventId, companyId, "Cost event");
+    createEvent,
 
-      const event = await db
-        .insert(financeEvents)
-        .values({
-          ...data,
-          companyId,
-          currency: data.currency ?? "USD",
-          direction: data.direction ?? "debit",
-          estimated: data.estimated ?? false,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+    reconcileProviderExport: async (
+      companyId: string,
+      data: Omit<typeof financeEvents.$inferInsert, "companyId"> & {
+        reconciliationVersion: string;
+        sourceEventKey: string;
+      },
+    ) => {
+      const [existing] = await db
+        .select()
+        .from(financeEvents)
+        .where(and(
+          eq(financeEvents.companyId, companyId),
+          eq(financeEvents.externalInvoiceId, data.externalInvoiceId ?? ""),
+          sql`${financeEvents.metadataJson} -> 'reconciliation' ->> 'version' = ${data.reconciliationVersion}`,
+          sql`${financeEvents.metadataJson} -> 'reconciliation' ->> 'sourceEventKey' = ${data.sourceEventKey}`,
+        ));
+      if (existing) return { event: existing, created: false };
 
-      return event;
+      const { reconciliationVersion, sourceEventKey, metadataJson, ...eventData } = data;
+      const event = await createEvent(companyId, {
+        ...eventData,
+        metadataJson: {
+          ...(metadataJson ?? {}),
+          reconciliation: {
+            version: reconciliationVersion,
+            sourceEventKey,
+          },
+          costStatus: eventData.estimated ? "estimated" : "actual",
+        },
+      });
+      return { event, created: true };
     },
 
     summary: async (companyId: string, range?: FinanceDateRange) => {
@@ -68,6 +101,7 @@ export function financeService(db: Db) {
       const [row] = await db
         .select({
           debitCents: debitExpr,
+          recordedDebitCents: recordedDebitExpr,
           creditCents: creditExpr,
           estimatedDebitCents: estimatedDebitExpr,
           eventCount: sql<number>`count(*)::int`,
@@ -78,6 +112,7 @@ export function financeService(db: Db) {
       return {
         companyId,
         debitCents: Number(row?.debitCents ?? 0),
+        recordedDebitCents: Number(row?.recordedDebitCents ?? 0),
         creditCents: Number(row?.creditCents ?? 0),
         netCents: Number(row?.debitCents ?? 0) - Number(row?.creditCents ?? 0),
         estimatedDebitCents: Number(row?.estimatedDebitCents ?? 0),

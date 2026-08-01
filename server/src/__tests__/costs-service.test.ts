@@ -66,7 +66,12 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
-  summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  summary: vi.fn().mockResolvedValue({
+    spendCents: 0,
+    recordedSpendCents: 0,
+    unknownMeteredRunCount: 0,
+    subscriptionIncludedRunCount: 0,
+  }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -87,7 +92,8 @@ const mockCostService = vi.hoisted(() => ({
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
-  summary: vi.fn().mockResolvedValue({ debitCents: 0, creditCents: 0, netCents: 0, estimatedDebitCents: 0, eventCount: 0 }),
+  reconcileProviderExport: vi.fn(),
+  summary: vi.fn().mockResolvedValue({ debitCents: 0, recordedDebitCents: 0, creditCents: 0, netCents: 0, estimatedDebitCents: 0, eventCount: 0 }),
   byBiller: vi.fn().mockResolvedValue([]),
   byKind: vi.fn().mockResolvedValue([]),
   list: vi.fn().mockResolvedValue([]),
@@ -209,6 +215,14 @@ beforeEach(() => {
     identifier: "PC1A2-1",
   });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+  mockFinanceService.reconcileProviderExport.mockResolvedValue({
+    created: true,
+    event: {
+      id: "finance-1",
+      biller: "openrouter",
+      externalInvoiceId: "export-1",
+    },
+  });
 });
 
 describe("cost routes", () => {
@@ -241,10 +255,38 @@ describe("cost routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       debitCents: 0,
+      recordedDebitCents: 0,
       creditCents: 0,
       netCents: 0,
       estimatedDebitCents: 0,
       eventCount: 0,
+    });
+  });
+
+  it("reconciles a provider export idempotently through the finance ledger", async () => {
+    const app = await createApp();
+    const body = {
+      eventKind: "inference_charge",
+      biller: "openrouter",
+      amountCents: 42,
+      externalInvoiceId: "export-1",
+      reconciliationVersion: "provider-export/v1",
+      sourceEventKey: "line-42",
+      occurredAt: "2026-08-01T00:00:00.000Z",
+    };
+
+    const res = await request(app)
+      .post("/api/companies/company-1/finance-events/reconcile")
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ id: "finance-1", reconciled: true });
+    expect(mockFinanceService.reconcileProviderExport).toHaveBeenCalledWith("company-1", {
+      ...body,
+      currency: "USD",
+      direction: "debit",
+      estimated: false,
+      occurredAt: new Date(body.occurredAt),
     });
   });
 
@@ -505,6 +547,92 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("keeps unknown metered Codex usage out of recorded spend while preserving subscription usage", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const unknownRunId = randomUUID();
+    const knownRunId = randomUUID();
+    const subscriptionRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      { id: unknownRunId, companyId, agentId, usageJson: { costStatus: "unknown" } },
+      { id: knownRunId, companyId, agentId, usageJson: { costStatus: "actual" } },
+      { id: subscriptionRunId, companyId, agentId, usageJson: { costStatus: "subscription_included" } },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId, agentId, heartbeatRunId: unknownRunId, provider: "openai", biller: "openai",
+        billingType: "metered_api", model: "gpt-5", inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 0, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+      {
+        companyId, agentId, heartbeatRunId: knownRunId, provider: "openrouter", biller: "openrouter",
+        billingType: "metered_api", model: "gpt-5", inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 42, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+      {
+        companyId, agentId, heartbeatRunId: subscriptionRunId, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", model: "gpt-5", inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 0, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+    ]);
+
+    await expect(costs.summary(companyId)).resolves.toMatchObject({
+      spendCents: 42,
+      recordedSpendCents: 42,
+      unknownMeteredRunCount: 1,
+      subscriptionIncludedRunCount: 1,
+    });
+  });
+
+  it("replays a versioned provider export without creating a second finance event", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const input = {
+      biller: "openrouter",
+      provider: "openrouter",
+      eventKind: "inference_charge",
+      amountCents: 42,
+      externalInvoiceId: "provider-export-1",
+      reconciliationVersion: "provider-export/v1",
+      sourceEventKey: "line-42",
+      occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+    } as const;
+
+    const first = await finance.reconcileProviderExport(companyId, input);
+    const replay = await finance.reconcileProviderExport(companyId, input);
+
+    expect(first.created).toBe(true);
+    expect(replay).toMatchObject({ created: false, event: { id: first.event.id } });
+    await expect(finance.summary(companyId)).resolves.toMatchObject({
+      eventCount: 1,
+      recordedDebitCents: 42,
+      estimatedDebitCents: 0,
+    });
   });
 
   it("aggregates issue costs across recursive descendants only", async () => {
