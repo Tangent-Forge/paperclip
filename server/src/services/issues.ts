@@ -2680,7 +2680,12 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
-    if (handoff && (handoff.required || handoff.state === "escalated")) {
+    // A successful-run handoff is missing only while the issue is still actively
+    // running. Every other non-terminal status is already an explicit disposition
+    // (backlog/todo, review, or blocked) and must not keep a stale handoff event in
+    // the board-facing Inbox. Any remaining dependency/recovery problem is
+    // classified below through the normal liveness path.
+    if (row.status === "in_progress" && handoff && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
