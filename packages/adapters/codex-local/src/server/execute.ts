@@ -83,18 +83,22 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
-  // An OpenRouter key or endpoint is an API-billed route even when Codex is
-  // configured to read a provider-specific env var instead of OPENAI_API_KEY.
-  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") || inferOpenAiCompatibleBiller(env, null) === "openrouter"
-    ? "api"
-    : "subscription";
+function resolveCodexApiBiller(env: Record<string, string>): "openai" | "openrouter" | null {
+  if (inferOpenAiCompatibleBiller(env, null) === "openrouter") return "openrouter";
+  return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "openai" : null;
 }
 
-function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "subscription"): string {
-  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
-  if (openAiCompatibleBiller === "openrouter") return "openrouter";
-  return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+function resolveCodexBiller(
+  configuredEnv: Record<string, string>,
+  effectiveEnv: Record<string, string>,
+): "openai" | "openrouter" | "chatgpt" {
+  // Adapter config is the requested auth route. Only fall back to inherited
+  // credentials when the adapter did not explicitly configure a provider.
+  return resolveCodexApiBiller(configuredEnv) ?? resolveCodexApiBiller(effectiveEnv) ?? "chatgpt";
+}
+
+function resolveCodexBillingType(biller: "openai" | "openrouter" | "chatgpt"): "api" | "subscription" {
+  return biller === "chatgpt" ? "subscription" : "api";
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -536,7 +540,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const billingType = resolveCodexBillingType(effectiveEnv);
+    const biller = resolveCodexBiller(envConfigStrings, effectiveEnv);
+    const billingType = resolveCodexBillingType(biller);
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -844,7 +849,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: "openai",
-        biller: resolveCodexBiller(effectiveEnv, billingType),
+        biller,
         model,
         billingType,
         costUsd: null,
