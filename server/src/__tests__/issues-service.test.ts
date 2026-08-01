@@ -2970,6 +2970,59 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("allows blocker-only updates on issues that already have both assignees set", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Poisoned assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const poisonedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: poisonedIssueId,
+        companyId,
+        title: "Poisoned issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+        assigneeUserId: "local-board",
+      },
+    ]);
+
+    await expect(
+      svc.update(poisonedIssueId, {
+        blockedByIssueIds: [blockerId],
+      }),
+    ).resolves.toMatchObject({ id: poisonedIssueId });
+
+    await expect(svc.getRelationSummaries(poisonedIssueId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: blockerId })],
+    });
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -3337,6 +3390,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 
   it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
     const sourceIssueId = randomUUID();
     const recoveryIssueId = randomUUID();
     await db.insert(issues).values([

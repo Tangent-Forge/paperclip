@@ -5153,7 +5153,10 @@ export function issueService(db: Db) {
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
 
-      if (nextAssigneeAgentId && nextAssigneeUserId) {
+      const assigneeFieldsTouched =
+        issueData.assigneeAgentId !== undefined || issueData.assigneeUserId !== undefined;
+
+      if ((assigneeFieldsTouched || patch.status === "in_progress") && nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
