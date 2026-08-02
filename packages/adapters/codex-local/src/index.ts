@@ -27,10 +27,11 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
-  // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // On subscription auth that's gpt-5.5 (fast-mode capable); manual model IDs
-  // are also treated as supported. Match that policy: pass the fast-mode
-  // overrides through and let the CLI reject them if the chosen model can't use them.
+  // Blank/omitted model is resolved to DEFAULT_CODEX_LOCAL_MODEL before exec.
+  // Treat empty as the default lane (fast-mode capable). Manual model IDs are
+  // also treated as supported so fast-mode overrides pass through and the CLI
+  // can reject them if the chosen model cannot use them.
+  // Note: luna/terra/spark fast-mode support is unproven; they ride the manual path today.
   if (!normalizedModel) return true;
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
     normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
@@ -56,9 +57,8 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
-      modelReasoningEffort: "high",
+      // Explicit override — empty {} previously applied no model and fell through to the CLI default.
+      model: DEFAULT_CODEX_LOCAL_MODEL,
     },
     source: "adapter_default",
   },

@@ -275,22 +275,32 @@ function normalizeMessage(input: unknown): CouncilEmailMessage | null {
   if (!input || typeof input !== "object") return null;
   const obj = input as Record<string, unknown>;
   const headers = obj.headers && typeof obj.headers === "object" ? obj.headers as Record<string, unknown> : {};
-  const sourceMessageId = firstString(obj.sourceMessageId, obj.messageId, obj.id, obj.gmailMessageId, headers["Message-ID"], headers["Message-Id"]);
+  const sourceMessageId = firstString(
+    obj.sourceMessageId,
+    obj.source_message_id,
+    obj.messageId,
+    obj.message_id,
+    obj.id,
+    obj.gmailMessageId,
+    obj.gmail_message_id,
+    headers["Message-ID"],
+    headers["Message-Id"],
+  );
   if (!sourceMessageId) return null;
   const subject = firstString(obj.subject, headers.Subject) ?? "(no subject)";
   const from = firstString(obj.from, obj.sender, headers.From);
   const to = stringList(obj.to).concat(stringList(headers.To));
   const cc = stringList(obj.cc).concat(stringList(headers.Cc));
-  const receivedAt = dateString(firstString(obj.receivedAt, obj.internalDate, obj.date, headers.Date));
+  const receivedAt = dateString(firstString(obj.receivedAt, obj.received_at, obj.internalDate, obj.internal_date, obj.date, headers.Date));
   return {
     sourceMessageId,
-    sourceThreadId: firstString(obj.sourceThreadId, obj.threadId, obj.gmailThreadId) ?? null,
+    sourceThreadId: firstString(obj.sourceThreadId, obj.source_thread_id, obj.threadId, obj.thread_id, obj.gmailThreadId, obj.gmail_thread_id) ?? null,
     from,
     to: unique(to),
     cc: unique(cc),
     subject,
-    textBody: firstString(obj.textBody, obj.text, obj.body, obj.snippet),
-    htmlBody: firstString(obj.htmlBody, obj.html),
+    textBody: firstString(obj.textBody, obj.text_body, obj.body_text, obj.text, obj.body, obj.snippet),
+    htmlBody: firstString(obj.htmlBody, obj.html_body, obj.body_html, obj.html),
     receivedAt,
     labels: stringList(obj.labels, obj.labelIds),
     url: firstString(obj.url, obj.webUrl, obj.gmailUrl),

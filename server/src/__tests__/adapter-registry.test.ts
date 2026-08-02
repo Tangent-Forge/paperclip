@@ -211,7 +211,8 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        // MC-0.15: cheap must apply an explicit model (DEFAULT_CODEX_LOCAL_MODEL), not {}.
+        adapterConfig: expect.objectContaining({ model: "gpt-5.5" }),
         source: "adapter_default",
       }),
     ]);
