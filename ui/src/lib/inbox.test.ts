@@ -797,11 +797,12 @@ describe("inbox helpers", () => {
     ).toBe(false);
   });
 
-  it("shows company alerts only on the all tab", () => {
+  it("shows company alerts only in Agent Operations", () => {
     expect(shouldShowCompanyAlerts("mine")).toBe(false);
     expect(shouldShowCompanyAlerts("recent")).toBe(false);
     expect(shouldShowCompanyAlerts("unread")).toBe(false);
-    expect(shouldShowCompanyAlerts("all")).toBe(true);
+    expect(shouldShowCompanyAlerts("all")).toBe(false);
+    expect(shouldShowCompanyAlerts("operations")).toBe(true);
   });
 
   it("limits recent touched issues before unread badge counting", () => {
