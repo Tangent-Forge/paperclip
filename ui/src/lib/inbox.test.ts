@@ -797,7 +797,7 @@ describe("inbox helpers", () => {
     ).toBe(false);
   });
 
-  it("shows company alerts only in Agent Operations", () => {
+  it("shows company alerts in Agent Operations and All", () => {
     expect(shouldShowCompanyAlerts("mine")).toBe(false);
     expect(shouldShowCompanyAlerts("recent")).toBe(false);
     expect(shouldShowCompanyAlerts("unread")).toBe(false);
