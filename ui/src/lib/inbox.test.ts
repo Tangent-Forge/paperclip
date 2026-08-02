@@ -332,7 +332,7 @@ describe("inbox helpers", () => {
       inbox: 3,
       approvals: 1,
       failedRuns: 2,
-      agentOperations: 3,
+      agentOperations: 2,
       joinRequests: 1,
       mineIssues: 1,
       alerts: 1,
@@ -801,7 +801,7 @@ describe("inbox helpers", () => {
     expect(shouldShowCompanyAlerts("mine")).toBe(false);
     expect(shouldShowCompanyAlerts("recent")).toBe(false);
     expect(shouldShowCompanyAlerts("unread")).toBe(false);
-    expect(shouldShowCompanyAlerts("all")).toBe(false);
+    expect(shouldShowCompanyAlerts("all")).toBe(true);
     expect(shouldShowCompanyAlerts("operations")).toBe(true);
   });
 

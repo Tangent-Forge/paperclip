@@ -659,7 +659,7 @@ export function isMineInboxTab(tab: InboxTab): boolean {
 }
 
 export function shouldShowCompanyAlerts(tab: InboxTab): boolean {
-  return tab === "operations";
+  return tab === "operations" || tab === "all";
 }
 
 export function resolveInboxSelectionIndex(
@@ -1263,7 +1263,10 @@ export function computeInboxBadgeData({
     inbox: actionableApprovals + visibleJoinRequests + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
-    agentOperations: failedRuns + alerts,
+    // Keep this API-compatible with server/sidebar-badges.ts. Alerts remain
+    // visible in Agent Operations and All, but are informational rather than
+    // actionable badge work.
+    agentOperations: failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,
