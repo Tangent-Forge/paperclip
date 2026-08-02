@@ -76,9 +76,10 @@ export function sidebarBadgeService(db: Db) {
       ).length;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: actionableApprovals + joinRequests + unreadTouchedIssues,
         approvals: actionableApprovals,
         failedRuns,
+        agentOperations: failedRuns,
         joinRequests,
       };
     },
