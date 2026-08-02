@@ -358,4 +358,37 @@ describe("agent instructions service", () => {
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
+
+  it("rejects invalid status literals before materializing routing instructions", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-invalid-status-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    await expect(svc.materializeManagedBundle(makeAgent({}), {
+      "AGENTS.md": "# Router\n\nList issues with `status=open` and no `assigneeAgentId`.\n",
+    })).rejects.toThrow("Unknown Paperclip issue status literal in AGENTS.md: open.");
+  });
+
+  it("accepts the Paperclip status set used by an unassigned routing scan", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-valid-statuses-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const statuses = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+    const content = [
+      "# Router",
+      "",
+      "List unassigned issues using these valid filters:",
+      ...statuses.map((status) => `- \`status=${status}\``),
+    ].join("\n");
+
+    const result = await agentInstructionsService().materializeManagedBundle(makeAgent({}), {
+      "AGENTS.md": content,
+    });
+
+    expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+  });
 });

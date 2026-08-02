@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { ISSUE_STATUSES } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -24,6 +25,7 @@ const IGNORED_INSTRUCTIONS_DIRECTORY_NAMES = new Set([
   "node_modules",
   "venv",
 ]);
+const ISSUE_STATUS_LITERALS = new Set<string>(ISSUE_STATUSES);
 
 type BundleMode = "managed" | "external";
 
@@ -117,6 +119,21 @@ function normalizeRelativeFilePath(candidatePath: string): string {
     throw unprocessable("Instructions file path must stay within the bundle root");
   }
   return normalized;
+}
+
+export function validateInstructionStatusLiterals(relativePath: string, content: string) {
+  if (path.posix.basename(normalizeRelativeFilePath(relativePath)) !== "AGENTS.md") return;
+
+  const invalidStatuses = new Set<string>();
+  for (const match of content.matchAll(/\bstatus\s*=\s*`?([a-z][a-z_]*)`?/gi)) {
+    const status = match[1]!.toLowerCase();
+    if (!ISSUE_STATUS_LITERALS.has(status)) invalidStatuses.add(status);
+  }
+  if (invalidStatuses.size > 0) {
+    throw unprocessable(
+      `Unknown Paperclip issue status literal${invalidStatuses.size === 1 ? "" : "s"} in AGENTS.md: ${[...invalidStatuses].join(", ")}.`,
+    );
+  }
 }
 
 function resolvePathWithinRoot(rootPath: string, relativePath: string): string {
@@ -621,7 +638,9 @@ export function agentInstructionsService() {
     }
 
     const prepared = await ensureWritableBundle(agent, options);
-    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    const normalizedPath = normalizeRelativeFilePath(relativePath);
+    validateInstructionStatusLiterals(normalizedPath, content);
+    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, normalizedPath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
@@ -703,6 +722,9 @@ export function agentInstructionsService() {
       normalizeRelativeFilePath(relativePath),
       content,
     ] as const);
+    for (const [relativePath, content] of normalizedEntries) {
+      validateInstructionStatusLiterals(relativePath, content);
+    }
     for (const [relativePath, content] of normalizedEntries) {
       const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
