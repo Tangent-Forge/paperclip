@@ -27,6 +27,21 @@ pnpm exec wrangler secret put PAPERCLIP_TRIGGER_SECRET
 The value must match the HMAC secret configured for the Paperclip public routine
 trigger. Do not commit `.dev.vars` or secret values.
 
+## Intake Filtering
+
+The Worker applies the same sender-domain and recipient-pattern matching semantics
+as the council email intake plugin before it posts to the public Paperclip trigger.
+This prevents filtered mail from creating or waking routine issues.
+
+- `ALLOWED_RECIPIENT_PATTERNS` is tracked in `wrangler.toml` as `ingest\+`.
+- `ALLOWED_SENDER_DOMAINS` is optional and may be set as a comma- or newline-separated
+  Worker var, for example `example.gov,city.example.gov`.
+- Empty `ALLOWED_SENDER_DOMAINS` allows any sender domain; empty
+  `ALLOWED_RECIPIENT_PATTERNS` allows any recipient.
+
+Every accepted post sends `Idempotency-Key: <deliveryId>` where `deliveryId` is
+derived from the source Message-ID when present.
+
 ## Local Commands
 
 ```bash
@@ -51,14 +66,15 @@ pnpm --filter @paperclipai/email-ingest-router-cf tail --format pretty
 Expected success log sequence:
 
 ```text
-{"event":"email_ingest_received","deliveryId":"mail_...","agent":"cto",...}
-{"event":"email_ingest_delivered","deliveryId":"mail_...","agent":"cto","status":200,...}
+{"event":"email_ingest_received","deliveryId":"mail_...","agent":"cto","status":"received"}
+{"event":"email_ingest_delivered","deliveryId":"mail_...","agent":"cto","status":202}
 ```
 
 If Paperclip rejects the routine trigger, the Worker logs
-`email_ingest_paperclip_post_failed` with the HTTP status and a truncated
-response body, then throws so Cloudflare Email Routing can retry transient
-failures.
+`email_ingest_paperclip_post_failed` with only the delivery id, agent, HTTP
+status, and error class, then throws so Cloudflare Email Routing can retry
+transient failures. Logs must not include email sender, subject, body, HTML, or
+Paperclip response body.
 
 ## Production Notes
 
@@ -70,6 +86,5 @@ failures.
 - `wrangler.toml` intentionally keeps the public routine trigger URL and default
   agent in tracked config; the authentication boundary is the untracked Worker
   secret.
-- The retired IMAP bridge under `archive/email-paperclip-bridge-retired-20260608/`
-  is not part of the maintained intake path. Restore it only if the Cloudflare
-  Email Routing Worker cannot satisfy intake liveness requirements.
+- The retired IMAP bridge archive was removed after the observation window. The
+  Cloudflare Email Routing Worker is the maintained intake path.
