@@ -32,7 +32,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
     checks.push({ code: "devin_command_unresolvable", level: "error", message: error instanceof Error ? error.message : "Devin command is not executable" });
   }
   if (!checks.some((c) => c.level === "error")) {
-    const models = await listDevinModels(true);
+    const models = await listDevinModels(true, command);
     if (models.length) checks.push({ code: "devin_models_discovered", level: "info", message: `Discovered ${models.length} Devin model(s).` });
     else checks.push({ code: "devin_models_unavailable", level: "warn", message: "Devin model discovery returned no models.", hint: "Run `devin auth status` and `devin models list --format json` on the Paperclip host." });
     const configured = asString(config.model, "").trim();
