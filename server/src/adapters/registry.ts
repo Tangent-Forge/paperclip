@@ -101,6 +101,16 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
+  execute as devinExecute,
+  testEnvironment as devinTestEnvironment,
+  listDevinModels,
+  getConfigSchema as getDevinConfigSchema,
+} from "@paperclipai/adapter-devin-local/server";
+import {
+  agentConfigurationDoc as devinAgentConfigurationDoc,
+  models as devinModels,
+} from "@paperclipai/adapter-devin-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -490,6 +500,25 @@ const grokLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: grokAgentConfigurationDoc,
 };
 
+const devinLocalAdapter: ServerAdapterModule = {
+  type: "devin_local",
+  execute: devinExecute,
+  testEnvironment: devinTestEnvironment,
+  models: devinModels,
+  listModels: () => listDevinModels(),
+  refreshModels: () => listDevinModels(true),
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getConfigSchema: getDevinConfigSchema,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "devin"),
+    detectCommand: readConfiguredCommand(config, "devin"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: devinAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -658,6 +687,7 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
+    devinLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     providerRouterLocalAdapter,
