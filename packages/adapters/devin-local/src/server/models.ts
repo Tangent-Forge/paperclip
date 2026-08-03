@@ -45,7 +45,9 @@ export async function listDevinModels(forceRefresh = false): Promise<AdapterMode
       env: process.env,
     });
     const models = parseDevinModelsJson(result.stdout);
-    cache = { expiresAt: Date.now() + 60_000, models };
+    if (models.length > 0) {
+      cache = { expiresAt: Date.now() + 60_000, models };
+    }
     return models;
   } catch {
     return cache?.models ?? [];
