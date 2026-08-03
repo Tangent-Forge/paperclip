@@ -425,6 +425,7 @@ type PaperclipWakeTreeHoldSummary = {
 };
 
 type PaperclipWakePayload = {
+  smokeTest: boolean;
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
@@ -636,6 +637,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   }
 
   return {
+    smokeTest: asBoolean(payload.smokeTest, false),
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
