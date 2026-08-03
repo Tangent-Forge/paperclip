@@ -83,6 +83,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Grok Build agent",
     icon: Bot,
   },
+  devin_local: {
+    label: "Devin",
+    description: "Official Devin CLI agent",
+    icon: Bot,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
