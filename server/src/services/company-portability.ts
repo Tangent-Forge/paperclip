@@ -136,6 +136,7 @@ const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename"
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
+let repoRootPromise: Promise<string | null> | null = null;
 
 function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
   return options?.mode ?? "board_full";
@@ -2114,17 +2115,52 @@ async function resolveBundledSkillsCommit() {
   return bundledSkillsCommitPromise;
 }
 
+async function resolveRepoRoot() {
+  if (!repoRootPromise) {
+    repoRootPromise = execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    })
+      .then(({ stdout }) => stdout.trim() || null)
+      .catch(() => null);
+  }
+  return repoRootPromise;
+}
+
+async function resolveBundledSkillRepoPath(skill: CompanySkill) {
+  const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  const explicit = asString(metadata?.repoSkillDir);
+  if (explicit !== null && explicit !== undefined) {
+    return normalizePortablePath(explicit.trim() || ".");
+  }
+
+  const locator = asString(skill.sourceLocator);
+  const repoRoot = await resolveRepoRoot();
+  if (locator && repoRoot) {
+    const relative = path.relative(repoRoot, path.resolve(locator));
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      const portableRelative = normalizePortablePath(relative);
+      if (portableRelative === "skills" || portableRelative.startsWith("skills/")) {
+        return portableRelative;
+      }
+    }
+  }
+
+  return `skills/${skill.slug}`;
+}
+
 async function buildSkillSourceEntry(skill: CompanySkill) {
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
   if (asString(metadata?.sourceKind) === "paperclip_bundled") {
     const commit = await resolveBundledSkillsCommit();
+    const repoSkillPath = await resolveBundledSkillRepoPath(skill);
     return {
       kind: "github-dir",
       repo: "paperclipai/paperclip",
-      path: `skills/${skill.slug}`,
+      path: repoSkillPath,
       commit,
       trackingRef: "master",
-      url: `https://github.com/paperclipai/paperclip/tree/master/skills/${skill.slug}`,
+      url: `https://github.com/paperclipai/paperclip/tree/master/${repoSkillPath === "." ? "" : repoSkillPath}`.replace(/\/$/, ""),
     };
   }
 

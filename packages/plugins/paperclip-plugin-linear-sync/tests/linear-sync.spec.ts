@@ -2,7 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { API_ROUTE_KEYS, ORIGIN_KIND_LINEAR_ISSUE } from "../src/constants.js";
 import { createLinearClient } from "../src/linear-client.js";
-import { importLinearIssue, isCandidateLinearIssue, readConfig, runLinearSync, verifyLinearSignature, type LinearClient, type LinearIssue, type SyncHost } from "../src/linear-sync.js";
+import { collectPortfolioInventory, combinePortfolioInventory, normalizePortfolioIssue, normalizePortfolioProject } from "../src/portfolio-inventory.js";
+import {
+  importLinearIssue,
+  isCandidateLinearIssue,
+  readConfig,
+  runLinearSync,
+  verifyLinearSignature,
+  type LinearClient,
+  type LinearIssue,
+  type SyncHost,
+} from "../src/linear-sync.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { createHmac } from "node:crypto";
@@ -131,6 +141,8 @@ function fakeLinear(issues: LinearIssue[]): LinearClient {
   return {
     listCandidateIssues: vi.fn(async () => issues),
     getIssue: vi.fn(async (id) => issues.find((issue) => issue.id === id) ?? null),
+    listAllProjects: vi.fn(async () => ({ records: [], pageCount: 1, pageSize: 100, truncated: false as const })),
+    listAllIssues: vi.fn(async () => ({ records: [], pageCount: 1, pageSize: 100, truncated: false as const })),
     postImportComment: vi.fn(async () => undefined),
     moveIssueToState: vi.fn(async () => undefined),
   };
@@ -221,5 +233,165 @@ describe("linear sync", () => {
     const signature = createHmac("sha256", "secret").update(body).digest("hex");
     expect(verifyLinearSignature({ rawBody: body, headers: { "linear-signature": signature }, secret: "secret" })).toBe(true);
     expect(verifyLinearSignature({ rawBody: body, headers: { "linear-signature": signature }, secret: "wrong" })).toBe(false);
+  });
+
+  it("normalizes inventory records deterministically", () => {
+    expect(normalizePortfolioProject({ id: "p1", name: "Proj", url: null, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-02T00:00:00.000Z", state: "planned", lead: null, creator: null })).toMatchObject({ kind: "project", sourceKind: "linear", sourceId: "p1", name: "Proj", truth: { url: "unknown", assignee: "unknown", execution: "unknown" } });
+    expect(normalizePortfolioIssue({ id: "i1", identifier: "TAN-9", title: "Issue", url: null, createdAt: null, updatedAt: null, state: null, assignee: null, creator: null, project: null })).toMatchObject({ kind: "issue", sourceKind: "linear", sourceId: "i1", title: "Issue", truth: { url: "unknown", state: "unknown", execution: "unknown" } });
+  });
+
+  it("combines inventory with exact denominators and state counts", () => {
+    const snapshot = combinePortfolioInventory([
+      { id: "p1", name: "Proj", url: null, createdAt: null, updatedAt: null, state: "planned", lead: null, creator: null },
+    ], [
+      { id: "i1", identifier: "TAN-1", title: "Issue", url: null, createdAt: null, updatedAt: null, state: { id: null, name: "Todo" }, assignee: { id: "a1", name: "Alice" }, creator: null, project: null },
+    ], { source: { kind: "linear", label: "Linear", host: "api.linear.app", availability: "available" }, pageSize: 100, maxPages: 50, maxRecords: 5000 });
+    expect(snapshot.denominators).toEqual({ projects: 1, issues: 1, records: 2 });
+    expect(snapshot.stateCounts).toEqual({ projects: { planned: 1 }, issues: { Todo: 1 } });
+    expect(snapshot.externalMutations).toBe(0);
+    expect(snapshot.sources.github.availability).toBe("unavailable");
+  });
+
+  it("treats assignment as assignment, not execution", () => {
+    const normalized = normalizePortfolioIssue({ id: "i2", identifier: "TAN-2", title: "Assigned but not running", url: null, createdAt: null, updatedAt: null, state: { id: "todo", name: "Todo" }, assignee: { id: "agent-1", name: "Agent One" }, creator: null, project: null });
+    expect(normalized.state).toBe("Todo");
+    expect(normalized.truth.assignee).toBe("known");
+    expect(normalized.execution).toEqual({ status: "unknown", evidence: [], reason: "assignment_is_not_execution_evidence" });
+  });
+
+  it("collects inventory without invoking Linear mutation methods", async () => {
+    const linear = fakeLinear([]);
+    linear.listAllProjects = vi.fn(async () => ({ records: [], pageCount: 1, pageSize: 100, truncated: false as const }));
+    linear.listAllIssues = vi.fn(async () => ({ records: [], pageCount: 1, pageSize: 100, truncated: false as const }));
+
+    const snapshot = await collectPortfolioInventory(linear, {
+      source: { kind: "linear", label: "Linear", host: "api.linear.app", availability: "available" },
+      pageSize: 100,
+      maxPages: 50,
+      maxRecords: 5000,
+    });
+
+    expect(snapshot.externalMutations).toBe(0);
+    expect(linear.postImportComment).not.toHaveBeenCalled();
+    expect(linear.moveIssueToState).not.toHaveBeenCalled();
+  });
+
+  it("exposes a read-only portfolio inventory route with no mutation surfaces", async () => {
+    expect(manifest.apiRoutes?.filter((route) => route.routeKey === API_ROUTE_KEYS.portfolioInventory)).toEqual([
+      expect.objectContaining({
+        method: "GET",
+        path: "/companies/:companyId/portfolio-inventory",
+        companyResolution: { from: "path", param: "companyId" },
+      }),
+    ]);
+    expect(manifest.jobs?.map((job) => job.jobKey)).toEqual(["poll-linear-intake"]);
+    const harness = createTestHarness({ manifest, config: { enabled: true, companyId: "company-1", linearApiKeySecretRef: "LINEAR" } });
+    harness.ctx.secrets.resolve = vi.fn(async () => "token");
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(body.query).includes("projects(first:")) {
+        return new Response(JSON.stringify({ data: { projects: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 });
+      }
+      if (String(body.query).includes("issues(first:")) {
+        return new Response(JSON.stringify({ data: { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 });
+      }
+      throw new Error("unexpected query");
+    });
+    harness.ctx.http.fetch = fetch as any;
+    const mutationSpies = [
+      vi.spyOn(harness.ctx.db, "execute"),
+      vi.spyOn(harness.ctx.state, "set"),
+      vi.spyOn(harness.ctx.issues, "create"),
+      vi.spyOn(harness.ctx.issues, "update"),
+      vi.spyOn(harness.ctx.issues, "requestWakeup"),
+      vi.spyOn(harness.ctx.activity, "log"),
+      vi.spyOn(harness.ctx.metrics, "write"),
+      vi.spyOn(harness.ctx.telemetry, "track"),
+    ];
+    await plugin.definition.setup(harness.ctx);
+    const response = await plugin.definition.onApiRequest?.({ routeKey: API_ROUTE_KEYS.portfolioInventory, method: "GET", path: "/companies/company-1/portfolio-inventory", params: { companyId: "company-1" }, query: {}, body: null, actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null }, companyId: "company-1", headers: {} });
+    expect(response?.status).toBe(200);
+    expect((response?.body as any).externalMutations).toBe(0);
+    expect((response?.body as any).mode).toBe("read_only");
+    expect((response?.body as any).sources).toMatchObject({
+      linear: { availability: "available" },
+      paperclip: { availability: "unavailable" },
+      github: { availability: "unavailable" },
+      sessionPresence: { availability: "unavailable" },
+    });
+    expect(harness.dbExecutes).toHaveLength(0);
+    expect(harness.activity).toHaveLength(0);
+    expect(harness.metrics).toHaveLength(0);
+    expect(harness.telemetry).toHaveLength(0);
+    for (const spy of mutationSpies) expect(spy).not.toHaveBeenCalled();
+    const queries = fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).query as string);
+    expect(queries.every((q) => q.includes("query") && !q.includes("mutation") && q.includes("includeArchived: true"))).toBe(true);
+    expect(queries.every((q) => !q.includes("email"))).toBe(true);
+
+    const rejected = await plugin.definition.onApiRequest?.({ routeKey: API_ROUTE_KEYS.portfolioInventory, method: "POST", path: "/companies/company-1/portfolio-inventory", params: { companyId: "company-1" }, query: {}, body: null, actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null }, companyId: "company-1", headers: {} });
+    expect(rejected?.status).toBe(405);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("pages projects and issues until completion and fails closed on cursor problems", async () => {
+    const pages = new Map<string, Response>([
+      ["projects:START", new Response(JSON.stringify({ data: { projects: { nodes: [{ id: "p1", name: "P1", description: null, url: null, createdAt: null, updatedAt: null, state: null, lead: null, creator: null }], pageInfo: { hasNextPage: true, endCursor: "c1" } } } }), { status: 200 })],
+      ["projects:c1", new Response(JSON.stringify({ data: { projects: { nodes: [{ id: "p2", name: "P2", description: null, url: null, createdAt: null, updatedAt: null, state: null, lead: null, creator: null }], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 })],
+      ["issues:START", new Response(JSON.stringify({ data: { issues: { nodes: [{ id: "i1", title: "I1" }], pageInfo: { hasNextPage: true, endCursor: "i-c1" } } } }), { status: 200 })],
+      ["issues:i-c1", new Response(JSON.stringify({ data: { issues: { nodes: [{ id: "i2", title: "I2" }], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 })],
+    ]);
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const query = String(body.query);
+      const key = query.includes("projects(first:") ? `projects:${body.variables.after ?? "START"}` : `issues:${body.variables.after ?? "START"}`;
+      const response = pages.get(key);
+      if (!response) throw new Error(`missing page for ${key}`);
+      return response.clone();
+    });
+    const client = createLinearClient({ http: { fetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(client.listAllProjects({ pageSize: 1 })).resolves.toMatchObject({ records: [{ id: "p1" }, { id: "p2" }], truncated: false });
+    await expect(client.listAllIssues({ pageSize: 1 })).resolves.toMatchObject({ records: [{ id: "i1" }, { id: "i2" }], pageCount: 2 });
+  });
+
+  it("clamps page size and fails closed on a missing cursor", async () => {
+    const firstValues: number[] = [];
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      firstValues.push(body.variables.first);
+      return new Response(JSON.stringify({ data: { projects: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } } }), { status: 200 });
+    });
+    const client = createLinearClient({ http: { fetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(client.listAllProjects({ pageSize: 0, maxPages: 1, maxRecords: 1 })).rejects.toThrow(/missing an end cursor/i);
+    await expect(client.listAllProjects({ pageSize: 1000, maxPages: 1, maxRecords: 1 })).rejects.toThrow(/missing an end cursor/i);
+    expect(firstValues).toEqual([1, 100]);
+  });
+
+  it("fails closed on repeated cursors and max-pages truncation", async () => {
+    const repeatedFetch = vi.fn(async () => new Response(JSON.stringify({ data: { projects: { nodes: [], pageInfo: { hasNextPage: true, endCursor: "same" } } } }), { status: 200 }));
+    const repeatedClient = createLinearClient({ http: { fetch: repeatedFetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(repeatedClient.listAllProjects({ maxPages: 3 })).rejects.toThrow(/repeated cursor/i);
+
+    let page = 0;
+    const boundedFetch = vi.fn(async () => {
+      page += 1;
+      return new Response(JSON.stringify({ data: { projects: { nodes: [], pageInfo: { hasNextPage: true, endCursor: `c${page}` } } } }), { status: 200 });
+    });
+    const boundedClient = createLinearClient({ http: { fetch: boundedFetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(boundedClient.listAllProjects({ maxPages: 2 })).rejects.toThrow(/maxPages=2/i);
+    expect(boundedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed on max-records truncation and duplicate source ids", async () => {
+    const recordsFetch = vi.fn(async () => new Response(JSON.stringify({ data: { projects: { nodes: [
+      { id: "p1", name: "P1" }, { id: "p2", name: "P2" },
+    ], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 }));
+    const recordsClient = createLinearClient({ http: { fetch: recordsFetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(recordsClient.listAllProjects({ maxRecords: 1 })).rejects.toThrow(/maxRecords=1/i);
+
+    const duplicateFetch = vi.fn(async () => new Response(JSON.stringify({ data: { projects: { nodes: [
+      { id: "p1", name: "P1" }, { id: "p1", name: "P1 duplicate" },
+    ], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 }));
+    const duplicateClient = createLinearClient({ http: { fetch: duplicateFetch } as any, url: "https://api.linear.app/graphql", token: "token" });
+    await expect(duplicateClient.listAllProjects()).rejects.toThrow(/duplicate source id p1/i);
   });
 });

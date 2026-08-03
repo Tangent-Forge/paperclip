@@ -697,6 +697,7 @@ export function Inbox() {
     || pathSegment === "all"
     || pathSegment === "unread"
     || pathSegment === "blocked"
+    || pathSegment === "operations"
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
@@ -939,6 +940,7 @@ export function Inbox() {
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
+      if (tab === "operations") return [];
       return visibleTouchedIssues;
     },
     [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
@@ -1041,6 +1043,7 @@ export function Inbox() {
     [heartbeatRuns, dismissedAtByKey],
   );
   const approvalsToRender = useMemo(() => {
+    if (tab === "operations") return [];
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
     if (tab === "mine") {
       filtered = filtered.filter(
@@ -1055,15 +1058,13 @@ export function Inbox() {
     allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
   const showApprovalsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "approvals";
-  const showFailedRunsCategory =
-    allCategoryFilter === "everything" || allCategoryFilter === "failed_runs";
   const showAlertsCategory = allCategoryFilter === "everything" || allCategoryFilter === "alerts";
   const failedRunsForTab = useMemo(() => {
-    if (tab === "all" && !showFailedRunsCategory) return [];
-    return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory]);
+    return tab === "operations" ? failedRuns : [];
+  }, [failedRuns, tab]);
 
   const joinRequestsForTab = useMemo(() => {
+    if (tab === "operations") return [];
     if (tab === "all" && !showJoinRequestsCategory) return [];
     if (tab === "mine") {
       return joinRequests.filter(
@@ -1885,6 +1886,7 @@ export function Inbox() {
     !dismissedAlerts.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
   const showWorkItemsSection = totalVisibleWorkItems > 0;
+
   const showAlertsSection = shouldShowInboxSection({
     tab,
     hasItems: hasAlerts,
@@ -1915,7 +1917,7 @@ export function Inbox() {
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
-  const showGeneralIssueToolbarControls = tab !== "blocked";
+  const showGeneralIssueToolbarControls = tab !== "blocked" && tab !== "operations";
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -1961,7 +1963,8 @@ export function Inbox() {
                 label: "Recent",
               },
               { value: "unread", label: "Unread" },
-              { value: "blocked", label: "Blocked" },
+              { value: "blocked", label: "Human Decisions" },
+              { value: "operations", label: "Agent Operations" },
               { value: "all", label: "All" },
             ]}
           />
@@ -1996,7 +1999,7 @@ export function Inbox() {
               data-page-search-target="true"
             />
           </div>
-          {tab === "blocked" ? (
+          {tab === "blocked" || tab === "operations" ? (
             <>
               <IssueFiltersPopover
                 state={issueFilters}
@@ -2237,7 +2240,7 @@ export function Inbox() {
       {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
-      {tab === "blocked" ? (
+      {tab === "blocked" || tab === "operations" ? (
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
@@ -2253,14 +2256,15 @@ export function Inbox() {
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
+          lane={tab === "blocked" ? "human" : "agent_operations"}
         />
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && tab !== "operations" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
 
-      {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && tab !== "operations" && allLoaded && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
