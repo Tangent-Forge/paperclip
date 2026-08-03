@@ -118,6 +118,24 @@ Wrap multiple EntityRows in a `border border-border rounded-md` container.
 
 Always use in a responsive grid: `grid md:grid-cols-2 xl:grid-cols-4 gap-4`.
 
+### SystemHealthCard
+
+**File:** `SystemHealthCard.tsx`
+**Exports:** `SystemHealthCard` (fetches `/api/health/hub`), `SystemHealthCardView` (presentational, takes `data: HubHealth`)
+**Usage:** Host infrastructure status on the Dashboard. Self-hiding — renders nothing
+unless the server has `HUB_HEALTH_JSON_PATH` configured, so deployments without a host
+monitor are unaffected.
+
+```tsx
+<SystemHealthCard />                         // Dashboard: fetches its own data
+<SystemHealthCardView data={snapshot} />     // showcase/tests: pass a snapshot
+```
+
+Behavioral rules worth preserving if you touch this: failing checks render expanded and
+sorted first; healthy checks collapse behind a toggle; a snapshot older than 12 minutes
+reports itself as **stale** instead of showing a misleading all-clear. That last rule
+exists because a silently-dead monitor previously showed green for a week.
+
 ### EmptyState
 
 **File:** `EmptyState.tsx`

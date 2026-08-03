@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -181,6 +182,34 @@ export function healthRoutes(
       },
       ...(devServer ? { devServer } : {}),
     });
+  });
+
+  // Host-level infrastructure health, produced out-of-band by a host monitor and read
+  // from a JSON file. Opt-in: without HUB_HEALTH_JSON_PATH this route reports
+  // not-configured and the dashboard card hides itself, so deployments that don't run a
+  // host monitor are unaffected.
+  router.get("/hub", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (!shouldExposeFullHealthDetails(actorType, opts.deploymentMode)) {
+      res.status(403).json({ error: "hub_health_auth_required" });
+      return;
+    }
+
+    const hubHealthPath = process.env.HUB_HEALTH_JSON_PATH?.trim();
+    if (!hubHealthPath) {
+      res.status(404).json({ error: "hub_health_not_configured" });
+      return;
+    }
+
+    try {
+      const raw = await readFile(hubHealthPath, "utf8");
+      res.json(JSON.parse(raw));
+    } catch (error) {
+      // A monitor that stops writing must surface as an explicit error, never as a
+      // stale-but-green payload. The UI also independently checks checked_at age.
+      logger.warn({ err: error, hubHealthPath }, "Hub health snapshot unreadable");
+      res.status(503).json({ error: "hub_health_unavailable" });
+    }
   });
 
   router.get("/metrics", (req, res) => {
