@@ -36,10 +36,10 @@ export function parseDevinModelsJson(input: string): AdapterModel[] {
   return dedupe(result);
 }
 
-export async function listDevinModels(forceRefresh = false, command = process.env.DEVIN_COMMAND?.trim() || "devin"): Promise<AdapterModel[]> {
+export async function listDevinModels(forceRefresh = false): Promise<AdapterModel[]> {
   if (!forceRefresh && cache && cache.expiresAt > Date.now()) return cache.models;
   try {
-    const result = await execFileAsync(command, ["models", "list", "--format", "json"], {
+    const result = await execFileAsync("devin", ["models", "list", "--format", "json"], {
       timeout: 10_000,
       maxBuffer: 2 * 1024 * 1024,
       env: process.env,

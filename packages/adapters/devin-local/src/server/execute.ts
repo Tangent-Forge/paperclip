@@ -10,7 +10,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const target = readAdapterExecutionTarget({ executionTarget: ctx.executionTarget, legacyRemoteExecution: ctx.executionTransport?.remoteExecution });
   const cwd = asString(config.cwd, process.cwd()).trim() || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const command = asString(config.command, "devin").trim() || "devin";
+  const command = "devin";
   const model = asString(config.model, "").trim();
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(target, asNumber(config.timeoutSec, 900));
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);

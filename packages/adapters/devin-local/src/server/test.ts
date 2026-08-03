@@ -11,7 +11,7 @@ function status(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult
 
 export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "devin");
+  const command = "devin";
   const cwd = resolveAdapterExecutionTargetCwd(ctx.executionTarget ?? null, asString(config.cwd, ""), process.cwd());
   const checks: AdapterEnvironmentCheck[] = [];
   const runId = `devin-envtest-${Date.now()}`;
@@ -32,7 +32,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
     checks.push({ code: "devin_command_unresolvable", level: "error", message: error instanceof Error ? error.message : "Devin command is not executable" });
   }
   if (!checks.some((c) => c.level === "error")) {
-    const models = await listDevinModels(true, command);
+    const models = await listDevinModels(true);
     if (models.length) checks.push({ code: "devin_models_discovered", level: "info", message: `Discovered ${models.length} Devin model(s).` });
     else checks.push({ code: "devin_models_unavailable", level: "warn", message: "Devin model discovery returned no models.", hint: "Run `devin auth status` and `devin models list --format json` on the Paperclip host." });
     const configured = asString(config.model, "").trim();

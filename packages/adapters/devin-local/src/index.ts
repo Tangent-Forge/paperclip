@@ -9,7 +9,6 @@ export const agentConfigurationDoc = `# devin_local agent configuration
 Runs the official Devin CLI installed and authenticated on the Paperclip host.
 
 Core fields:
-- command: Devin executable, default \`devin\`
 - model: account-entitled Devin model ID; discovered from \`devin models list --format json\`
 - cwd: absolute working directory
 - promptTemplate: optional Paperclip prompt template
