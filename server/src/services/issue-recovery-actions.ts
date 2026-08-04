@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueRecoveryActions } from "@paperclipai/db";
+import { issueRecoveryActions, issues } from "@paperclipai/db";
 import type {
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -8,6 +8,7 @@ import type {
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
+import { logActivity } from "./activity-log.js";
 
 const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
@@ -286,9 +287,66 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function reconcileStaleSourceRecoveryActions() {
+    const activeRows = await db
+      .select({
+        action: issueRecoveryActions,
+        issueStatus: issues.status,
+        issueId: issues.id,
+        issueIdentifier: issues.identifier,
+        companyId: issues.companyId,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(issues, eq(issueRecoveryActions.sourceIssueId, issues.id))
+      .where(inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]));
+
+    let reconciled = 0;
+    for (const row of activeRows) {
+      if (row.issueStatus !== "done" && row.issueStatus !== "cancelled") continue;
+      const resolutionNote = `Recovery action became stale because the source issue reached ${row.issueStatus}.`;
+      const resolved = await db.transaction(async (tx) => {
+        const updated = await resolveActiveForIssue({
+          companyId: row.companyId,
+          sourceIssueId: row.issueId,
+          actionId: row.action.id,
+          status: "cancelled",
+          outcome: "cancelled",
+          resolutionNote,
+        }, tx);
+        if (!updated) return null;
+        await logActivity(tx as unknown as Db, {
+          companyId: row.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.recovery_action_resolved",
+          entityType: "issue",
+          entityId: row.issueId,
+          details: {
+            identifier: row.issueIdentifier,
+            recoveryActionId: updated.id,
+            recoveryActionStatus: updated.status,
+            outcome: updated.outcome,
+            sourceIssueStatus: row.issueStatus,
+            resolutionNote,
+            source: "startup_reconciliation",
+            trigger: "startup_reconciliation",
+          },
+        });
+        return updated;
+      });
+      if (!resolved) continue;
+      reconciled += 1;
+    }
+
+    return { reconciled };
+  }
+
   return {
     getActiveForIssue,
     listActiveForIssues,
+    reconcileStaleSourceRecoveryActions,
     resolveActiveForIssue,
     upsertSourceScoped,
   };

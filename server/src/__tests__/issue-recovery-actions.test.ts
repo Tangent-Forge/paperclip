@@ -488,7 +488,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recoveryIssues[0]?.status).toBe("blocked");
   });
 
-  it("exposes active recovery actions on the issue read API", async () => {
+  it("exposes active recovery actions on the issue read API without mutating read tables", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -504,18 +504,29 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       wakePolicy: { type: "wake_owner" },
     });
     const app = createApp();
-
-    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
-    expect(detail.body.activeRecoveryAction).toMatchObject({
-      id: action.id,
-      sourceIssueId,
-      kind: "missing_disposition",
-      ownerAgentId: managerId,
+    const watchedCounts = async () => ({
+      recoveryActions: await db.select().from(issueRecoveryActions).then((rows) => rows.length),
+      activityLogs: await db.select().from(activityLog).then((rows) => rows.length),
     });
+    const before = await watchedCounts();
 
-    const list = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
-    expect(list.body.active).toMatchObject({ id: action.id });
-    expect(list.body.actions).toHaveLength(1);
+    for (let i = 0; i < 2; i += 1) {
+      const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+      expect(detail.body.activeRecoveryAction).toMatchObject({ id: action.id });
+
+      const heartbeatContext = await request(app).get(`/api/issues/${sourceIssueId}/heartbeat-context`).expect(200);
+      expect(heartbeatContext.body.issue.activeRecoveryAction).toMatchObject({ id: action.id });
+
+      const recoveryActions = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+      expect(recoveryActions.body.active).toMatchObject({ id: action.id });
+      expect(recoveryActions.body.actions).toHaveLength(1);
+
+      const issueList = await request(app).get(`/api/companies/${companyId}/issues`).expect(200);
+      expect(issueList.body.some((issue: { id: string; activeRecoveryAction?: { id: string } | null }) => issue.id === sourceIssueId && issue.activeRecoveryAction?.id === action.id)).toBe(true);
+    }
+
+    const after = await watchedCounts();
+    expect(after).toEqual(before);
   });
 
   it("resolves an active recovery action and removes it from active projections", async () => {
@@ -676,7 +687,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  it("folds stale recovery during read projection after the source issue reaches done", async () => {
+  it("projects stale recovery away after done without mutating rows during repeated reads", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -694,33 +705,27 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
     const app = createApp();
 
-    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    const beforeActionRows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    const beforeActivityRows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
 
-    expect(detail.body).toMatchObject({
-      id: sourceIssueId,
-      status: "done",
-      activeRecoveryAction: null,
-    });
-    const [actionRow] = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.id, action.id));
-    expect(actionRow).toMatchObject({
-      status: "cancelled",
-      outcome: "cancelled",
-      resolutionNote: "Recovery action became stale because the source issue reached done.",
-    });
-    expect(actionRow?.resolvedAt).toBeTruthy();
+    for (let i = 0; i < 3; i += 1) {
+      const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+      expect(detail.body).toMatchObject({ id: sourceIssueId, status: "done", activeRecoveryAction: null });
 
-    const activityRows = await db
-      .select()
-      .from(activityLog)
-      .where(eq(activityLog.entityId, sourceIssueId));
-    expect(activityRows.find((row) => row.action === "issue.recovery_action_resolved")?.details).toMatchObject({
-      source: "source_revalidation",
-      trigger: "read_projection",
-      recoveryActionId: action.id,
-    });
+      const heartbeatContext = await request(app).get(`/api/issues/${sourceIssueId}/heartbeat-context`).expect(200);
+      expect(heartbeatContext.body.issue.activeRecoveryAction).toBeNull();
+
+      const recoveryActions = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+      expect(recoveryActions.body.active).toBeNull();
+      expect(recoveryActions.body.actions).toHaveLength(0);
+
+      const issueList = await request(app).get(`/api/companies/${companyId}/issues`).expect(200);
+      const listed = issueList.body.find((issue: { id: string }) => issue.id === sourceIssueId);
+      expect(listed?.activeRecoveryAction).toBeNull();
+    }
+
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id))).toEqual(beforeActionRows);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId))).toEqual(beforeActivityRows);
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {
@@ -755,6 +760,42 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
     expect(detail.body.activeRecoveryAction).toMatchObject({ id: action.id });
+  });
+
+  it("reconciles stale source recovery actions once and stays idempotent on repeat runs", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const svc = issueRecoveryActionService(db);
+    const action = await svc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:startup-reconcile",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+
+    const first = await svc.reconcileStaleSourceRecoveryActions();
+    expect(first).toEqual({ reconciled: 1 });
+
+    const [cancelled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue reached done.",
+    });
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.filter((row) => row.action === "issue.recovery_action_resolved")).toHaveLength(1);
+
+    const second = await svc.reconcileStaleSourceRecoveryActions();
+    expect(second).toEqual({ reconciled: 0 });
+    const afterRepeat = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(afterRepeat.filter((row) => row.action === "issue.recovery_action_resolved")).toHaveLength(1);
   });
 
   it("folds stale recovery when a structured resume comment restores todo dispatch", async () => {

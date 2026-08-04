@@ -42,6 +42,7 @@ import {
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
+  issueRecoveryActionService,
   routineService,
 } from "./services/index.js";
 import {
@@ -728,7 +729,20 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
-  
+
+  void issueRecoveryActionService(db as any).reconcileStaleSourceRecoveryActions()
+    .then((result) => {
+      if (result.reconciled > 0) {
+        logger.info(
+          { reconciled: result.reconciled },
+          "startup reconciliation of issue recovery actions cancelled stale rows",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of issue recovery actions failed");
+    });
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad

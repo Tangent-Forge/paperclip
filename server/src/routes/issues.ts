@@ -1447,16 +1447,14 @@ export function issueRoutes(
     return null;
   }
 
-  async function revalidateActiveSourceRecoveryForRead(input: Parameters<typeof revalidateActiveSourceRecovery>[0]) {
-    try {
-      return await revalidateActiveSourceRecovery(input);
-    } catch (err) {
-      logger.warn(
-        { err, issueId: input.issue.id, trigger: input.trigger },
-        "failed to revalidate recovery action during read projection",
-      );
-      return input.activeRecoveryAction ?? null;
-    }
+  function projectActiveSourceRecovery(input: {
+    issue: IssueRouteSnapshot;
+    activeRecoveryAction?: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
+  }) {
+    const activeRecoveryAction = input.activeRecoveryAction ?? null;
+    if (!activeRecoveryAction) return null;
+    if (input.issue.status === "done" || input.issue.status === "cancelled") return null;
+    return activeRecoveryAction;
   }
 
   async function revalidateActiveSourceRecoveryAfterCommittedWrite(
@@ -2552,19 +2550,15 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
     ]);
-    const actor = getActorInfo(req);
-    await Promise.all(result.map(async (issue) => {
+    for (const issue of result) {
       const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
-      if (!activeRecoveryAction) return;
-      const revalidated = await revalidateActiveSourceRecoveryForRead({
+      const projectedActiveRecoveryAction = projectActiveSourceRecovery({
         issue,
-        trigger: "read_projection",
-        actor,
         activeRecoveryAction,
       });
-      if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+      if (projectedActiveRecoveryAction) recoveryActionByIssue.set(issue.id, projectedActiveRecoveryAction);
       else recoveryActionByIssue.delete(issue.id);
-    }));
+    }
     res.json(result.map((issue) => ({
       ...issue,
       successfulRunHandoff: handoffStates.get(issue.id) ?? null,
@@ -2765,10 +2759,8 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
-    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
+    const projectedActiveRecoveryAction = projectActiveSourceRecovery({
       issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
       activeRecoveryAction,
     });
     const redactLowTrust = await shouldRedactLowTrustForHeartbeatContext(issue, getActorInfo(req));
@@ -2794,7 +2786,7 @@ export function issueRoutes(
         ...(blockerAttention ? { blockerAttention } : {}),
         productivityReview,
         scheduledRetry,
-        activeRecoveryAction: revalidatedActiveRecoveryAction,
+        activeRecoveryAction: projectedActiveRecoveryAction,
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
@@ -2899,10 +2891,8 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
-    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
+    const projectedActiveRecoveryAction = projectActiveSourceRecovery({
       issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
       activeRecoveryAction,
     });
     const mentionedProjects = mentionedProjectIds.length > 0
@@ -2920,7 +2910,7 @@ export function issueRoutes(
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
-      activeRecoveryAction: revalidatedActiveRecoveryAction,
+      activeRecoveryAction: projectedActiveRecoveryAction,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
@@ -2942,10 +2932,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const active = await revalidateActiveSourceRecoveryForRead({
+    const active = projectActiveSourceRecovery({
       issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
+      activeRecoveryAction: await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
     });
     res.json({
       active,
