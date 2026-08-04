@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
@@ -20,7 +22,12 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  DEFAULT_GEMINI_LOCAL_MODEL,
+  resolveGeminiLocalModel,
+  sanitizeGeminiLocalExtraArgs,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
@@ -34,9 +41,18 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+function commandLooksLike(command: string, ...expectedCommands: string[]): boolean {
+  const base = path.basename(command).toLowerCase().replace(/\.(cmd|exe)$/, "");
+  return expectedCommands.includes(base);
+}
+
+async function hasAgyOAuthState(): Promise<boolean> {
+  try {
+    await fs.access(path.join(os.homedir(), ".gemini", "antigravity-cli", "antigravity-oauth-token"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
@@ -127,35 +143,46 @@ export async function testEnvironment(
   const configGoogleApiKey = env.GOOGLE_API_KEY;
   const hostGoogleApiKey = targetIsRemote ? undefined : process.env.GOOGLE_API_KEY;
   const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || (!targetIsRemote && process.env.GOOGLE_GENAI_USE_GCA === "true");
+  const commandIsAgy = commandLooksLike(command, "agy");
+  const hasAgyOAuth = !targetIsRemote && commandIsAgy ? await hasAgyOAuthState() : false;
   if (
     isNonEmpty(configGoogleApiKey) ||
     isNonEmpty(hostGoogleApiKey) ||
-    hasGca
+    hasGca ||
+    hasAgyOAuth
   ) {
-    const source = hasGca
-      ? "Google account login (GCA)"
-      : isNonEmpty(configGoogleApiKey)
-        ? "adapter config env"
-        : "server environment";
+    const source = hasAgyOAuth
+      ? "Antigravity OAuth state"
+      : hasGca
+        ? "Google account login (GCA)"
+        : isNonEmpty(configGoogleApiKey)
+          ? "adapter config env"
+          : "server environment";
     checks.push({
       code: "gemini_api_key_present",
       level: "info",
-      message: "Gemini API credentials are set for CLI authentication.",
+      message: hasAgyOAuth
+        ? "Antigravity OAuth credentials are present for agy authentication."
+        : "Gemini API credentials are set for CLI authentication.",
       detail: `Detected in ${source}.`,
     });
   } else {
     checks.push({
       code: "gemini_api_key_missing",
       level: "info",
-      message: "No explicit API key detected. Gemini CLI may still authenticate via `gemini auth login` (OAuth).",
-      hint: "If the hello probe fails with an auth error, set GOOGLE_API_KEY in adapter env, or run `gemini auth login`.",
+      message: commandIsAgy
+        ? "No API key or Antigravity OAuth state detected. agy may still authenticate via its local OAuth login."
+        : "No explicit API key detected. Gemini CLI may still authenticate via `gemini auth login` (OAuth).",
+      hint: commandIsAgy
+        ? "If the hello probe fails with an auth error, authenticate agy/Antigravity, then retry the probe."
+        : "If the hello probe fails with an auth error, set GOOGLE_API_KEY in adapter env, or run `gemini auth login`.",
     });
   }
 
   const canRunProbe =
     checks.every((check) => check.code !== "gemini_cwd_invalid" && check.code !== "gemini_command_unresolvable");
   if (canRunProbe) {
-    if (!commandLooksLike(command, "gemini")) {
+    if (!commandLooksLike(command, "gemini", "agy")) {
       checks.push({
         code: "gemini_hello_probe_skipped_custom_command",
         level: "info",
@@ -165,25 +192,25 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
-      const extraArgs = (() => {
+      const extraArgs = sanitizeGeminiLocalExtraArgs(command, (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
-      })();
+      })());
 
-      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
-      if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-      if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
-      args.push("--skip-trust");
-      if (sandbox) {
-        args.push("--sandbox");
+      const args = ["--output-format", "stream-json"];
+      const resolvedModel = resolveGeminiLocalModel(command, model);
+      if (resolvedModel) args.push("--model", resolvedModel);
+      if (commandIsAgy) {
+        args.push("--dangerously-skip-permissions", "--disable-slash-commands");
+        if (sandbox) args.push("--sandbox");
       } else {
-        args.push("--sandbox=none");
+        args.push("--approval-mode", "yolo", "--skip-trust", sandbox ? "--sandbox" : "--sandbox=none");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
+      args.push("--prompt", "Respond with hello.");
 
       const probe = await runAdapterExecutionTargetProcess(
         runId,
@@ -235,7 +262,7 @@ export async function testEnvironment(
           code: hasHello ? "gemini_hello_probe_passed" : "gemini_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
           message: hasHello
-            ? "Gemini hello probe succeeded."
+            ? commandIsAgy ? "Antigravity (agy) hello probe succeeded." : "Gemini hello probe succeeded."
             : "Gemini probe ran but did not return `hello` as expected.",
           ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
           ...(hasHello
