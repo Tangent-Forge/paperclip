@@ -91,10 +91,10 @@ describe("gemini_local environment diagnostics", () => {
         model: "gemini-2.5-pro",
         yolo: true,
         extraArgs: [
-          "--model", "evil-model",
+          "--model=evil-model",
           "--output-format=json",
-          "--prompt=override",
-          "--conversation", "evil-session",
+          "--prompt", "override",
+          "--conversation=evil-session",
           "--custom-flag", "kept",
         ],
         env: {
@@ -115,7 +115,7 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).not.toContain("--sandbox=none");
     expect(args).not.toContain("evil-model");
     expect(args).not.toContain("--output-format=json");
-    expect(args).not.toContain("--prompt=override");
+    expect(args).not.toContain("override");
     expect(args).not.toContain("evil-session");
     expect(args).toContain("--custom-flag");
     expect(args).toContain("kept");

@@ -149,8 +149,8 @@ export async function testEnvironment(
     checks.push({
       code: "gemini_antigravity_oauth_remote_unverified",
       level: "info",
-      message: "Remote agy authentication is resolved by the remote environment; local Antigravity OAuth state is not used.",
-      hint: "Authenticate Antigravity on the remote host before running the hello probe.",
+      message: "Remote agy authentication is resolved by the remote environment; local Antigravity OAuth state is not used. The hello probe is the remote readiness check.",
+      hint: "Authenticate Antigravity on the remote host before running the hello probe; a successful probe verifies the remote auth path.",
     });
   }
   if (
