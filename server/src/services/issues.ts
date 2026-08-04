@@ -1935,6 +1935,7 @@ const issueListSelect = {
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
   executionLockedAt: issues.executionLockedAt,
+  livenessIncidentId: issues.livenessIncidentId,
   createdByAgentId: issues.createdByAgentId,
   createdByUserId: issues.createdByUserId,
   issueNumber: issues.issueNumber,

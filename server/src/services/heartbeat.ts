@@ -7751,6 +7751,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    now?: Date;
+    presentObservations?: number;
+    absentObservations?: number;
+    observationSpacingMs?: number;
+    recurrenceCooldownMs?: number;
+    maxActivationsPerCompany?: number;
+    maxPendingEffectsPerCompany?: number;
+    effectMaxAttempts?: number;
+    canaryCompanyId?: string | null;
   }) {
     return recovery.reconcileIssueGraphLiveness(opts);
   }

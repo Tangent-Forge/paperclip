@@ -57,6 +57,8 @@ import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
+import { observeIssueGraphLiveness } from "./liveness-observer.js";
+import { reconcileIssueGraphLivenessV2, type LivenessV2Options } from "./liveness-v2.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -2995,6 +2997,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function collectIssueGraphLivenessFindings() {
+    return observeIssueGraphLiveness(db);
+  }
+
+  // Retained temporarily for comparison/debugging; the active preview and
+  // reconciler use the pure observer above and never call this legacy emitter.
+  async function collectLegacyIssueGraphLivenessFindings() {
     const issueRowsPromise = Promise.resolve(db
       .select({
         id: issues.id,
@@ -3795,11 +3803,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
-  async function reconcileIssueGraphLiveness(opts?: {
+  async function reconcileIssueGraphLiveness(opts?: LivenessV2Options & {
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
   }) {
+    return reconcileIssueGraphLivenessV2(db, deps, opts);
+    /* istanbul ignore next -- legacy emitter kept unreachable during v2 soak */
     const findings = await collectIssueGraphLivenessFindings();
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
@@ -3851,11 +3861,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);
-        result.escalationIssueIds.push(escalation.escalationIssueId);
+        const escalationIssueId = escalation.escalationIssueId;
+        if (escalationIssueId) result.escalationIssueIds.push(escalationIssueId as string);
       } else if (escalation.kind === "existing") {
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
-        result.escalationIssueIds.push(escalation.escalationIssueId);
+        const escalationIssueId = escalation.escalationIssueId;
+        if (escalationIssueId) result.escalationIssueIds.push(escalationIssueId as string);
       } else {
         result.skipped += 1;
       }
