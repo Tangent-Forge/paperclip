@@ -47,7 +47,12 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  DEFAULT_GEMINI_LOCAL_MODEL,
+  resolveGeminiLocalModel,
+  sanitizeGeminiLocalExtraArgs,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
@@ -308,11 +313,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const extraArgs = (() => {
+  const configuredExtraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
     return asStringArray(config.args);
   })();
+  const extraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand, configuredExtraArgs);
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
   let remoteSkillsDir: string | null = null;
   let localSkillsDir: string | null = null;
@@ -483,9 +489,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  const commandIsAgy = path.basename(resolvedCommand).toLowerCase().replace(/\.(cmd|exe)$/, "") === "agy";
+  const resolvedModel = resolveGeminiLocalModel(resolvedCommand, model);
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    notes.push(commandIsAgy ? "Using agy-compatible unattended execution flags." : "Using Gemini CLI unattended execution flags.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
     }
@@ -544,14 +552,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
-    args.push("--skip-trust");
-    if (sandbox) {
-      args.push("--sandbox");
+    if (resumeSessionId) args.push(commandIsAgy ? "--conversation" : "--resume", resumeSessionId);
+    if (resolvedModel) args.push("--model", resolvedModel);
+    if (commandIsAgy) {
+      args.push("--dangerously-skip-permissions", "--disable-slash-commands");
+      if (sandbox) args.push("--sandbox");
     } else {
-      args.push("--sandbox=none");
+      args.push("--approval-mode", "yolo", "--skip-trust", sandbox ? "--sandbox" : "--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);

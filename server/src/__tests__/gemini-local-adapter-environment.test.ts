@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
-async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
+async function writeFakeGeminiCommand(
+  binDir: string,
+  argsCapturePath: string,
+  commandName = "gemini",
+): Promise<string> {
+  const commandPath = path.join(binDir, commandName);
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
@@ -67,7 +71,7 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes model and yolo flags to the hello probe", async () => {
+  it("passes agy-compatible flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -76,13 +80,13 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
-    await writeFakeGeminiCommand(binDir, argsCapturePath);
+    await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: "agy",
         cwd,
         model: "gemini-2.5-pro",
         yolo: true,
@@ -97,10 +101,45 @@ describe("gemini_local environment diagnostics", () => {
     expect(result.status).not.toBe("fail");
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--model");
-    expect(args).toContain("gemini-2.5-pro");
+    expect(args).toContain("gemini-3.1-pro-low");
+    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--disable-slash-commands");
+    expect(args).not.toContain("--skip-trust");
+    expect(args).not.toContain("--sandbox=none");
+    expect(args).toContain("--prompt");
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps Gemini CLI flags for the default gemini command", async () => {
+    const root = path.join(os.tmpdir(), `paperclip-gemini-local-default-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const argsCapturePath = path.join(root, "args.json");
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeGeminiCommand(binDir, argsCapturePath, "gemini");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        command: "gemini",
+        cwd,
+        model: "gemini-2.5-pro",
+        env: {
+          GOOGLE_API_KEY: "test-key",
+          PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    });
+
+    expect(result.status).not.toBe("fail");
+    const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--approval-mode");
     expect(args).toContain("yolo");
-    expect(args).toContain("--prompt");
+    expect(args).toContain("--skip-trust");
+    expect(args).toContain("--sandbox=none");
+    expect(args).not.toContain("--dangerously-skip-permissions");
     await fs.rm(root, { recursive: true, force: true });
   });
 
