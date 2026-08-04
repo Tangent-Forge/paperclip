@@ -79,6 +79,10 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import {
+  listCodexModelsForContext,
+  refreshCodexModelsForContext,
+} from "../adapters/codex-models.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -1619,9 +1623,39 @@ export function agentRoutes(
       res.json(adapter.models ?? []);
       return;
     }
-    const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
+    let models: { id: string; label: string }[];
+    const agentId = asNonEmptyString(req.query.agentId);
+    if (agentId && type === "codex_local") {
+      const agent = await svc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        companyId,
+        (agent.adapterConfig ?? {}) as Record<string, unknown>,
+      );
+      const config = runtimeConfig as Record<string, unknown>;
+      const rawEnv = readObject(config.env) ?? {};
+      const env: NodeJS.ProcessEnv = {};
+      for (const [key, rawValue] of Object.entries(rawEnv)) {
+        const value = typeof rawValue === "string"
+          ? rawValue
+          : readObject(rawValue)?.value;
+        if (typeof value === "string") env[key] = value;
+      }
+      const context = {
+        command: typeof config.command === "string" ? config.command : null,
+        env,
+      };
+      models = refresh
+        ? await refreshCodexModelsForContext(context)
+        : await listCodexModelsForContext(context);
+    } else {
+      models = refresh
+        ? await refreshAdapterModels(type)
+        : await listAdapterModels(type);
+    }
     res.json(models);
   });
 
