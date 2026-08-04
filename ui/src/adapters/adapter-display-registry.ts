@@ -93,6 +93,16 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local multi-provider agent",
     icon: OpenCodeLogoIcon,
   },
+  kimi_local: {
+    label: "Kimi Code CLI",
+    description: "Local Kimi Code CLI (subscription OAuth)",
+    icon: Bot,
+  },
+  qwen_local: {
+    label: "Qwen Code CLI",
+    description: "Local Qwen Code CLI (ModelStudio Token/Coding Plan)",
+    icon: Terminal,
+  },
   hermes_local: {
     label: "Hermes Agent",
     description: "Local Hermes CLI agent",

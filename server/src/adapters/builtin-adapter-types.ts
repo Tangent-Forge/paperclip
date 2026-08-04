@@ -13,6 +13,8 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
   "hermes_local",
+  "qwen_local",
+  "kimi_local",
   "provider_router_local",
   "process",
   "http",
