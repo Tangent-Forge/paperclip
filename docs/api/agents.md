@@ -23,9 +23,12 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
-Agent detail responses intentionally suppress `adapterConfig` and `runtimeConfig`
-as redacted marker values. Use the explicit configuration route below for
-board-level configuration inspection.
+When the caller cannot read the target agent's configuration (an unauthorized
+viewer, or a low-trust agent inspecting a peer), the agent detail response
+suppresses `adapterConfig` and `runtimeConfig` as redacted marker values. Self
+lookups and authorized board/configuration operators still see full detail.
+Use the explicit configuration route below for board-level configuration
+inspection.
 
 ## Get Agent Configuration
 
