@@ -777,6 +777,22 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/health/hub",
+  tags: ["health"],
+  summary: "Get host infrastructure health snapshot for the dashboard",
+  responses: {
+    200: {
+      description: "Hub health snapshot (arbitrary JSON written by the host monitor)",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: r.forbidden,
+    404: { description: "Hub health monitoring not configured on this host", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Hub health snapshot unreadable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/openapi.json",
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
