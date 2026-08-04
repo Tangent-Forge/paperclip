@@ -53,7 +53,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -83,7 +83,7 @@ import {
   listCodexModelsForContext,
   refreshCodexModelsForContext,
 } from "../adapters/codex-models.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -3693,6 +3693,45 @@ export function agentRoutes(
     }
 
     res.json(run);
+  });
+
+  router.post("/heartbeat-runs/:runId/retention-remediation", async (req, res) => {
+    assertBoard(req);
+    const runId = req.params.runId as string;
+    const action = typeof req.body?.action === "string" ? req.body.action : "redact";
+    if (action !== "redact" && action !== "purge") {
+      throw badRequest("action must be redact or purge");
+    }
+    const rawReason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    const reason = rawReason ? redactSensitiveText(rawReason) : null;
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await heartbeat.remediateRunRetention(runId, {
+      action,
+      reason,
+    });
+
+    await logActivity(db, {
+      companyId: result.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "heartbeat.retention_remediated",
+      entityType: "heartbeat_run",
+      entityId: result.runId,
+      details: {
+        action: result.action,
+        reason,
+        logRemediation: result.logRemediation,
+        eventRowsUpdated: result.eventRowsUpdated,
+      },
+    });
+
+    res.json(result);
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
