@@ -120,6 +120,8 @@ import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
 import { MetricCard } from "@/components/MetricCard";
+import { SystemHealthCardView } from "@/components/SystemHealthCard";
+import type { HubHealth } from "@/api/systemHealth";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
@@ -219,6 +221,37 @@ const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
 /* ------------------------------------------------------------------ */
+
+// Fixtures for the System Health Card showcase. Timestamps are relative so the "stale"
+// example stays stale and the healthy ones stay fresh no matter when the page is opened.
+const DESIGN_GUIDE_HEALTH_OK: HubHealth = {
+  checked_at: new Date(Date.now() - 60_000).toISOString(),
+  overall: "UP",
+  passing: 3,
+  failing: 0,
+  checks: [
+    { name: "route:paperclip", status: "OK", detail: "responding 302", failing_minutes: 0 },
+    { name: "origin:paperclip", status: "OK", detail: "listening on 127.0.0.1:3100", failing_minutes: 0 },
+    { name: "container:tf-postgres", status: "OK", detail: "running", failing_minutes: 0 },
+  ],
+};
+
+const DESIGN_GUIDE_HEALTH_BROKEN: HubHealth = {
+  checked_at: new Date(Date.now() - 60_000).toISOString(),
+  overall: "DEGRADED",
+  passing: 2,
+  failing: 1,
+  checks: [
+    { name: "route:paperclip", status: "OK", detail: "responding 302", failing_minutes: 0 },
+    { name: "container:tf-postgres", status: "FAIL", detail: "not running", failing_minutes: 25 },
+    { name: "origin:paperclip", status: "OK", detail: "listening on 127.0.0.1:3100", failing_minutes: 0 },
+  ],
+};
+
+const DESIGN_GUIDE_HEALTH_STALE: HubHealth = {
+  ...DESIGN_GUIDE_HEALTH_OK,
+  checked_at: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+};
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -336,6 +369,7 @@ export function DesignGuide() {
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
+                "SystemHealthCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette",
               ].map((name) => (
@@ -973,6 +1007,21 @@ export function DesignGuide() {
             <MetricCard icon={CircleDot} value={48} label="Open Issues" />
             <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
             <MetricCard icon={Zap} value="99.9%" label="Uptime" />
+          </div>
+        </SubSection>
+
+        <SubSection title="System Health Card">
+          <p className="text-sm text-muted-foreground">
+            Host infrastructure status. Renders only when the server has{" "}
+            <code className="text-xs font-mono">HUB_HEALTH_JSON_PATH</code> configured.
+            Failing checks always render expanded; healthy ones collapse behind a toggle.
+            A snapshot older than 12 minutes reports itself as stale rather than showing a
+            misleading all-clear.
+          </p>
+          <div className="grid md:grid-cols-2 gap-4">
+            <SystemHealthCardView data={DESIGN_GUIDE_HEALTH_OK} />
+            <SystemHealthCardView data={DESIGN_GUIDE_HEALTH_BROKEN} />
+            <SystemHealthCardView data={DESIGN_GUIDE_HEALTH_STALE} />
           </div>
         </SubSection>
       </Section>
