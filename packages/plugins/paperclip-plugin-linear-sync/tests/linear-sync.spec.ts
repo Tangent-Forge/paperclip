@@ -15,6 +15,13 @@ import {
 } from "../src/linear-sync.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
+import {
+  evaluateCompletion,
+  parseWorkContract,
+  reconcileWorkState,
+  stableLinearWorkId,
+  type WorkContract,
+} from "../src/work-contract.js";
 import { createHmac } from "node:crypto";
 
 type IssueRecord = {
@@ -28,17 +35,39 @@ type IssueRecord = {
   originId: string | null;
 };
 
+function workContract(linearIssueId = "lin-1", overrides: Partial<WorkContract> = {}): WorkContract {
+  return {
+    version: "tf-work/v1",
+    workId: stableLinearWorkId(linearIssueId),
+    outcome: "Produce an independently reviewable delivery.",
+    classification: "standard",
+    roles: { accountableOwner: "TF Chief of Staff", executionQueue: "paperclip", evaluator: "work-evaluator" },
+    scope: { included: ["requested outcome"], excluded: ["outreach", "deployment"] },
+    executionEnvelope: { allowedActions: ["local implementation", "tests"], prohibitedActions: ["deploy", "send outreach"] },
+    requirements: ["preserve evidence"],
+    acceptance: { criteria: ["targeted tests pass"], requiredReceipts: ["test"], deliveryState: "local_commit_reviewable" },
+    dependencies: [],
+    stopConditions: ["approval boundary reached"],
+    rollback: "Revert the isolated commit.",
+    ...overrides,
+  };
+}
+
+function contractDescription(linearIssueId = "lin-1"): string {
+  return `Linear body\n\n\`\`\`tf-work-contract\n${JSON.stringify(workContract(linearIssueId), null, 2)}\n\`\`\``;
+}
+
 function linearIssue(overrides: Partial<LinearIssue> = {}): LinearIssue {
   return {
     id: "lin-1",
     identifier: "TAN-1",
     title: "Import me",
-    description: "Linear body",
+    description: contractDescription(),
     url: "https://linear.test/TAN-1",
     priority: 2,
     createdAt: "2026-05-01T00:00:00.000Z",
     updatedAt: "2026-05-02T00:00:00.000Z",
-    state: { id: "state-todo", name: "Todo" },
+    state: { id: "state-triage", name: "Triage" },
     team: { id: "team-1", key: "TAN", name: "Tangent" },
     ...overrides,
   };
@@ -166,14 +195,105 @@ describe("linear sync", () => {
   });
 
   it("normalizes config defaults", () => {
-    expect(readConfig({}).candidateStatusNames).toEqual(["Backlog", "Todo"]);
+    expect(readConfig({}).candidateStatusNames).toEqual(["Triage"]);
     expect(readConfig({ maxIssuesPerRun: 1000 }).maxIssuesPerRun).toBe(100);
   });
 
-  it("matches candidate statuses case-insensitively", () => {
-    const config = readConfig({ candidateStatusNames: ["backlog"] });
-    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Backlog" } }), config)).toBe(true);
+  it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
+    const rejected = await plugin.definition.onValidateConfig?.({
+      enabled: true,
+      companyId: "company-1",
+      linearApiKeySecretRef: "secret-ref",
+      candidateStatusNames: ["Backlog", "Todo"],
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringMatching(/triageAgentId is required/),
+        expect.stringMatching(/must contain only Triage/),
+      ]),
+    });
+
+    await expect(plugin.definition.onValidateConfig?.({
+      enabled: true,
+      companyId: "company-1",
+      linearApiKeySecretRef: "secret-ref",
+      triageAgentId: "chief-of-staff",
+      candidateStatusNames: ["Triage"],
+    })).resolves.toMatchObject({ ok: true, errors: [] });
+  });
+
+  it("admits Triage only and rejects Backlog/Todo even when configuration drifts", () => {
+    const config = readConfig({ candidateStatusNames: ["Triage", "Backlog", "Todo"] });
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), config)).toBe(true);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Backlog" } }), config)).toBe(false);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Todo" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Done" } }), config)).toBe(false);
+  });
+
+  it("runs positive and negative intake canaries without creating rejected work", async () => {
+    const { host, issues } = fakeHost();
+    const linear = fakeLinear([
+      linearIssue(),
+      linearIssue({ id: "lin-backlog", identifier: "TAN-N1", state: { name: "Backlog" }, description: contractDescription("lin-backlog") }),
+      linearIssue({ id: "lin-todo", identifier: "TAN-N2", state: { name: "Todo" }, description: contractDescription("lin-todo") }),
+      linearIssue({ id: "lin-invalid", identifier: "TAN-N3", state: { name: "Triage" }, description: "No contract" }),
+    ]);
+    const summary = await runLinearSync({
+      host,
+      linear,
+      companyId: "company-1",
+      config: readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", triageAgentId: "chief-of-staff", candidateStatusNames: ["Triage", "Backlog", "Todo"] }),
+      triggerKind: "manual",
+    });
+
+    expect(summary).toMatchObject({ importedCount: 1, contractRejectedCount: 1, failedCount: 0 });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ originId: "lin-1", status: "todo" });
+    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("evaluates delivery evidence and reconciles misleading done states", () => {
+    const contract = workContract();
+    expect(parseWorkContract(contractDescription())).toEqual({ valid: true, contract });
+    expect(evaluateCompletion(contract, {
+      deliveryState: "local_artifact_untracked",
+      receipts: [{ kind: "comment", ref: "tracker-comment" }],
+    })).toMatchObject({ complete: false, missingReceipts: ["test"] });
+
+    expect(reconcileWorkState({
+      workId: contract.workId,
+      linearState: "Done",
+      admissionReceipt: "linear-triage:lin-1",
+      paperclipState: "done",
+      claimedDeliveryState: "deployed",
+      contract,
+      evidence: { deliveryState: "local_commit_reviewable", receipts: [{ kind: "test", ref: "vitest:pass" }] },
+    })).toMatchObject({
+      truthfulState: "state_conflict",
+      actualDeliveryState: "local_commit_reviewable",
+      conflicts: expect.arrayContaining([expect.stringMatching(/claimed delivery deployed exceeds evidenced delivery/)]),
+    });
+
+    expect(reconcileWorkState({
+      workId: contract.workId,
+      linearState: "Triage",
+      paperclipState: null,
+      contract: null,
+      evidence: { deliveryState: "defined", receipts: [] },
+    })).toMatchObject({ admitted: false, truthfulState: "not_admitted" });
+
+    expect(reconcileWorkState({
+      workId: contract.workId,
+      linearState: "Done",
+      admissionReceipt: "linear-triage:lin-1",
+      paperclipState: "done",
+      contract: null,
+      evidence: { deliveryState: "defined", receipts: [] },
+    })).toMatchObject({
+      truthfulState: "state_conflict",
+      conflicts: expect.arrayContaining(["terminal tracker state has no work contract to evaluate"]),
+    });
   });
 
   it("imports a Linear issue once and dedupes by origin id on repeated runs", async () => {

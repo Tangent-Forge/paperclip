@@ -38,10 +38,10 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       enabled: { type: "boolean", default: false },
       companyId: { type: "string", description: "Company to sync when the scheduled poller runs." },
-      linearApiKeySecretRef: { type: "string", description: "Secret reference for the Linear API key." },
-      linearWebhookSigningSecretRef: { type: "string", description: "Optional secret reference used to verify Linear webhook signatures." },
+      linearApiKeySecretRef: { type: "string", format: "secret-ref", description: "Secret reference for the Linear API key." },
+      linearWebhookSigningSecretRef: { type: "string", format: "secret-ref", description: "Optional secret reference used to verify Linear webhook signatures." },
       linearGraphqlUrl: { type: "string", default: "https://api.linear.app/graphql" },
-      candidateStatusNames: { type: "array", items: { type: "string" }, default: ["Backlog", "Todo"] },
+      candidateStatusNames: { type: "array", items: { type: "string" }, default: ["Triage"] },
       maxIssuesPerRun: { type: "integer", minimum: 1, maximum: 100, default: 25 },
       projectId: { type: "string", description: "Optional Paperclip project id for imported intake items." },
       triageAgentId: { type: "string", description: "Optional Paperclip agent woken exactly once for each new imported issue." },
@@ -57,7 +57,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOB_KEYS.poll,
       displayName: "Poll Linear intake",
-      description: "Imports bounded Backlog/Todo Linear issues into Paperclip with explicit sync state.",
+      description: "Imports bounded, contract-valid Linear Triage issues into Paperclip with explicit sync state.",
       schedule: "*/30 * * * *"
     }
   ],
@@ -94,6 +94,14 @@ const manifest: PaperclipPluginManifestV1 = {
       routeKey: API_ROUTE_KEYS.portfolioInventory,
       method: "GET",
       path: "/companies/:companyId/portfolio-inventory",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "path", param: "companyId" }
+    },
+    {
+      routeKey: API_ROUTE_KEYS.reconcileWorkState,
+      method: "POST",
+      path: "/companies/:companyId/reconcile-work-state",
       auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "path", param: "companyId" }

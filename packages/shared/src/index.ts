@@ -1450,3 +1450,22 @@ export {
   adapterRegistrySchema,
   type AdapterRegistryEntryParsed,
 } from "./validators/adapter-registry.js";
+
+export {
+  DELIVERY_STATES,
+  WORK_CONTRACT_FENCE,
+  WORK_CONTRACT_VERSION,
+  evaluateAdmission,
+  evaluateCompletion,
+  parseWorkContract,
+  reconcileWorkState,
+  stableLinearAdmissionReceipt,
+  stableLinearWorkId,
+  type AdmissionResult,
+  type CompletionEvaluation,
+  type CompletionEvidence,
+  type ContractParseResult,
+  type DeliveryState,
+  type ReconciledWorkState,
+  type WorkContract,
+} from "./work-contract.js";
