@@ -29,13 +29,8 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
-  observeIssueGraphLiveness,
-} from "./liveness-observer.js";
-export {
-  LIVENESS_V2_DEFAULTS,
-  applyPendingLivenessEffects,
-  reconcileIssueGraphLivenessV2,
-} from "./liveness-v2.js";
+  recoveryService,
+} from "./service.js";
 export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
