@@ -203,9 +203,10 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     });
 
     expect(badges).toEqual({
-      inbox: 3,
+      inbox: 2,
       approvals: 1,
       failedRuns: 1,
+      agentOperations: 1,
       joinRequests: 0,
     });
   });

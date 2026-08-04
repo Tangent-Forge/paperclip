@@ -729,6 +729,13 @@
       "when": 1781490100001,
       "tag": "0103_agent_wakeup_active_idempotency_uq",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1785391098075,
+      "tag": "0104_evidence_provenance_registry",
+      "breakpoints": true
     }
   ]
 }

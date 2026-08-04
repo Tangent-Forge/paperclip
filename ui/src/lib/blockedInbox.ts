@@ -106,6 +106,34 @@ export interface BlockedInboxIssueRow {
   stoppedAtMs: number | null;
 }
 
+export type BlockedInboxLane = "human" | "agent_operations" | "external";
+
+export interface BlockedInboxLaneCounts {
+  human: number;
+  agentOperations: number;
+  external: number;
+}
+
+export function classifyBlockedInboxLane(attention: Pick<IssueBlockedInboxAttention, "owner" | "reason">): BlockedInboxLane {
+  const ownerType = attention.owner.type;
+  if (ownerType === "user" || ownerType === "board") return "human";
+  if (ownerType === "external") return "external";
+  return "agent_operations";
+}
+
+export function countBlockedInboxLanes(issues: readonly Issue[]): BlockedInboxLaneCounts {
+  const counts: BlockedInboxLaneCounts = { human: 0, agentOperations: 0, external: 0 };
+  for (const issue of issues) {
+    const attention = issue.blockedInboxAttention;
+    if (!attention) continue;
+    const lane = classifyBlockedInboxLane(attention);
+    if (lane === "human") counts.human += 1;
+    else if (lane === "external") counts.external += 1;
+    else counts.agentOperations += 1;
+  }
+  return counts;
+}
+
 export type BlockedInboxGroupBy = "blocker_type" | "none";
 export type BlockedInboxSort = "urgency" | "most_recent" | "longest_stopped";
 
