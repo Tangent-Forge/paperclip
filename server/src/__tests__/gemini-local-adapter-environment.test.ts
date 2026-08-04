@@ -90,6 +90,13 @@ describe("gemini_local environment diagnostics", () => {
         cwd,
         model: "gemini-2.5-pro",
         yolo: true,
+        extraArgs: [
+          "--model", "evil-model",
+          "--output-format=json",
+          "--prompt=override",
+          "--conversation", "evil-session",
+          "--custom-flag", "kept",
+        ],
         env: {
           GOOGLE_API_KEY: "test-key",
           PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
@@ -106,6 +113,12 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).toContain("--disable-slash-commands");
     expect(args).not.toContain("--skip-trust");
     expect(args).not.toContain("--sandbox=none");
+    expect(args).not.toContain("evil-model");
+    expect(args).not.toContain("--output-format=json");
+    expect(args).not.toContain("--prompt=override");
+    expect(args).not.toContain("evil-session");
+    expect(args).toContain("--custom-flag");
+    expect(args).toContain("kept");
     expect(args).toContain("--prompt");
     await fs.rm(root, { recursive: true, force: true });
   });

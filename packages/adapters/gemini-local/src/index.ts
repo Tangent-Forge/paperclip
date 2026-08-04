@@ -33,20 +33,29 @@ export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): s
   if (commandName !== "agy") return args;
 
   const sanitized: string[] = [];
+  const valueTakingFlags = new Set([
+    "--approval-mode",
+    "--conversation",
+    "--model",
+    "--output-format",
+    "--prompt",
+    "--resume",
+  ]);
+  const adapterOwnedFlags = new Set([
+    "--dangerously-skip-permissions",
+    "--sandbox",
+    "--sandbox=none",
+    "--skip-trust",
+  ]);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--approval-mode" || arg === "--resume") {
+    const flag = arg.split("=", 1)[0];
+    if (valueTakingFlags.has(arg)) {
       const nextArg = args[index + 1];
       if (nextArg && !nextArg.startsWith("-")) index += 1;
       continue;
     }
-    if (
-      arg === "--skip-trust" ||
-      arg === "--sandbox=none" ||
-      arg.startsWith("--skip-trust=") ||
-      arg.startsWith("--sandbox=none=")
-    ) continue;
-    if (arg.startsWith("--approval-mode=") || arg.startsWith("--resume=")) continue;
+    if (valueTakingFlags.has(flag) || adapterOwnedFlags.has(arg) || adapterOwnedFlags.has(flag)) continue;
     sanitized.push(arg);
   }
   return sanitized;

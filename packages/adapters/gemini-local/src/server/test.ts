@@ -145,6 +145,14 @@ export async function testEnvironment(
   const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || (!targetIsRemote && process.env.GOOGLE_GENAI_USE_GCA === "true");
   const commandIsAgy = commandLooksLike(command, "agy");
   const hasAgyOAuth = !targetIsRemote && commandIsAgy ? await hasAgyOAuthState() : false;
+  if (targetIsRemote && commandIsAgy) {
+    checks.push({
+      code: "gemini_antigravity_oauth_remote_unverified",
+      level: "info",
+      message: "Remote agy authentication is resolved by the remote environment; local Antigravity OAuth state is not used.",
+      hint: "Authenticate Antigravity on the remote host before running the hello probe.",
+    });
+  }
   if (
     isNonEmpty(configGoogleApiKey) ||
     isNonEmpty(hostGoogleApiKey) ||
