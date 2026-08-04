@@ -39,6 +39,7 @@ export const issues = pgTable(
     executionRunId: uuid("execution_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     executionAgentNameKey: text("execution_agent_name_key"),
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
+    livenessIncidentId: uuid("liveness_incident_id"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
     issueNumber: integer("issue_number"),
@@ -116,6 +117,12 @@ export const issues = pgTable(
           and ${table.originFingerprint} <> 'default'
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    issuesLivenessIncidentUq: uniqueIndex("issues_liveness_incident_uq")
+      .on(table.livenessIncidentId)
+      .where(
+        sql`${table.originKind} = 'harness_liveness_escalation'
+          and ${table.livenessIncidentId} is not null`,
       ),
     activeStaleRunEvaluationIdx: uniqueIndex("issues_active_stale_run_evaluation_uq")
       .on(table.companyId, table.originKind, table.originId)

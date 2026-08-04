@@ -32,6 +32,7 @@ export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
+export { livenessIncidents, livenessReconcileRuns, livenessEffectOutbox, livenessSentinelSupersessions } from "./liveness_incidents.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
