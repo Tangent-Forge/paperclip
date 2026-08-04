@@ -157,7 +157,12 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import {
+  reconcileIssueGraphLivenessV2,
+  LIVENESS_V2_DEFAULTS,
+} from "./recovery/liveness-v2.js";
 import { productivityReviewService } from "./productivity-review.js";
+
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -7752,7 +7757,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     force?: boolean;
     lookbackHours?: number;
   }) {
-    return recovery.reconcileIssueGraphLiveness(opts);
+    return reconcileIssueGraphLivenessV2(db, {
+      now: opts?.force ? new Date() : new Date(),
+      companyId: null,
+    });
   }
 
   async function updateRuntimeState(
