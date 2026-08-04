@@ -2857,6 +2857,21 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/heartbeat-runs/{runId}/retention-remediation",
+  tags: ["runs"],
+  summary: "Redact or purge sensitive values retained on a heartbeat run",
+  request: {
+    params: z.object({ runId: z.string() }),
+    body: jsonBody(z.object({
+      action: z.enum(["redact", "purge"]).optional(),
+      reason: z.string().optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/heartbeat-runs/{runId}/watchdog-decisions",
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
