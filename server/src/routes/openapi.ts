@@ -3637,6 +3637,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "patch",
+  path: "/api/plugins/{pluginId}/config",
+  tags: ["plugins"],
+  summary: "Patch plugin config without replacing existing values",
+  request: {
+    params: z.object({ pluginId: z.string() }),
+    body: jsonBody(z.object({ configJson: z.record(z.unknown()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/plugins/{pluginId}/config/test",
   tags: ["plugins"],

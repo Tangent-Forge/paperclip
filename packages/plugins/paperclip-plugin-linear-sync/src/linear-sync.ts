@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Issue } from "@paperclipai/plugin-sdk";
 import { ORIGIN_KIND_INCIDENT, ORIGIN_KIND_LINEAR_ISSUE, PLUGIN_ID } from "./constants.js";
 import type { LinearPaginationResult, PortfolioInventoryIssue, PortfolioInventoryProject } from "./portfolio-types.js";
+import { evaluateAdmission, stableLinearAdmissionReceipt, stableLinearWorkId, type WorkContract } from "./work-contract.js";
 
 export type LinearSyncConfig = {
   enabled: boolean;
@@ -42,6 +43,7 @@ export type SyncSummary = {
   importedCount: number;
   updatedCount: number;
   skippedDuplicateCount: number;
+  contractRejectedCount: number;
   failedCount: number;
   failures: string[];
   disabled?: boolean;
@@ -128,7 +130,7 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
     linearApiKeySecretRef: str(raw.linearApiKeySecretRef),
     linearWebhookSigningSecretRef: str(raw.linearWebhookSigningSecretRef),
     linearGraphqlUrl: str(raw.linearGraphqlUrl) ?? "https://api.linear.app/graphql",
-    candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : ["Backlog", "Todo"],
+    candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : ["Triage"],
     maxIssuesPerRun: int(raw.maxIssuesPerRun, 25, 1, 100),
     projectId: str(raw.projectId),
     triageAgentId: str(raw.triageAgentId),
@@ -143,7 +145,10 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
 
 export function isCandidateLinearIssue(issue: LinearIssue, config: LinearSyncConfig): boolean {
   const stateName = issue.state?.name?.trim().toLowerCase();
-  return Boolean(stateName && config.candidateStatusNames.some((name) => name.trim().toLowerCase() === stateName));
+  return Boolean(
+    stateName === "triage"
+    && config.candidateStatusNames.some((name) => name.trim().toLowerCase() === "triage"),
+  );
 }
 
 export function verifyLinearSignature(input: { rawBody: string; headers: Record<string, string | string[]>; secret: string }): boolean {
@@ -187,12 +192,17 @@ function linearTimestamp(value: string | null): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-function paperclipDescription(issue: LinearIssue): string {
+function paperclipDescription(issue: LinearIssue, contract: WorkContract | null): string {
   const lines = [
     `Imported from Linear issue ${issue.identifier ?? issue.id}.`,
+    `Stable work id: ${stableLinearWorkId(issue.id)}.`,
+    `Admission receipt: ${stableLinearAdmissionReceipt(issue.id)}.`,
     issue.url ? `Linear URL: ${issue.url}` : null,
     issue.state?.name ? `Linear status at import: ${issue.state.name}` : null,
     issue.team?.key || issue.team?.name ? `Linear team: ${issue.team?.key ?? issue.team?.name}` : null,
+    contract ? `Accountable owner: ${contract.roles.accountableOwner}` : null,
+    contract ? `Execution queue: ${contract.roles.executionQueue}` : null,
+    contract ? `Required delivery state: ${contract.acceptance.deliveryState}` : null,
     "",
     issue.description?.trim() || "No Linear description provided.",
   ].filter((line): line is string => line !== null);
@@ -252,9 +262,24 @@ export async function importLinearIssue(input: {
   config: LinearSyncConfig;
   issue: LinearIssue;
   actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null };
-}): Promise<"imported" | "updated" | "duplicate_skipped" | "not_candidate"> {
+}): Promise<"imported" | "updated" | "duplicate_skipped" | "not_candidate" | "contract_rejected"> {
   const { host, linear, companyId, config, issue, actor } = input;
   if (!isCandidateLinearIssue(issue, config)) return "not_candidate";
+
+  const admission = evaluateAdmission({
+    linearState: issue.state?.name,
+    linearIssueId: issue.id,
+    description: issue.description,
+  });
+  if (!admission.admitted) {
+    host.logger?.warn("Linear intake rejected by work contract evaluator", {
+      linearIssueId: issue.id,
+      linearIdentifier: issue.identifier ?? "unknown",
+      reason: admission.reason,
+      errors: admission.errors,
+    });
+    return "contract_rejected";
+  }
 
   const link = await reserveLink(host, companyId, issue);
   const existingByOrigin = await host.issues.list({
@@ -275,7 +300,7 @@ export async function importLinearIssue(input: {
     if (!shouldUpdateLinkedIssue(link, issue)) return "duplicate_skipped";
     await host.issues.update(existing.id, {
       title: `[${issue.identifier ?? "Linear"}] ${issue.title}`,
-      description: paperclipDescription(issue),
+      description: paperclipDescription(issue, admission.contract),
       originKind: ORIGIN_KIND_LINEAR_ISSUE,
       originId: issue.id,
     }, companyId, actor);
@@ -287,7 +312,7 @@ export async function importLinearIssue(input: {
     companyId,
     projectId: config.projectId ?? undefined,
     title: `[${issue.identifier ?? "Linear"}] ${issue.title}`,
-    description: paperclipDescription(issue),
+    description: paperclipDescription(issue, admission.contract),
     status: config.triageAgentId ? "todo" : "backlog",
     priority: config.defaultPriority,
     assigneeAgentId: config.triageAgentId ?? undefined,
@@ -301,7 +326,7 @@ export async function importLinearIssue(input: {
     await host.issues.requestWakeup(created.id, companyId, {
       reason: "linear_imported_intake_triage",
       contextSource: PLUGIN_ID,
-      idempotencyKey: `linear-triage:${issue.id}`,
+      idempotencyKey: stableLinearAdmissionReceipt(issue.id),
       ...actor,
     });
   }
@@ -395,18 +420,18 @@ export async function runLinearSync(input: {
   const startedAt = new Date().toISOString();
   const state = await getState(host, companyId);
   if (!config.enabled) {
-    const summary: SyncSummary = { triggerKind, status: "skipped", startedAt, finishedAt: new Date().toISOString(), importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, failedCount: 0, failures: [], disabled: true };
+    const summary: SyncSummary = { triggerKind, status: "skipped", startedAt, finishedAt: new Date().toISOString(), importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, contractRejectedCount: 0, failedCount: 0, failures: [], disabled: true };
     await recordRun(host, companyId, summary);
     await setState(host, companyId, { ...state, lastStartedAt: startedAt, lastFinishedAt: summary.finishedAt, lastSummary: summary });
     return summary;
   }
   if (triggerKind === "poll" && state.cooldownUntil && new Date(state.cooldownUntil).getTime() > Date.now()) {
-    const summary: SyncSummary = { triggerKind, status: "skipped", startedAt, finishedAt: new Date().toISOString(), importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, failedCount: 0, failures: [], cooldownUntil: state.cooldownUntil };
+    const summary: SyncSummary = { triggerKind, status: "skipped", startedAt, finishedAt: new Date().toISOString(), importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, contractRejectedCount: 0, failedCount: 0, failures: [], cooldownUntil: state.cooldownUntil };
     await recordRun(host, companyId, summary, { reason: "cooldown" });
     return summary;
   }
 
-  const summary: SyncSummary = { triggerKind, status: "success", startedAt, finishedAt: startedAt, importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, failedCount: 0, failures: [] };
+  const summary: SyncSummary = { triggerKind, status: "success", startedAt, finishedAt: startedAt, importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, contractRejectedCount: 0, failedCount: 0, failures: [] };
   try {
     const updatedAfter = state.lastSuccessAt
       ? new Date(Math.max(0, new Date(state.lastSuccessAt).getTime() - config.successLookbackMinutes * 60_000)).toISOString()
@@ -418,6 +443,7 @@ export async function runLinearSync(input: {
         if (result === "imported") summary.importedCount += 1;
         else if (result === "updated") summary.updatedCount += 1;
         else if (result === "duplicate_skipped") summary.skippedDuplicateCount += 1;
+        else if (result === "contract_rejected") summary.contractRejectedCount += 1;
       } catch (err) {
         summary.failedCount += 1;
         summary.failures.push(`${issue.identifier ?? issue.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -425,9 +451,9 @@ export async function runLinearSync(input: {
     }
     if (summary.failedCount > 0) throw new Error(summary.failures.join("; "));
     summary.finishedAt = new Date().toISOString();
-    await recordRun(host, companyId, summary, { updatedAfter, candidateStatusNames: config.candidateStatusNames });
+    await recordRun(host, companyId, summary, { updatedAfter, candidateStatusNames: config.candidateStatusNames, contractRejectedCount: summary.contractRejectedCount });
     await setState(host, companyId, { ...state, lastStartedAt: startedAt, lastFinishedAt: summary.finishedAt, lastSuccessAt: summary.finishedAt, lastSummary: summary, consecutiveFailures: 0, cooldownUntil: null });
-    await host.activity.log({ companyId, message: `Linear sync completed: ${summary.importedCount} imported, ${summary.updatedCount} updated, ${summary.skippedDuplicateCount} duplicates skipped.`, metadata: summary });
+    await host.activity.log({ companyId, message: `Linear sync completed: ${summary.importedCount} imported, ${summary.updatedCount} updated, ${summary.skippedDuplicateCount} duplicates skipped, ${summary.contractRejectedCount} rejected by contract.`, metadata: summary });
     await host.metrics?.write("linear_sync.imported", summary.importedCount, { triggerKind });
     await host.metrics?.write("linear_sync.failures", summary.failedCount, { triggerKind });
     await host.telemetry?.track("linear-sync-completed", { triggerKind, imported: summary.importedCount, updated: summary.updatedCount, skipped: summary.skippedDuplicateCount });
@@ -460,12 +486,13 @@ export async function handleWebhookIssue(input: {
   const result = await importLinearIssue({ ...input, issue: linearIssue });
   const summary: SyncSummary = {
     triggerKind: "webhook",
-    status: result === "not_candidate" ? "skipped" : "success",
+    status: result === "not_candidate" || result === "contract_rejected" ? "skipped" : "success",
     startedAt,
     finishedAt: new Date().toISOString(),
     importedCount: result === "imported" ? 1 : 0,
     updatedCount: result === "updated" ? 1 : 0,
     skippedDuplicateCount: result === "duplicate_skipped" ? 1 : 0,
+    contractRejectedCount: result === "contract_rejected" ? 1 : 0,
     failedCount: 0,
     failures: [],
   };
