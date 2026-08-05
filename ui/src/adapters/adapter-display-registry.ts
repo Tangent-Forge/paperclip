@@ -83,10 +83,25 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Grok Build agent",
     icon: Bot,
   },
+  devin_local: {
+    label: "Devin",
+    description: "Official Devin CLI agent",
+    icon: Bot,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
     icon: OpenCodeLogoIcon,
+  },
+  kimi_local: {
+    label: "Kimi Code CLI",
+    description: "Local Kimi Code CLI (subscription OAuth)",
+    icon: Bot,
+  },
+  qwen_local: {
+    label: "Qwen Code CLI",
+    description: "Local Qwen Code CLI (ModelStudio Token/Coding Plan)",
+    icon: Terminal,
   },
   hermes_local: {
     label: "Hermes Agent",
