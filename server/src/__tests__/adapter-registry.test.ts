@@ -521,7 +521,7 @@ describe("server adapter registry", () => {
     expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
   });
 
-  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
+  it("overrides an explicit Hermes Paperclip API key with the run-scoped JWT", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -549,7 +549,7 @@ describe("server adapter registry", () => {
     });
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
     // No custom promptTemplate was set — Hermes must use its built-in default.
     // Setting promptTemplate here would replace the full default with just the auth guard text,
