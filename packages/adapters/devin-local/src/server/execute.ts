@@ -10,7 +10,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const target = readAdapterExecutionTarget({ executionTarget: ctx.executionTarget, legacyRemoteExecution: ctx.executionTransport?.remoteExecution });
   const cwd = asString(config.cwd, process.cwd()).trim() || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  const command = "devin";
+  // Restores the override dropped in e8af4ed4 ("activate Devin adapter"). The
+  // systemd user PATH does not include ~/.local/bin, where the Devin CLI installs,
+  // so a bare "devin" fails with ENOENT under the supervised service.
+  const command = asString(config.command, "devin").trim() || "devin";
   const model = asString(config.model, "").trim();
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(target, asNumber(config.timeoutSec, 900));
   const template = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -18,8 +21,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
   for (const [key, value] of Object.entries(envConfig)) if (typeof value === "string") env[key] = value;
-  const args = ["--print", ...(model ? ["--model", model] : []), prompt];
-  await onMeta?.({ adapterType: "devin_local", command, cwd, commandArgs: ["--print", ...(model ? ["--model", model] : []), `<prompt ${prompt.length} chars>`], env, prompt, context });
+  // Devin's permission modes: "auto" (default) auto-approves read-only tools only,
+  // "accept-edits" adds workspace edits, "smart" adds fast-model-judged actions,
+  // "dangerous" auto-approves everything. Paperclip's generated prompt instructs
+  // agents to run shell commands (curl against the Paperclip API), so anything
+  // below full auto-approve stalls on a prompt that --print mode cannot render.
+  // Matches the unattended posture of the sibling adapters (gemini passes
+  // --dangerously-skip-permissions). Tighten via config for hardened lanes.
+  const permissionMode = asString(config.permissionMode, "dangerous").trim() || "dangerous";
+  // Trust defaults to true in every mode, and print mode cannot show the trust
+  // prompt — it just fails in an untrusted directory. Paperclip runs an
+  // operator-approved cwd, so skip the check unless explicitly re-enabled.
+  const respectWorkspaceTrust = config.respectWorkspaceTrust === true;
+  const sandbox = config.sandbox === true;
+
+  const flags = [
+    "--print",
+    "--permission-mode", permissionMode,
+    ...(respectWorkspaceTrust ? [] : ["--respect-workspace-trust", "false"]),
+    ...(model ? ["--model", model] : []),
+    ...(sandbox ? ["--sandbox"] : []),
+  ];
+  // "--" terminates option parsing. Without it a prompt beginning with "-" is
+  // parsed as flags, and --print's optional inline value can swallow the prompt.
+  const args = [...flags, "--", prompt];
+  await onMeta?.({ adapterType: "devin_local", command, cwd, commandArgs: [...flags, "--", `<prompt ${prompt.length} chars>`], env, prompt, context });
   const proc = await runAdapterExecutionTargetProcess(runId, target, command, args, { cwd, env, timeoutSec, graceSec: 15, onSpawn, onLog });
   const failed = (proc.exitCode ?? 0) !== 0;
   return {

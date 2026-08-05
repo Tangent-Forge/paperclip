@@ -36,10 +36,17 @@ export function parseDevinModelsJson(input: string): AdapterModel[] {
   return dedupe(result);
 }
 
-export async function listDevinModels(forceRefresh = false): Promise<AdapterModel[]> {
+/**
+ * `command` lets callers that know the agent's adapterConfig pass the configured
+ * executable. It matters because the systemd user PATH does not include
+ * ~/.local/bin, where the Devin CLI installs, so a bare "devin" is unresolvable
+ * under the supervised service. Callers without config (the adapter's listModels/
+ * refreshModels) keep the bare default and degrade to the cache on failure.
+ */
+export async function listDevinModels(forceRefresh = false, command = "devin"): Promise<AdapterModel[]> {
   if (!forceRefresh && cache && cache.expiresAt > Date.now()) return cache.models;
   try {
-    const result = await execFileAsync("devin", ["models", "list", "--format", "json"], {
+    const result = await execFileAsync(command, ["models", "list", "--format", "json"], {
       timeout: 10_000,
       maxBuffer: 2 * 1024 * 1024,
       env: process.env,
