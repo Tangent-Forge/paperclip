@@ -218,6 +218,60 @@ describe("codex managed home", () => {
     }
   });
 
+  // Regression for the 2026-07-30 recovery: a runtime-injected CODEX_HOME
+  // inside the Paperclip instance tree must not be treated as the shared auth
+  // source, or the managed home seeds from the agent's empty home and Codex
+  // fails with 401 "Missing bearer".
+  it("seedCodexHome ignores a Paperclip-managed CODEX_HOME and falls back to ~/.codex", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-managed-"));
+    const previousHome = process.env.HOME;
+    try {
+      process.env.HOME = root;
+
+      const paperclipHome = path.join(root, "paperclip-home");
+      const managedOverrideHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "agents",
+        "agent-1",
+        "codex-home",
+      );
+      const managedCodexHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "codex-home",
+      );
+      const sharedCodexHome = path.join(root, ".codex");
+      const sharedAuth = path.join(sharedCodexHome, "auth.json");
+      const managedAuth = path.join(managedCodexHome, "auth.json");
+
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+
+      await seedCodexHome(
+        managedCodexHome,
+        {
+          HOME: root,
+          CODEX_HOME: managedOverrideHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+        },
+        async () => {},
+      );
+
+      expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(sharedAuth));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Acceptance for TAN-487: seeding an override home must leave a symlink, not a
   // copy, even when a stale regular-file auth.json was already present — copies
   // break on the next run once the source refresh token rotates (#5028).

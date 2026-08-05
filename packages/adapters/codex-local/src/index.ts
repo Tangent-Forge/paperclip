@@ -5,7 +5,10 @@ export const label = "Codex (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
+// Paperclip's routine/default selection is intentionally pinned to the mini lane. The Codex
+// picker below remains a separate, curated surface; model IDs that are only being evaluated or
+// retained for a specific workload must not be added there merely because an API catalog lists them.
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.4-mini";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
 
@@ -24,23 +27,20 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
   return Boolean(normalizedModel) && !isCodexLocalKnownModel(normalizedModel);
 }
 
+export function resolveCodexLocalModel(model: string | null | undefined): string {
+  return normalizeModelId(model) || DEFAULT_CODEX_LOCAL_MODEL;
+}
+
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
-  if (isCodexLocalManualModel(model)) return true;
-  const normalizedModel = typeof model === "string" ? model.trim() : "";
-  // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // On subscription auth that's gpt-5.5 (fast-mode capable); manual model IDs
-  // are also treated as supported. Match that policy: pass the fast-mode
-  // overrides through and let the CLI reject them if the chosen model can't use them.
-  if (!normalizedModel) return true;
+  const resolvedModel = resolveCodexLocalModel(model);
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
-    normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
+    resolvedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
   );
 }
 
 export const models = [
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -54,12 +54,8 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
-    adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
-      modelReasoningEffort: "high",
-    },
+    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
+    adapterConfig: { model: DEFAULT_CODEX_LOCAL_MODEL },
     source: "adapter_default",
   },
 ];
@@ -75,7 +71,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5 and GPT-5.4
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -105,7 +101,8 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- Fast mode is supported on GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-5.5 and GPT-5.4. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Workload routing policy: use \`gpt-5.4-mini\` for routine Paperclip work; retain \`gpt-5.3-codex-spark\` as a manually configured interactive low-latency choice only; evaluate \`gpt-5.6-luna\` and \`gpt-5.6-terra\` as manually configured high-volume and balanced-quality candidates, respectively. These candidate IDs are intentionally not added to the curated model picker.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - When executionConstraints.inheritProcessEnv=false, Codex runs with envMode=replace (no host env merge) and a minimal PATH/HOME plus configured env only.
 - When executionConstraints.network=deny, Paperclip forces --sandbox (default workspace-write) and rejects bypass flags.

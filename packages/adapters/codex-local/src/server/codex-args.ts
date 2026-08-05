@@ -2,6 +2,7 @@ import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/s
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
+  resolveCodexLocalModel,
 } from "../index.js";
 
 export type BuildCodexExecArgsResult = {
@@ -78,7 +79,7 @@ export function buildCodexExecArgs(
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const constraints = asRecord(record.executionConstraints);
-  const model = asString(record.model, "").trim();
+  const model = resolveCodexLocalModel(record.model as string | null | undefined);
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),

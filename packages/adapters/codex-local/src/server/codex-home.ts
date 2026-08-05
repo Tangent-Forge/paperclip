@@ -12,6 +12,11 @@ function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function pathWithinOrEqual(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
@@ -103,6 +108,26 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   await fs.copyFile(source, target);
 }
 
+function resolveSharedCodexSourceHomeDir(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const fallback = path.join(os.homedir(), ".codex");
+  const fromEnv = nonEmpty(env.CODEX_HOME);
+  if (!fromEnv) return fallback;
+
+  const resolved = path.resolve(fromEnv);
+  const instanceRoot = path.resolve(
+    resolvePaperclipInstanceRootForAdapter({
+      homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env,
+    }),
+  );
+
+  if (pathWithinOrEqual(resolved, instanceRoot)) return fallback;
+  return resolved;
+}
+
 /**
  * Writes an `auth.json` containing only `OPENAI_API_KEY` so the codex CLI can
  * authenticate via API key. Overwrites any existing file or symlink at that
@@ -135,7 +160,7 @@ export async function seedCodexHome(
 ): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
-  const sourceHome = resolveSharedCodexHomeDir(env);
+  const sourceHome = resolveSharedCodexSourceHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
   await fs.mkdir(targetHome, { recursive: true });
