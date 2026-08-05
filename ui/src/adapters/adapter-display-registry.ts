@@ -74,8 +74,8 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     recommended: true,
   },
   gemini_local: {
-    label: "Gemini CLI",
-    description: "Local Gemini agent",
+    label: "Gemini / Antigravity CLI",
+    description: "Local Gemini or Antigravity agent",
     icon: Gem,
   },
   grok_local: {

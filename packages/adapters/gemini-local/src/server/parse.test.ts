@@ -122,6 +122,21 @@ describe("parseGeminiJsonl", () => {
     expect(result.sessionId).toBe("legacy-session");
   });
 
+  it("parses Antigravity agy stream-json events", () => {
+    const stdout = [
+      JSON.stringify({ event: "init", conversation_id: "agy-session" }),
+      JSON.stringify({ event: "step_update", step_update: { text_delta: "hello", usage: { input_tokens: 10, output_tokens: 2 } } }),
+      JSON.stringify({ event: "result", result: { conversation_id: "agy-session", status: "SUCCESS", response: "hello\n" } }),
+    ].join("\n");
+
+    const result = parseGeminiJsonl(stdout);
+    expect(result.sessionId).toBe("agy-session");
+    expect(result.summary).toBe("hello");
+    expect(result.errorMessage).toBeNull();
+    expect(result.usage.inputTokens).toBe(10);
+    expect(result.usage.outputTokens).toBe(2);
+  });
+
   it("flags result events with status=error", () => {
     const stdout = [
       JSON.stringify({
