@@ -15,6 +15,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "hermes_local",
   "qwen_local",
   "kimi_local",
+  "devin_local",
   "provider_router_local",
   "process",
   "http",
