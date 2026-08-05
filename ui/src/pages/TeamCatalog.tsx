@@ -18,10 +18,9 @@ import type {
   CompanyPortabilityAdapterOverride,
   CompanyPortabilityCollisionStrategy,
 } from "@paperclipai/shared";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useAdapterTypeOptions } from "../adapters/use-adapter-type-options";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -1718,6 +1717,18 @@ export function StepPreview({
   onToggleSecretVisibility?: (key: string) => void;
   onRetry: () => void;
 }) {
+  // Sourced from the running server's registry, not AGENT_ADAPTER_TYPES — that
+  // constant omits builtin types the server serves (grok_local, hermes_local,
+  // janitor_local, …) and every external adapter. Preserving the manifest's own
+  // adapter types keeps an override selectable even when the running build no
+  // longer ships it, instead of blanking the Select.
+  const adapterOptions = useAdapterTypeOptions({
+    preserve: [
+      ...Object.values(adapterOverrides),
+      ...(result?.portabilityPreview?.manifest?.agents ?? []).map((a) => a.adapterType),
+    ],
+  });
+
   if (loading && !result) {
     return (
       <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
@@ -1849,8 +1860,8 @@ export function StepPreview({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {AGENT_ADAPTER_TYPES.map((type) => (
-                      <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
+                    {adapterOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
