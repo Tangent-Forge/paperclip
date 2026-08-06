@@ -70,6 +70,32 @@ describe("gemini model discovery", () => {
     expect(models.map((m) => m.id)).toEqual(geminiFallbackModels.map((m) => m.id));
   });
 
+  it("layers agent env overrides onto process.env instead of replacing it", async () => {
+    // Regression: subscription-isolated agents carry `env: {}`, which is truthy.
+    // `context.env ?? process.env` therefore handed agy an empty environment and it
+    // died with "$HOME is not defined", silently degrading to the static catalog.
+    let seen: NodeJS.ProcessEnv | null = null;
+    setGeminiModelsRunnerForTests(async (_cmd, env) => {
+      seen = env;
+      return AGY_OUTPUT;
+    });
+    await listGeminiModelsForContext({ command: AGY, env: {} });
+    expect(seen).not.toBeNull();
+    expect(seen!.HOME).toBe(process.env.HOME);
+    expect(seen!.PATH).toBe(process.env.PATH);
+  });
+
+  it("still lets an explicit override win over the inherited value", async () => {
+    let seen: NodeJS.ProcessEnv | null = null;
+    setGeminiModelsRunnerForTests(async (_cmd, env) => {
+      seen = env;
+      return AGY_OUTPUT;
+    });
+    await listGeminiModelsForContext({ command: AGY, env: { GEMINI_TEST_MARKER: "override" } });
+    expect(seen!.GEMINI_TEST_MARKER).toBe("override");
+    expect(seen!.HOME).toBe(process.env.HOME);
+  });
+
   it("falls back to the static catalog when discovery fails", async () => {
     setGeminiModelsRunnerForTests(async () => {
       throw new Error("agy unauthenticated");
