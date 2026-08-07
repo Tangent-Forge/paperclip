@@ -789,6 +789,19 @@ function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
 }
 
+function isStaleAgentTerminalStatusMutation(input: {
+  actorType: "agent" | "user";
+  issueStatus: string | null | undefined;
+  requestedStatus: unknown;
+  resumeRequested: boolean;
+}) {
+  return input.actorType === "agent"
+    && isClosedIssueStatus(input.issueStatus)
+    && typeof input.requestedStatus === "string"
+    && input.requestedStatus !== input.issueStatus
+    && input.resumeRequested !== true;
+}
+
 // Log-class comment from the assignee agent on a terminal (done/cancelled)
 // issue is not a reopen signal. When the caller did not pass `resume: true`,
 // this forces the reopen path off even if `reopen: true` was sent.
@@ -4828,6 +4841,19 @@ export function issueRoutes(
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
+      return;
+    }
+    if (isStaleAgentTerminalStatusMutation({
+      actorType: actor.actorType,
+      issueStatus: existing.status,
+      requestedStatus: updateFields.status,
+      resumeRequested: resumeRequested === true,
+    })) {
+      res.status(409).json({
+        error: "Terminal issue cannot be reopened by a stale agent write",
+        issueId: existing.id,
+        status: existing.status,
+      });
       return;
     }
     if (
