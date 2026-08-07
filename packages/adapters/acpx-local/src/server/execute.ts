@@ -684,6 +684,9 @@ async function writeAgentWrapper(input: {
     "#!/usr/bin/env bash",
     "set -euo pipefail",
     `env_file=${shellQuote(envFilePath)}`,
+    // Do not let the Paperclip server's own credential select the child actor.
+    // The managed env file below may reintroduce only this run's short-lived JWT.
+    "unset PAPERCLIP_API_KEY",
     "if [[ -f \"$env_file\" ]]; then",
     "  set -a",
     "  source \"$env_file\"",
@@ -777,8 +780,10 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  // Adapter config must not choose the Paperclip actor. The child receives only
+  // the short-lived credential minted for this run, never a configured or
+  // inherited long-lived key.
+  const { PAPERCLIP_API_KEY: _configuredApiKey, ...runtimeEnvConfig } = envConfig;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
@@ -816,7 +821,7 @@ async function buildRuntime(input: {
     agentHome,
   });
   const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
-    env: envConfig,
+    env: runtimeEnvConfig,
     workspaceCwd: effectiveWorkspaceCwd,
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
@@ -824,7 +829,7 @@ async function buildRuntime(input: {
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects

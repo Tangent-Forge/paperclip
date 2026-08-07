@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpxLocalExecutor } from "./execute.js";
 
 const tempRoots: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function makeTempRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-skills-"));
@@ -62,6 +65,7 @@ async function runExecutor(
   options: {
     context?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
+    authToken?: string;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -84,6 +88,7 @@ async function runExecutor(
       config,
       context: options.context ?? {},
       executionTransport: options.executionTransport,
+      authToken: options.authToken,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -238,13 +243,11 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
+    }, { authToken: "old-key" });
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    }, { authToken: "new-key" });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
     expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(2);
@@ -258,11 +261,62 @@ describe("acpx_local runtime skill isolation", () => {
     expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
     expect(wrapper).toContain("node ./fake-acp.js");
-    expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
+    expect(wrapper).toContain("unset PAPERCLIP_API_KEY");
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
     expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
+  });
+
+  it("strips ambient Paperclip auth and injects only the run-scoped key for ACPX children", async () => {
+    const root = await makeTempRoot();
+    const withoutRunTokenStateDir = path.join(root, "without-run-token");
+    const withRunTokenStateDir = path.join(root, "with-run-token");
+    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    try {
+      process.env.PAPERCLIP_API_KEY = "ambient-key";
+      await runExecutor(
+        {
+          agent: "custom",
+          agentCommand: "node -p \"process.env.PAPERCLIP_API_KEY || 'missing'\"",
+          stateDir: withoutRunTokenStateDir,
+          env: { PAPERCLIP_API_KEY: "configured-key" },
+        },
+      );
+      const withoutRunTokenFiles = await fs.readdir(path.join(withoutRunTokenStateDir, "wrappers"));
+      const withoutRunTokenWrapper = path.join(
+        withoutRunTokenStateDir,
+        "wrappers",
+        withoutRunTokenFiles.find((name) => name.endsWith(".sh"))!,
+      );
+      const withoutRunTokenResult = await execFileAsync(withoutRunTokenWrapper, [], {
+        env: { ...process.env, PAPERCLIP_API_KEY: "ambient-key" },
+      });
+      expect(withoutRunTokenResult.stdout.trim()).toBe("missing");
+
+      await runExecutor(
+        {
+          agent: "custom",
+          agentCommand: "node -p \"process.env.PAPERCLIP_API_KEY || 'missing'\"",
+          stateDir: withRunTokenStateDir,
+          env: { PAPERCLIP_API_KEY: "configured-key" },
+        },
+        { authToken: "run-scoped-key" },
+      );
+      const withRunTokenFiles = await fs.readdir(path.join(withRunTokenStateDir, "wrappers"));
+      const withRunTokenWrapper = path.join(
+        withRunTokenStateDir,
+        "wrappers",
+        withRunTokenFiles.find((name) => name.endsWith(".sh"))!,
+      );
+      const withRunTokenResult = await execFileAsync(withRunTokenWrapper, [], {
+        env: { ...process.env, PAPERCLIP_API_KEY: "ambient-key" },
+      });
+      expect(withRunTokenResult.stdout.trim()).toBe("run-scoped-key");
+    } finally {
+      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
+      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+    }
   });
 
   it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
@@ -328,8 +382,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
+    }, { authToken: "old-key" });
     const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
       (await fs.readdir(wrappersDir))
@@ -340,8 +393,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    }, { authToken: "new-key" });
 
     const wrappers = await fs.readdir(wrappersDir);
     expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
@@ -361,12 +413,10 @@ describe("acpx_local runtime skill isolation", () => {
 
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "first-key" },
-    });
+    }, { authToken: "first-key" });
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "second-key" },
-    });
+    }, { authToken: "second-key" });
 
     const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
     expect(envFileNames).toHaveLength(2);
