@@ -604,6 +604,11 @@ const hermesLocalAdapter: ServerAdapterModule = {
       typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
         ? (existingConfig.env as Record<string, string>)
         : {};
+    const sanitizedExistingEnv = Object.fromEntries(
+      Object.entries(existingEnv).filter(
+        ([key]) => key !== "PAPERCLIP_API_KEY" && key !== "PAPERCLIP_AGENT_JWT_SECRET",
+      ),
+    );
     const promptTemplate =
       typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
         ? existingConfig.promptTemplate
@@ -618,7 +623,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
-        ...existingEnv,
+        ...sanitizedExistingEnv,
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
         // The Hermes plugin applies config.env after the Paperclip process env.
         // Force the run-scoped JWT last so neither host nor stale adapter config
