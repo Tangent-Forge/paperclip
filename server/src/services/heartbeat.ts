@@ -104,6 +104,12 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import {
+  buildAgentIdentityProofAcceptanceComment,
+  readAgentIdentityProofContext,
+  validateAgentIdentityProof,
+  type AgentIdentityProofValidation,
+} from "./agent-identity-proof.js";
+import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
@@ -9203,6 +9209,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      const identityProofContext = readAgentIdentityProofContext(context);
+      let identityProofValidation: AgentIdentityProofValidation | null = null;
       try {
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -9253,6 +9261,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      }
+      if (identityProofContext) {
+        identityProofValidation = validateAgentIdentityProof({
+          context: identityProofContext,
+          runId: run.id,
+          agentId: agent.id,
+          resultJson: adapterResult.resultJson ?? null,
+        });
+        adapterResult = {
+          ...adapterResult,
+          clearSession: true,
+          resultJson: {
+            ...(adapterResult.resultJson ?? {}),
+            identityProofValidation: {
+              passed: identityProofValidation.passed,
+              failures: identityProofValidation.failures,
+            },
+          },
+          ...(!identityProofValidation.passed
+            ? {
+                errorCode: "identity_proof_validation_failed",
+                errorMessage: `Identity proof validation failed: ${identityProofValidation.failures.join(", ")}`,
+              }
+            : {}),
+        };
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -9462,6 +9495,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
+        if (issueId && identityProofContext) {
+          if (outcome === "succeeded" && identityProofValidation?.passed && identityProofValidation.receipt) {
+            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+            if (!existingRunComment) {
+              await issuesSvc.addComment(
+                issueId,
+                buildAgentIdentityProofAcceptanceComment({
+                  context: identityProofContext,
+                  runId: livenessRun.id,
+                  receipt: identityProofValidation.receipt,
+                }),
+                { agentId: agent.id, runId: livenessRun.id },
+              );
+            }
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_accepted",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                priorIncompleteCommentIds: identityProofContext.priorIncompleteCommentIds,
+                proofRunId: livenessRun.id,
+              },
+            });
+          } else {
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_rejected",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                failures: identityProofValidation?.failures ?? ["identity_probe_execution_failed"],
+                proofRunId: livenessRun.id,
+              },
+            });
+          }
+        }
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);

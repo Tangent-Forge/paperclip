@@ -111,6 +111,10 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
+import {
+  AGENT_IDENTITY_PROOF_CONTEXT_KEY,
+  buildAgentIdentityProofContext,
+} from "../services/agent-identity-proof.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -148,6 +152,11 @@ const promoteLowTrustOutputSchema = z.object({
   sourceArtifactId: z.string().uuid(),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(8_000),
+});
+
+const requestAgentIdentityProofSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(160),
+  priorIncompleteCommentIds: z.array(z.string().uuid()).min(1).max(10),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -6614,6 +6623,105 @@ export function issueRoutes(
       return;
     }
     res.json(bundle);
+  });
+
+  router.post("/issues/:id/agent-identity-proofs", validate(requestAgentIdentityProofSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!issue.assigneeAgentId) {
+      res.status(409).json({ error: "An assigned Hermes agent is required for an identity proof" });
+      return;
+    }
+    if (issue.status !== "done" && issue.status !== "todo") {
+      res.status(409).json({ error: "Identity proof requires a done or todo issue with no active work" });
+      return;
+    }
+    const agent = await agentsSvc.getById(issue.assigneeAgentId);
+    if (!agent || agent.companyId !== issue.companyId || agent.adapterType !== "hermes_local") {
+      res.status(409).json({ error: "Identity proof requires the issue's assigned Hermes agent" });
+      return;
+    }
+    const priorComments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, issue.id), inArray(issueComments.id, req.body.priorIncompleteCommentIds)));
+    if (priorComments.length !== req.body.priorIncompleteCommentIds.length) {
+      res.status(422).json({ error: "Every priorIncompleteCommentId must belong to this issue" });
+      return;
+    }
+
+    const issueIdentifier = issue.identifier;
+    if (!issueIdentifier) {
+      res.status(409).json({ error: "Identity proof requires an issue identifier" });
+      return;
+    }
+    const previousStatus = issue.status;
+    const proofContext = buildAgentIdentityProofContext({
+      issueId: issue.id,
+      issueIdentifier,
+      expectedAgentId: agent.id,
+      expectedAgentName: agent.name,
+      priorIncompleteCommentIds: req.body.priorIncompleteCommentIds,
+    });
+    if (previousStatus === "done") {
+      await svc.update(issue.id, { status: "todo" });
+    }
+    let run;
+    try {
+      run = await heartbeat.wakeup(agent.id, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "agent_identity_proof",
+        payload: { issueId: issue.id },
+        idempotencyKey: req.body.idempotencyKey,
+        requestedByActorType: "user",
+        requestedByActorId: req.actor.userId ?? "board",
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          taskKey: issue.id,
+          forceFreshSession: true,
+          skipIssueComment: true,
+          [AGENT_IDENTITY_PROOF_CONTEXT_KEY]: proofContext,
+        },
+      });
+    } catch (error) {
+      if (previousStatus === "done") await svc.update(issue.id, { status: "done" });
+      throw error;
+    }
+    if (!run) {
+      if (previousStatus === "done") await svc.update(issue.id, { status: "done" });
+      res.status(409).json({ error: "Identity proof wake was not accepted" });
+      return;
+    }
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      runId: run.id,
+      action: "issue.agent_identity_proof_requested",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        agentId: agent.id,
+        priorIncompleteCommentIds: req.body.priorIncompleteCommentIds,
+        forceFreshSession: true,
+      },
+    });
+    res.status(202).json({
+      issueId: issue.id,
+      identifier: issue.identifier,
+      agentId: agent.id,
+      runId: run.id,
+      status: run.status,
+    });
   });
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
