@@ -165,7 +165,6 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
@@ -176,12 +175,9 @@ export async function testEnvironment(
 
       const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-      if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
-      args.push("--skip-trust");
+      args.push("--dangerously-skip-permissions");
       if (sandbox) {
         args.push("--sandbox");
-      } else {
-        args.push("--sandbox=none");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
 
