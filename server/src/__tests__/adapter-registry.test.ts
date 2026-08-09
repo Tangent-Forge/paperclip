@@ -39,6 +39,7 @@ import {
 } from "../adapters/index.js";
 import {
   resolveExternalAdapterRegistration,
+  sanitizeHermesPaperclipEnv,
   setOverridePaused,
 } from "../adapters/registry.js";
 
@@ -60,6 +61,16 @@ const externalAdapter: ServerAdapterModule = {
 };
 
 describe("server adapter registry", () => {
+  it("removes ambient Paperclip credentials before injecting run-scoped auth", () => {
+    const sanitized = sanitizeHermesPaperclipEnv({
+      PAPERCLIP_API_KEY: "persistent-codex-home-key",
+      PAPERCLIP_AGENT_JWT_SECRET: "persistent-signing-secret",
+      SAFE_VALUE: "preserved",
+    });
+
+    expect(sanitized).toEqual({ SAFE_VALUE: "preserved" });
+  });
+
   beforeEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");
@@ -521,7 +532,7 @@ describe("server adapter registry", () => {
     expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
   });
 
-  it("overrides an inherited Hermes Paperclip API key with the run-scoped JWT and does not set promptTemplate when none was configured", async () => {
+  it("overrides an explicit Hermes Paperclip API key with the run-scoped JWT", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -534,9 +545,8 @@ describe("server adapter registry", () => {
         adapterType: "hermes_local",
         adapterConfig: {
           env: {
-            PAPERCLIP_API_KEY: "codex-home-key",
+            PAPERCLIP_API_KEY: "explicit-agent-key",
             PAPERCLIP_RUN_ID: "stale-run-id",
-            EXTRA_VALUE: "keep-me",
           },
         },
       },
@@ -552,7 +562,6 @@ describe("server adapter registry", () => {
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    expect(patchedCtx.agent.adapterConfig.env.EXTRA_VALUE).toBe("keep-me");
     // No custom promptTemplate was set — Hermes must use its built-in default.
     // Setting promptTemplate here would replace the full default with just the auth guard text,
     // stripping assigned issue / workflow instructions.
