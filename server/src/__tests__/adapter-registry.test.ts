@@ -39,6 +39,7 @@ import {
 } from "../adapters/index.js";
 import {
   resolveExternalAdapterRegistration,
+  sanitizeHermesPaperclipEnv,
   setOverridePaused,
 } from "../adapters/registry.js";
 
@@ -60,6 +61,16 @@ const externalAdapter: ServerAdapterModule = {
 };
 
 describe("server adapter registry", () => {
+  it("removes ambient Paperclip credentials before injecting run-scoped auth", () => {
+    const sanitized = sanitizeHermesPaperclipEnv({
+      PAPERCLIP_API_KEY: "persistent-codex-home-key",
+      PAPERCLIP_AGENT_JWT_SECRET: "persistent-signing-secret",
+      SAFE_VALUE: "preserved",
+    });
+
+    expect(sanitized).toEqual({ SAFE_VALUE: "preserved" });
+  });
+
   beforeEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("claude_local");

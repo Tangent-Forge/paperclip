@@ -544,6 +544,14 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+export function sanitizeHermesPaperclipEnv(existingEnv: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(existingEnv).filter(
+      ([key]) => key !== "PAPERCLIP_API_KEY" && key !== "PAPERCLIP_AGENT_JWT_SECRET",
+    ),
+  );
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
@@ -569,7 +577,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
-        ...existingEnv,
+        ...sanitizeHermesPaperclipEnv(existingEnv),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
         // The Hermes plugin applies config.env after the Paperclip process env.
         // Force the run-scoped JWT last so neither host nor stale adapter config
