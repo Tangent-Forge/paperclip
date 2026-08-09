@@ -56,6 +56,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Build provider-router-local
+        run: pnpm --filter @paperclipai/provider-router-local build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -150,6 +153,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
+
+      - name: Build provider-router-local
+        run: pnpm --filter @paperclipai/provider-router-local build
 
       - name: Typecheck
         run: pnpm -r typecheck
