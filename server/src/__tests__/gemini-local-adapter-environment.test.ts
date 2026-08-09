@@ -37,7 +37,7 @@ async function writeQuotaGeminiCommand(binDir: string): Promise<string> {
 if (process.argv.includes("--help")) {
   process.exit(0);
 }
-console.error("429 RESOURCE_EXHAUSTED: You exceeded your current quota and billing details.");
+require("node:fs").writeSync(2, "429 RESOURCE_EXHAUSTED: You exceeded your current quota and billing details.\\n");
 process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
@@ -46,7 +46,7 @@ process.exit(1);
 }
 
 describe("gemini_local environment diagnostics", () => {
-  it("creates a missing working directory when cwd is absolute", async () => {
+  it("rejects a missing absolute working directory", async () => {
     const cwd = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -64,10 +64,9 @@ describe("gemini_local environment diagnostics", () => {
       },
     });
 
-    expect(result.checks.some((check) => check.code === "gemini_cwd_valid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(false);
-    const stats = await fs.stat(cwd);
-    expect(stats.isDirectory()).toBe(true);
+    expect(result.checks.some((check) => check.code === "gemini_cwd_invalid")).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(true);
+    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
@@ -80,6 +79,7 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
 
     const result = await testEnvironment({
@@ -129,6 +129,7 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeFakeGeminiCommand(binDir, argsCapturePath, "gemini");
 
     const result = await testEnvironment({
@@ -164,6 +165,7 @@ describe("gemini_local environment diagnostics", () => {
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeQuotaGeminiCommand(binDir);
 
     const result = await testEnvironment({
