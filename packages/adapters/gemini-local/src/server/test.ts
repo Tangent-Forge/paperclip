@@ -89,7 +89,7 @@ export async function testEnvironment(
     await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
       cwd,
       env: {},
-      createIfMissing: true,
+      createIfMissing: false,
     });
     checks.push({
       code: "gemini_cwd_valid",
