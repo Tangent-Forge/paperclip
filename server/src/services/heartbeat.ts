@@ -956,6 +956,26 @@ function isWorkspaceValidationFailedRun(
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
 }
 
+type AgentHealthCheck = {
+  status: "healthy" | "error";
+  reason: "workspace_validation" | "interrupted_stream" | null;
+};
+
+export function checkAgentHealthAfterRun(input: {
+  adapterType: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  errorCode?: string | null;
+}): AgentHealthCheck {
+  if (input.outcome !== "failed") return { status: "healthy", reason: null };
+  if (input.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE) {
+    return { status: "healthy", reason: "workspace_validation" };
+  }
+  if (input.adapterType === "claude_local" && input.errorCode === "claude_interrupted_stream") {
+    return { status: "healthy", reason: "interrupted_stream" };
+  }
+  return { status: "error", reason: null };
+}
+
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -7213,6 +7233,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: { errorCode?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7222,12 +7243,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
+    const healthCheck = checkAgentHealthAfterRun({
+      adapterType: existing.adapterType,
+      outcome,
+      errorCode: options?.errorCode ?? null,
+    });
 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
+          ? "idle"
+          : healthCheck.status === "healthy"
           ? "idle"
           : "error";
 
@@ -7258,6 +7286,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          healthCheck: healthCheck.reason,
         },
       });
     }
@@ -9457,7 +9486,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { errorCode: finalizedRun?.errorCode ?? runErrorCode });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -9553,21 +9582,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { errorCode: failedRun?.errorCode ?? failureErrorCode });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const workspaceValidationFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
+          const setupFailureCode = workspaceValidationFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -9611,7 +9642,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+            await finalizeAgentStatus(run.agentId, "failed", { errorCode: setupFailureCode }).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
@@ -9625,6 +9656,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          const reconciledRun = await getRun(run.id).catch(() => null);
+          if (
+            reconciledRun &&
+            (reconciledRun.status === "succeeded" ||
+              reconciledRun.status === "failed" ||
+              reconciledRun.status === "cancelled" ||
+              reconciledRun.status === "timed_out")
+          ) {
+            await finalizeAgentStatus(run.agentId, reconciledRun.status, {
+              errorCode: reconciledRun.errorCode,
+            }).catch(() => undefined);
+          }
         }
   }
 
