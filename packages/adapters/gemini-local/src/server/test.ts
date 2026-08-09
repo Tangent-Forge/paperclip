@@ -251,17 +251,25 @@ export async function testEnvironment(
           code: "gemini_hello_probe_quota_exhausted",
           level: "warn",
           message: probe.timedOut
-            ? "Gemini CLI is retrying after quota exhaustion."
-            : "Gemini CLI authentication is configured, but the current account or API key is over quota.",
+            ? commandIsAgy
+              ? "Antigravity (agy) is retrying after quota exhaustion."
+              : "Gemini CLI is retrying after quota exhaustion."
+            : commandIsAgy
+              ? "Antigravity authentication is configured, but the current account is over quota."
+              : "Gemini CLI authentication is configured, but the current account or API key is over quota.",
           ...(detail ? { detail } : {}),
-          hint: "The configured Gemini account or API key is over quota. Check ai.google.dev usage/billing, then retry the probe.",
+          hint: commandIsAgy
+            ? "Check the configured Antigravity account's usage, then retry the probe."
+            : "The configured Gemini account or API key is over quota. Check ai.google.dev usage/billing, then retry the probe.",
         });
       } else if (probe.timedOut) {
         checks.push({
           code: "gemini_hello_probe_timed_out",
           level: "warn",
-          message: "Gemini hello probe timed out.",
-          hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
+          message: commandIsAgy ? "Antigravity (agy) hello probe timed out." : "Gemini hello probe timed out.",
+          hint: commandIsAgy
+            ? "Retry the probe. If this persists, run `agy --prompt \"Respond with hello.\"` from this directory."
+            : "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsed.summary.trim();
@@ -283,17 +291,23 @@ export async function testEnvironment(
         checks.push({
           code: "gemini_hello_probe_auth_required",
           level: "warn",
-          message: "Gemini CLI is installed, but authentication is not ready.",
+          message: commandIsAgy
+            ? "Antigravity (agy) is installed, but authentication is not ready."
+            : "Gemini CLI is installed, but authentication is not ready.",
           ...(detail ? { detail } : {}),
-          hint: "Run `gemini auth` or configure GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
+          hint: commandIsAgy
+            ? "Authenticate Antigravity for agy, then retry the probe."
+            : "Run `gemini auth` or configure GOOGLE_API_KEY in adapter env/shell, then retry the probe.",
         });
       } else {
         checks.push({
           code: "gemini_hello_probe_failed",
           level: "error",
-          message: "Gemini hello probe failed.",
+          message: commandIsAgy ? "Antigravity (agy) hello probe failed." : "Gemini hello probe failed.",
           ...(detail ? { detail } : {}),
-          hint: "Run `gemini --output-format json \"Respond with hello.\"` manually in this working directory to debug.",
+          hint: commandIsAgy
+            ? "Run `agy --output-format stream-json --prompt \"Respond with hello.\"` in this working directory to debug."
+            : "Run `gemini --output-format json \"Respond with hello.\"` manually in this working directory to debug.",
         });
       }
     }

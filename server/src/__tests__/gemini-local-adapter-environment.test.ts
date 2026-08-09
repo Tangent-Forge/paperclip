@@ -45,6 +45,17 @@ process.exit(1);
   return commandPath;
 }
 
+async function writeAuthRequiredCommand(binDir: string, commandName: string): Promise<string> {
+  const commandPath = path.join(binDir, commandName);
+  const script = `#!/usr/bin/env node
+require("node:fs").writeSync(2, "Authentication required.\\n");
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+  return commandPath;
+}
+
 describe("gemini_local environment diagnostics", () => {
   it("rejects a missing absolute working directory", async () => {
     const cwd = path.join(
@@ -154,6 +165,34 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).toContain("--skip-trust");
     expect(args).toContain("--sandbox=none");
     expect(args).not.toContain("--dangerously-skip-permissions");
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("returns Antigravity-specific authentication remediation for agy", async () => {
+    const root = path.join(os.tmpdir(), `paperclip-agy-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
+    await writeAuthRequiredCommand(binDir, "agy");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        command: "agy",
+        cwd,
+        env: { PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
+      },
+    });
+
+    const authCheck = result.checks.find((check) => check.code === "gemini_hello_probe_auth_required");
+    expect(authCheck).toMatchObject({
+      level: "warn",
+      message: "Antigravity (agy) is installed, but authentication is not ready.",
+      hint: "Authenticate Antigravity for agy, then retry the probe.",
+    });
+    expect(authCheck?.hint).not.toContain("gemini auth");
     await fs.rm(root, { recursive: true, force: true });
   });
 
