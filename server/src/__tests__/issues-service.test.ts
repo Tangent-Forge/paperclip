@@ -1944,6 +1944,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const commentId = randomUUID();
+    const runId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1973,7 +1974,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id: runId,
       companyId,
       agentId,
       contextSnapshot: { issueId },
@@ -1983,6 +1984,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       logStore: "local_file",
       logRef: "missing/run-log.ndjson",
       logBytes: 128,
+      logSha256: "missing-log-sha256",
+      logCompressed: true,
     });
 
     await db.insert(issueComments).values({
@@ -2003,6 +2006,30 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([commentId]);
     expect(comments[0]?.body).toBe("Comment should still be visible");
     expect(comments[0]?.metadata).toBeNull();
+
+    const [updatedRun] = await db
+      .select({
+        logStore: heartbeatRuns.logStore,
+        logRef: heartbeatRuns.logRef,
+        logBytes: heartbeatRuns.logBytes,
+        logSha256: heartbeatRuns.logSha256,
+        logCompressed: heartbeatRuns.logCompressed,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toEqual({
+      logStore: null,
+      logRef: null,
+      logBytes: null,
+      logSha256: null,
+      logCompressed: false,
+    });
+
+    const repeatedComments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+    expect(repeatedComments.map((comment) => comment.id)).toEqual([commentId]);
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {

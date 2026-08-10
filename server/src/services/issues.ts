@@ -3281,8 +3281,34 @@ export function issueService(db: Db) {
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) {
+        const unavailableRun = run.runId
+          ? await db
+              .update(heartbeatRuns)
+              .set({
+                logStore: null,
+                logRef: null,
+                logBytes: null,
+                logSha256: null,
+                logCompressed: false,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, run.runId),
+                  eq(heartbeatRuns.logStore, "local_file"),
+                  eq(heartbeatRuns.logRef, run.logRef),
+                ),
+              )
+              .returning({ id: heartbeatRuns.id })
+              .then((rows) => rows[0] ?? null)
+          : null;
         logger.warn(
-          { err, runId: run.runId ?? undefined, logRef: run.logRef },
+          {
+            err,
+            runId: run.runId ?? undefined,
+            logRef: run.logRef,
+            markedUnavailable: Boolean(unavailableRun),
+          },
           "missing heartbeat run log while deriving issue comment metadata",
         );
         return content;
