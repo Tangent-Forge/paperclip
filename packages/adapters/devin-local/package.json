@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
+  "private": true,
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",
