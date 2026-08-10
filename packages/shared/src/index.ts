@@ -84,6 +84,10 @@ export {
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_ORIGIN_KINDS,
+  PAPERCLIP_LOCAL_ISSUE_PREFIX,
+  LINEAR_SYNC_MIRROR_ISSUE_ORIGIN_KIND,
+  isPaperclipLocalIssueOriginKind,
+  issueIdentifierPrefixForOrigin,
   ISSUE_SURFACE_VISIBILITIES,
   ISSUE_RECOVERY_ACTION_KINDS,
   ISSUE_RECOVERY_ACTION_STATUSES,
@@ -309,6 +313,12 @@ export {
   type PluginEventType,
   type PluginBridgeErrorCode,
 } from "./constants.js";
+export {
+  buildIdentifierBackfillPlan,
+  type IssueIdentifierRow,
+  type IdentifierBackfillChange,
+  type IdentifierBackfillCollision,
+} from "./issue-identifiers.js";
 
 export {
   ALL_INTERFACES_BIND_HOST,

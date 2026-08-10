@@ -54,6 +54,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueIdentifierPrefixForOrigin,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -5038,18 +5039,12 @@ export function issueService(db: Db) {
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
         const issueNumber = company.issueCounter;
-        // Local-only origin kinds get a "PCL" prefix so agents can distinguish
-        // them from real Linear issue identifiers (which use the company prefix,
-        // e.g. "TAN"). Without this, agents escalate on hallucinated TAN-NNN IDs.
-        // See TAN-133.
-        const LOCAL_ORIGIN_KINDS = new Set([
-          "stranded_issue_recovery",
-          "harness_liveness_escalation",
-          "issue_graph_liveness_escalation",
-          "agent_health_escalation",
-          "dependency_blocked_escalation",
-        ]);
-        const issuePrefix = LOCAL_ORIGIN_KINDS.has(issueData.originKind ?? "") ? "PCL" : company.issuePrefix;
+        // Local-only issues use PCL so company prefixes remain reserved for
+        // canonical external work such as real Linear mirrors. See TAN-133.
+        const issuePrefix = issueIdentifierPrefixForOrigin(
+          company.issuePrefix,
+          issueData.originKind,
+        );
         const identifier = `${issuePrefix}-${issueNumber}`;
 
         const values = {
