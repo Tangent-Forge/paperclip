@@ -100,6 +100,26 @@ import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
+
+import {
+  execute as kimiExecute,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+} from "@paperclipai/adapter-kimi-local";
+import {
+  execute as qwenExecute,
+  testEnvironment as qwenTestEnvironment,
+  sessionCodec as qwenSessionCodec,
+} from "@paperclipai/adapter-qwen-local/server";
+import {
+  agentConfigurationDoc as qwenAgentConfigurationDoc,
+  models as qwenModels,
+} from "@paperclipai/adapter-qwen-local";
+
 import {
   execute as devinExecute,
   testEnvironment as devinTestEnvironment,
@@ -173,9 +193,6 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -263,69 +280,6 @@ function passHermesCustomProviderThroughExtraArgs(config: Record<string, unknown
     ...config,
     extraArgs: [...existingExtraArgs, "--provider", provider],
   };
-}
-
-function cfgNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readHermesModelDefaults(configPath: string): { model?: string; provider?: string } {
-  let body = "";
-  try {
-    body = fs.readFileSync(configPath, "utf8");
-  } catch {
-    return {};
-  }
-
-  const defaults: { model?: string; provider?: string } = {};
-  let inModelBlock = false;
-  for (const line of body.split(/\r?\n/)) {
-    if (/^\S/.test(line)) {
-      inModelBlock = line.trim() === "model:";
-      continue;
-    }
-    if (!inModelBlock) continue;
-
-    const match = line.match(/^\s+(default|provider):\s*['"]?([^'"]*?)['"]?\s*$/);
-    if (!match) continue;
-    const value = match[2]?.trim();
-    if (!value) continue;
-    if (match[1] === "default") defaults.model = value;
-    if (match[1] === "provider") defaults.provider = value;
-  }
-  return defaults;
-}
-
-function resolveHermesConfigWithLocalDefaults(config: Record<string, unknown>): Record<string, unknown> {
-  if (cfgNonEmptyString(config.model)) return config;
-
-  const env =
-    config.env && typeof config.env === "object" && !Array.isArray(config.env)
-      ? (config.env as Record<string, unknown>)
-      : {};
-  const profileName =
-    cfgNonEmptyString(config.hermesProfile) ??
-    cfgNonEmptyString(config.profile) ??
-    cfgNonEmptyString(env.HERMES_PROFILE) ??
-    cfgNonEmptyString(process.env.HERMES_PROFILE) ??
-    "paperclip-worker";
-  const hermesHome = cfgNonEmptyString(env.HERMES_HOME) ?? cfgNonEmptyString(process.env.HERMES_HOME) ?? path.join(os.homedir(), ".hermes");
-  const candidateConfigPaths = [
-    path.join(hermesHome, "profiles", profileName, "config.yaml"),
-    path.join(hermesHome, "config.yaml"),
-  ];
-
-  for (const configPath of candidateConfigPaths) {
-    const defaults = readHermesModelDefaults(configPath);
-    if (!defaults.model) continue;
-    return {
-      ...config,
-      model: defaults.model,
-      ...(cfgNonEmptyString(config.provider) || !defaults.provider ? {} : { provider: defaults.provider }),
-    };
-  }
-
-  return config;
 }
 
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
@@ -605,9 +559,10 @@ const hermesLocalAdapter: ServerAdapterModule = {
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
       },
     };
-    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(
-      resolveHermesConfigWithLocalDefaults(patchedConfig),
-    );
+    // Do not inject model/provider from local Hermes YAML here.
+    // Designed behavior: blank adapter model → Hermes uses its own configured default
+    // (no `-m` flag). Config testEnvironment already documents that contract.
+    const effectivePatchedConfig = passHermesCustomProviderThroughExtraArgs(patchedConfig);
 
     // Only inject the auth guard into promptTemplate when a custom template already exists.
     // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
@@ -636,6 +591,33 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
+};
+
+
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
+const qwenLocalAdapter: ServerAdapterModule = {
+  type: "qwen_local",
+  execute: qwenExecute,
+  testEnvironment: qwenTestEnvironment,
+  sessionCodec: qwenSessionCodec,
+  sessionManagement: getAdapterSessionManagement("qwen_local") ?? undefined,
+  models: qwenModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: qwenAgentConfigurationDoc,
 };
 
 const providerRouterLocalAdapter: ServerAdapterModule = {
@@ -694,6 +676,8 @@ function registerBuiltInAdapters() {
     janitorLocalAdapter,
     processAdapter,
     httpAdapter,
+    kimiLocalAdapter,
+    qwenLocalAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }

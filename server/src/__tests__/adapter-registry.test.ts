@@ -586,7 +586,7 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
   });
 
-  it("uses the Hermes paperclip-worker profile model when adapterConfig is empty", async () => {
+  it("leaves model blank when adapterConfig is empty so Hermes uses its configured default", async () => {
     const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-home-"));
     await fs.mkdir(path.join(hermesHome, "profiles", "paperclip-worker"), { recursive: true });
     await fs.writeFile(
@@ -621,9 +621,11 @@ describe("server adapter registry", () => {
     });
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig.model).toBe("gpt-5.5");
-    expect(patchedCtx.agent.adapterConfig.provider).toBe("openai-codex");
-    expect(patchedCtx.agent.adapterConfig.model).not.toBe("anthropic/claude-sonnet-4");
+    // Designed contract: do not freeze a profile YAML model into adapterConfig.
+    // Blank model means hermes-paperclip-adapter omits `-m` and Hermes picks its default.
+    expect(patchedCtx.agent.adapterConfig.model).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.provider).toBeUndefined();
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
 
     await fs.rm(hermesHome, { recursive: true, force: true });
   });
