@@ -60,7 +60,15 @@ jobs:
         run: pnpm --filter @paperclipai/provider-router-local build
 
       - name: Typecheck
-        run: pnpm -r typecheck
+        run: |
+          # provider-router-local has no `typecheck` script of its own (only
+          # `build`), and its exports resolve solely against dist/ (no source
+          # fallback) -- `pnpm -r typecheck` silently skips it, so its dist/
+          # never gets generated and anything importing it (server) fails to
+          # resolve types. Mirrors the same prerequisite already applied by
+          # the root `typecheck:build-gaps` script for this exact package.
+          pnpm --filter @paperclipai/provider-router-local build
+          pnpm -r typecheck
 
       - name: Run tests
         run: pnpm test:run
@@ -158,7 +166,15 @@ jobs:
         run: pnpm --filter @paperclipai/provider-router-local build
 
       - name: Typecheck
-        run: pnpm -r typecheck
+        run: |
+          # provider-router-local has no `typecheck` script of its own (only
+          # `build`), and its exports resolve solely against dist/ (no source
+          # fallback) -- `pnpm -r typecheck` silently skips it, so its dist/
+          # never gets generated and anything importing it (server) fails to
+          # resolve types. Mirrors the same prerequisite already applied by
+          # the root `typecheck:build-gaps` script for this exact package.
+          pnpm --filter @paperclipai/provider-router-local build
+          pnpm -r typecheck
 
       - name: Run tests
         run: pnpm test:run
