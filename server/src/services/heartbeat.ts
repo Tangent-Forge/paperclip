@@ -195,7 +195,7 @@ import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
-import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { EnvironmentRunError, environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
@@ -954,6 +954,38 @@ async function ensureManagedProjectWorkspace(input: {
 
 function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailure {
   return error instanceof WorkspaceValidationFailure;
+}
+
+export function buildHeartbeatExecutionFailurePersistence(error: unknown): {
+  errorCode: string;
+  resultJson: Record<string, unknown> | null;
+} {
+  if (isWorkspaceValidationFailure(error)) {
+    return {
+      errorCode: error.code,
+      resultJson: error.resultJson,
+    };
+  }
+
+  if (error instanceof EnvironmentRunError && error.code === "repository_routing_guard_failed") {
+    const details = parseObject(error.details);
+    return {
+      errorCode: error.code,
+      resultJson: {
+        reason: error.code,
+        environmentId: error.environmentId ?? null,
+        driver: error.driver ?? null,
+        ...(Object.keys(details).length > 0
+          ? { repositoryRoutingGuardFailure: details }
+          : {}),
+      },
+    };
+  }
+
+  return {
+    errorCode: "adapter_failed",
+    resultJson: null,
+  };
 }
 
 function isWorkspaceValidationFailedRun(
@@ -9676,8 +9708,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
-      const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
-      const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
+      const failurePersistence = buildHeartbeatExecutionFailurePersistence(err);
+      const failureErrorCode = failurePersistence.errorCode;
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -9703,7 +9735,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? null,
+          resultJson: failurePersistence.resultJson,
         }),
         stdoutExcerpt,
         stderrExcerpt,
