@@ -37,6 +37,10 @@ COPY packages/adapters/mcp-bridge/package.json packages/adapters/mcp-bridge/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/adapters/provider-router-local/package.json packages/adapters/provider-router-local/
+COPY packages/adapters/devin-local/package.json packages/adapters/devin-local/
+COPY packages/adapters/kimi-local/package.json packages/adapters/kimi-local/
+COPY packages/adapters/qwen-local/package.json packages/adapters/qwen-local/
+COPY packages/adapters/tf-gpu-worker/package.json packages/adapters/tf-gpu-worker/
 COPY packages/email-ingest-router-cf/package.json packages/email-ingest-router-cf/
 COPY packages/mcp-server-gumroad/package.json packages/mcp-server-gumroad/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
