@@ -45,7 +45,11 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          # Accept either secret name: the app key has been stored as
+          # REVIEW_APP_PRIVATE_KEY in this repo, while the scripts and the
+          # local-dev instructions use COMMITPERCLIP_KEY. Taking whichever is
+          # populated keeps the gate working under both names.
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
 
       - name: Run quality gates
         id: quality
