@@ -99,6 +99,40 @@ export function parseGeminiJsonl(stdout: string) {
     if (foundSessionId) sessionId = foundSessionId;
 
     const type = asString(event.type, "").trim();
+    const eventName = asString(event.event, "").trim();
+
+    if (eventName === "init") {
+      const init = parseObject(event.init);
+      const foundConversationId =
+        asString(event.conversation_id, "").trim() || asString(init.conversation_id, "").trim();
+      if (foundConversationId) sessionId = foundConversationId;
+      continue;
+    }
+
+    if (eventName === "step_update") {
+      const step = parseObject(event.step_update);
+      const textDelta = asString(step.text_delta, "");
+      if (textDelta) messages.push(textDelta);
+      accumulateUsage(usage, step.usage);
+      continue;
+    }
+
+    if (eventName === "result") {
+      const result = parseObject(event.result);
+      const foundConversationId =
+        asString(event.conversation_id, "").trim() || asString(result.conversation_id, "").trim();
+      if (foundConversationId) sessionId = foundConversationId;
+      resultEvent = result;
+      accumulateUsage(usage, result.usage);
+      const response = asString(result.response, "").trim();
+      if (response && messages.length === 0) messages.push(response);
+      const status = asString(result.status, "").toLowerCase();
+      if (status === "error" || status === "failed") {
+        const text = asErrorText(result.error ?? result.message ?? result.response).trim();
+        if (text) errorMessage = text;
+      }
+      continue;
+    }
 
     if (type === "assistant") {
       messages.push(...collectMessageText(event.message));

@@ -94,6 +94,7 @@ vi.mock("../adapters/index.ts", async () => {
 
 import {
   heartbeatService,
+  checkAgentHealthAfterRun,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
@@ -109,6 +110,26 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describe("checkAgentHealthAfterRun", () => {
+  it.each([
+    ["workspace_validation_failed", "codex_local", "workspace_validation"],
+    ["workspace_validation_failed", "claude_local", "workspace_validation"],
+    ["claude_interrupted_stream", "claude_local", "interrupted_stream"],
+  ])("keeps %s out of agent error state", (errorCode, adapterType, reason) => {
+    expect(checkAgentHealthAfterRun({ adapterType, outcome: "failed", errorCode })).toEqual({
+      status: "healthy",
+      reason,
+    });
+  });
+
+  it("still marks unrelated adapter failures as agent errors", () => {
+    expect(checkAgentHealthAfterRun({ adapterType: "codex_local", outcome: "failed", errorCode: "adapter_failed" })).toEqual({
+      status: "error",
+      reason: null,
+    });
+  });
+});
 
 function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -1405,6 +1426,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     );
     expect(issue?.executionRunId).toBeNull();
+
+    await waitForHeartbeatIdle(db, 5_000);
+    const agent = await waitForValue(async () =>
+      db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.status === "idle" ? row : null;
+        }),
+    );
+    expect(agent?.status).toBe("idle");
 
     const recoveryAction = await db
       .select()

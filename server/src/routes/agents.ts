@@ -83,6 +83,10 @@ import {
   listCodexModelsForContext,
   refreshCodexModelsForContext,
 } from "../adapters/codex-models.js";
+import {
+  listGeminiModelsForContext,
+  refreshGeminiModelsForContext,
+} from "../adapters/gemini-models.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -1625,7 +1629,12 @@ export function agentRoutes(
     }
     let models: { id: string; label: string }[];
     const agentId = asNonEmptyString(req.query.agentId);
-    if (agentId && type === "codex_local") {
+    // Adapters whose real catalog depends on the agent's configured CLI. codex_local
+    // discovers over the app-server; gemini_local shells out to `agy models` when the
+    // command is Antigravity. Both need the agent's command/env, which the config-less
+    // listModels() hook on ServerAdapterModule cannot see.
+    const configAwareModelTypes = new Set(["codex_local", "gemini_local"]);
+    if (agentId && configAwareModelTypes.has(type)) {
       const agent = await svc.getById(agentId);
       if (!agent || agent.companyId !== companyId) {
         res.status(404).json({ error: "Agent not found" });
@@ -1648,9 +1657,15 @@ export function agentRoutes(
         command: typeof config.command === "string" ? config.command : null,
         env,
       };
-      models = refresh
-        ? await refreshCodexModelsForContext(context)
-        : await listCodexModelsForContext(context);
+      if (type === "gemini_local") {
+        models = refresh
+          ? await refreshGeminiModelsForContext(context)
+          : await listGeminiModelsForContext(context);
+      } else {
+        models = refresh
+          ? await refreshCodexModelsForContext(context)
+          : await listCodexModelsForContext(context);
+      }
     } else {
       models = refresh
         ? await refreshAdapterModels(type)
