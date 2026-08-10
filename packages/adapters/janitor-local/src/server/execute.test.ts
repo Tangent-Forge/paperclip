@@ -121,7 +121,7 @@ describe("janitor_local execute approval gate", () => {
     const root = await makeTempRoot();
     runJanitorModuleMock.mockResolvedValueOnce(moduleResult(
       "storage",
-      '{"type":"janitor.action","action":"delete","target":"tmp/cache","description":"Remove old cache","risk":"deletes files"}\n',
+      '{"type":"janitor.action","action":"move","target":"inbox/item.md","destination":"quarantine/item.md","sourceSha256":"abc123","decision":"quarantine","actionId":"action-1","description":"Route item","risk":"moves file"}\n',
     ));
     const calls = installFetch((url) => {
       if (url.pathname === "/api/issues/33333333-3333-4333-8333-333333333333/approvals") return [];
@@ -152,6 +152,12 @@ describe("janitor_local execute approval gate", () => {
         janitorLocalApproval: {
           modules: ["storage"],
           actionCount: 1,
+          actions: [{
+            action: "move",
+            destination: "quarantine/item.md",
+            sourceSha256: "abc123",
+            decision: "quarantine",
+          }],
         },
       },
     });
@@ -212,7 +218,85 @@ describe("janitor_local execute approval gate", () => {
 
     expect(result.exitCode).toBe(0);
     expect(runJanitorModuleMock).toHaveBeenCalledTimes(1);
-    expect(runJanitorModuleMock).toHaveBeenCalledWith("storage", root, expect.objectContaining({ JANITOR_DRY_RUN: "0" }), 300_000);
+    expect(runJanitorModuleMock).toHaveBeenCalledWith("storage", root, expect.objectContaining({
+      JANITOR_DRY_RUN: "0",
+      JANITOR_APPROVED_ACTIONS_JSON: expect.stringContaining('"target":"tmp/cache"'),
+    }), 300_000);
+  });
+
+  it("closes an active linked issue when the dry run finds no actions", async () => {
+    const root = await makeTempRoot();
+    runJanitorModuleMock.mockResolvedValueOnce(moduleResult("storage", "no actions\n"));
+    const calls = installFetch((url) => {
+      if (url.pathname === "/api/issues/33333333-3333-4333-8333-333333333333") return { ok: true };
+      throw new Error(`unexpected ${url.pathname}`);
+    });
+
+    const result = await execute(makeCtx(root, {
+      config: { cwd: root, reportDir: path.join(root, ".janitor", "reports"), modules: ["storage"], dryRun: false, approvalRequired: true },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toContain("no actionable items");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.body).toMatchObject({ status: "done" });
+  });
+
+  it("surfaces module failures and blocks the linked issue", async () => {
+    const root = await makeTempRoot();
+    runJanitorModuleMock.mockResolvedValueOnce(moduleResult("storage", "failed\n", 2));
+    const calls = installFetch((url) => {
+      if (url.pathname === "/api/issues/33333333-3333-4333-8333-333333333333") return { ok: true };
+      throw new Error(`unexpected ${url.pathname}`);
+    });
+
+    const result = await execute(makeCtx(root, {
+      config: { cwd: root, reportDir: path.join(root, ".janitor", "reports"), modules: ["storage"], dryRun: false, approvalRequired: true },
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("janitor_module_failed");
+    expect(calls[0]?.body).toMatchObject({ status: "blocked" });
+  });
+
+  it("rejects an approved manifest for a different agent or workspace", async () => {
+    const root = await makeTempRoot();
+    installFetch((url) => {
+      if (url.pathname === "/api/approvals/44444444-4444-4444-8444-444444444444") {
+        return {
+          id: "44444444-4444-4444-8444-444444444444",
+          type: "request_board_approval",
+          status: "approved",
+          payload: {
+            janitorLocalApproval: {
+              version: 1,
+              adapterType: "janitor_local",
+              agentId: "99999999-9999-4999-8999-999999999999",
+              runId: "run-other",
+              cwd: root,
+              reportPath: "dry-run.md",
+              modules: ["storage"],
+              actionCount: 1,
+              actions: [{ module: "storage", action: "delete", target: "tmp/cache", description: "Remove old cache" }],
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected ${url.pathname}`);
+    });
+
+    const result = await execute(makeCtx(root, {
+      config: { cwd: root, modules: ["storage"], dryRun: false, approvalRequired: true },
+      context: {
+        issueId: "33333333-3333-4333-8333-333333333333",
+        approvalId: "44444444-4444-4444-8444-444444444444",
+        approvalStatus: "approved",
+      },
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("janitor_approval_scope_mismatch");
+    expect(runJanitorModuleMock).not.toHaveBeenCalled();
   });
 
   it("writes a skipped report and does not run modules after rejection", async () => {
