@@ -64,18 +64,12 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-devin-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/devin-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
-      '@paperclipai/adapter-kimi-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/kimi-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -85,9 +79,6 @@ importers:
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-qwen-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/qwen-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
@@ -230,22 +221,6 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/adapters/devin-local:
-    dependencies:
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../../adapter-utils
-      picocolors:
-        specifier: ^1.1.1
-        version: 1.1.1
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.21
-        version: 22.20.1
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
   packages/adapters/gemini-local:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -287,22 +262,6 @@ importers:
       '@types/node':
         specifier: ^24.6.0
         version: 24.12.0
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/adapters/kimi-local:
-    dependencies:
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../../adapter-utils
-      picocolors:
-        specifier: ^1.1.1
-        version: 1.1.1
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.21
-        version: 22.20.1
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -392,38 +351,6 @@ importers:
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
-
-  packages/adapters/qwen-local:
-    dependencies:
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../../adapter-utils
-      picocolors:
-        specifier: ^1.1.1
-        version: 1.1.1
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.21
-        version: 22.20.1
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
-  packages/adapters/tf-gpu-worker:
-    dependencies:
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../../adapter-utils
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.21
-        version: 22.20.1
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.8
-        version: 4.1.8(@types/node@22.20.1)(jsdom@28.1.0(@noble/hashes@2.0.1))(vite@7.3.1(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.1))
 
   packages/db:
     dependencies:
@@ -898,9 +825,6 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-devin-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/devin-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
@@ -910,9 +834,6 @@ importers:
       '@paperclipai/adapter-janitor-local':
         specifier: workspace:*
         version: link:../packages/adapters/janitor-local
-      '@paperclipai/adapter-kimi-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/kimi-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -922,9 +843,6 @@ importers:
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-qwen-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/qwen-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
@@ -1088,18 +1006,12 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-devin-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/devin-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
-      '@paperclipai/adapter-kimi-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/kimi-local
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -1109,9 +1021,6 @@ importers:
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-qwen-local':
-        specifier: workspace:*
-        version: link:../packages/adapters/qwen-local
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
