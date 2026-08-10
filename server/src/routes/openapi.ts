@@ -579,6 +579,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "POST /api/issues/{id}/agent-identity-proofs",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -1409,6 +1410,29 @@ registry.registerPath({
   summary: "Get issue heartbeat context",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/agent-identity-proofs",
+  tags: ["issues"],
+  summary: "Request an agent identity proof for an issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        idempotencyKey: z.string().trim().min(1).max(160),
+        priorIncompleteCommentIds: z.array(z.string().uuid()).min(1).max(10),
+      })
+    ),
+  },
+  responses: {
+    202: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
