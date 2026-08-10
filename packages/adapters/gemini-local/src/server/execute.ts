@@ -190,6 +190,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
+  const smokeTest = parseObject(context.paperclipWake).smokeTest === true;
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
@@ -209,7 +210,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
-  if (!executionTargetIsRemote) {
+  if (!executionTargetIsRemote && !smokeTest) {
     await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
   }
 
@@ -448,7 +449,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-  const canResumeSession =
+  const canResumeSession = !smokeTest &&
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
@@ -465,7 +466,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
 
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const instructionsFilePath = smokeTest ? "" : asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
   if (instructionsFilePath) {
@@ -485,7 +486,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    notes.push("Configured unattended permission handling for the selected CLI.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
     }
@@ -517,13 +518,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = smokeTest ? "" : renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
-  const prompt = joinPromptSections([
+  const prompt = smokeTest ? "Reply exactly: heartbeat" : joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
@@ -546,13 +547,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
-    args.push("--skip-trust");
-    if (sandbox) {
-      args.push("--sandbox");
+    const isAntigravityCommand = path.basename(command).toLowerCase().startsWith("agy");
+    if (isAntigravityCommand) {
+      args.push("--dangerously-skip-permissions");
     } else {
-      args.push("--sandbox=none");
+      args.push("--approval-mode", "yolo", "--skip-trust");
     }
+    if (sandbox) args.push("--sandbox");
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;

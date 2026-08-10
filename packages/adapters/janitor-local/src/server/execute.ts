@@ -288,8 +288,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: null,
       timedOut: false,
       errorCode: "janitor_approval_issue_required",
-      errorMessage: "Janitor approval gate requires ctx.context.issueId before active write/delete mode can run.",
-      summary: "Janitor failed closed: active cleanup requires a linked Paperclip issue for approval.",
+      errorMessage: "Manual Janitor runs cannot use active write/delete mode without an issue ID. Set adapterConfig.dryRun=true for a read-only manual run, or invoke this agent with payload.issueId (or payload.taskId) through an issue-bound approval flow.",
+      summary: "Janitor preflight blocked: choose dry-run mode for a manual read-only run, or provide an issue ID for governed active cleanup.",
     } satisfies AdapterExecutionResult;
   }
 

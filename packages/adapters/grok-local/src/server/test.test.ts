@@ -20,15 +20,15 @@ describe("parseGrokModelsOutput", () => {
     expect(parseGrokModelsOutput([
       "You are logged in with grok.com.",
       "",
-      "Default model: grok-build",
+      "Default model: grok-4.5",
       "",
       "Available models:",
-      "  * grok-build (default)",
+      "  * grok-4.5 (default)",
       "  * grok-code",
     ].join("\n"))).toEqual({
       authenticated: true,
-      defaultModel: "grok-build",
-      models: ["grok-build", "grok-code"],
+      defaultModel: "grok-4.5",
+      models: ["grok-4.5", "grok-code"],
     });
   });
 });
@@ -49,10 +49,10 @@ describe("grok_local testEnvironment", () => {
         stdout: [
           "You are logged in with grok.com.",
           "",
-          "Default model: grok-build",
+          "Default model: grok-4.5",
           "",
           "Available models:",
-          "  * grok-build (default)",
+          "  * grok-4.5 (default)",
         ].join("\n"),
         stderr: "",
       })
@@ -73,7 +73,7 @@ describe("grok_local testEnvironment", () => {
       config: {
         command: "grok",
         cwd: "/tmp/project",
-        model: "grok-build",
+        model: "grok-4.5",
       },
     });
 

@@ -2428,6 +2428,9 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  if (payload?.smokeTest === true) {
+    contextSnapshot.smokeTest = true;
+  }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
@@ -2598,7 +2601,8 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  const smokeTest = input.contextSnapshot.smokeTest === true;
+  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary && !smokeTest) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -2740,6 +2744,7 @@ export async function buildPaperclipWakePayload(input: {
     : [];
 
   return {
+    smokeTest,
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
       ? {

@@ -169,6 +169,9 @@ describe("janitor_local execute approval gate", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("janitor_approval_issue_required");
+    expect(result.errorMessage).toContain("Set adapterConfig.dryRun=true");
+    expect(result.errorMessage).toContain("payload.issueId");
+    expect(result.summary).toContain("dry-run mode");
     expect(runJanitorModuleMock).not.toHaveBeenCalled();
   });
 
