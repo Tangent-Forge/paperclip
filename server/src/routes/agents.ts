@@ -3816,6 +3816,20 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, run.companyId);
 
+    if (!run.logStore || !run.logRef) {
+      // Graceful response for runs where log was never initialized (e.g. process_lost before logging began)
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json({
+        runId,
+        store: null,
+        logRef: null,
+        content: "",
+        logStatus: "unavailable",
+        note: "Run log not available (process may have been lost before logging started)",
+      });
+      return;
+    }
+
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
     const result = await heartbeat.readLog(run, {

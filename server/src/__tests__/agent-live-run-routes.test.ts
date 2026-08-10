@@ -221,6 +221,7 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+      logStatus: "ok",
     });
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
@@ -326,7 +327,57 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
+      logStatus: "ok",
     });
+  });
+
+  it("returns a graceful unavailable response when a run has no log metadata", async () => {
+    mockHeartbeatService.getRunLogAccess.mockResolvedValueOnce({
+      id: "run-lost",
+      companyId: "company-1",
+      logStore: null,
+      logRef: null,
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-lost/log"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({
+      runId: "run-lost",
+      store: null,
+      logRef: null,
+      content: "",
+      logStatus: "unavailable",
+      note: "Run log not available (process may have been lost before logging started)",
+    });
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+  });
+
+  it("passes through an unavailable response when the referenced log cannot be read", async () => {
+    mockHeartbeatService.readLog.mockResolvedValueOnce({
+      runId: "run-missing-log",
+      store: "local_file",
+      logRef: "logs/run-missing-log.ndjson",
+      content: "",
+      logStatus: "unavailable",
+      note: "Run log read failed",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-missing-log/log"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      runId: "run-missing-log",
+      logStatus: "unavailable",
+      note: "Run log read failed",
+    });
+    expect(mockHeartbeatService.readLog).toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {
