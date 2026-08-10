@@ -121,7 +121,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function seedRunningRun(opts: {
     now: Date;

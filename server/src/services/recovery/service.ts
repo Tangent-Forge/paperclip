@@ -78,6 +78,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "cursor",
   "gemini_local",
   "hermes_local",
+  "kimi_local",
+  "qwen_local",
   "opencode_local",
   "pi_local",
 ]);
@@ -596,6 +598,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+  async function hasPendingIssueThreadInteraction(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasPendingFormalApproval(companyId: string, issueId: string) {
+    const approval = await db
+      .select({ approvalId: issueApprovals.approvalId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(approval);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -3232,9 +3265,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
     if (!blockerIds.includes(recovery.id)) return false;
+    const remainingBlockerIds = blockerIds.filter((blockerId) => blockerId !== recovery.id);
+    const remainingBlockers = remainingBlockerIds.length > 0
+      ? await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, sourceIssue.companyId),
+            inArray(issues.id, remainingBlockerIds),
+          ),
+        )
+      : [];
+    const nextBlockerIds = remainingBlockers
+      .filter((blocker) => !isTerminalIssueStatus(blocker.status))
+      .map((blocker) => blocker.id);
     await issuesSvc.update(sourceIssue.id, {
-      blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
+      blockedByIssueIds: nextBlockerIds,
     });
+    if (
+      sourceIssue.status === "blocked" &&
+      nextBlockerIds.length === 0 &&
+      !!sourceIssue.assigneeAgentId &&
+      !sourceIssue.assigneeUserId &&
+      !(await hasPendingIssueThreadInteraction(sourceIssue.companyId, sourceIssue.id)) &&
+      !(await hasPendingFormalApproval(sourceIssue.companyId, sourceIssue.id))
+    ) {
+      await issuesSvc.update(sourceIssue.id, { status: "todo" });
+    }
     return true;
   }
 

@@ -55,7 +55,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { getRunLogStore, type RunLogHandle, type RunLogRemediationAction } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -103,6 +103,12 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import {
+  buildAgentIdentityProofAcceptanceComment,
+  readAgentIdentityProofContext,
+  validateAgentIdentityProof,
+  type AgentIdentityProofValidation,
+} from "./agent-identity-proof.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -174,7 +180,7 @@ import {
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
-import { redactEventPayload, redactSensitiveText } from "../redaction.js";
+import { redactEventPayload, redactRetainedRunPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -956,6 +962,26 @@ function isWorkspaceValidationFailedRun(
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
 }
 
+type AgentHealthCheck = {
+  status: "healthy" | "error";
+  reason: "workspace_validation" | "interrupted_stream" | null;
+};
+
+export function checkAgentHealthAfterRun(input: {
+  adapterType: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  errorCode?: string | null;
+}): AgentHealthCheck {
+  if (input.outcome !== "failed") return { status: "healthy", reason: null };
+  if (input.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE) {
+    return { status: "healthy", reason: "workspace_validation" };
+  }
+  if (input.adapterType === "claude_local" && input.errorCode === "claude_interrupted_stream") {
+    return { status: "healthy", reason: "interrupted_stream" };
+  }
+  return { status: "error", reason: null };
+}
+
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -1289,6 +1315,34 @@ const heartbeatRunIssueSummaryColumns = {
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
+}
+
+function remediateRetainedText(value: string | null, action: RunLogRemediationAction): string | null {
+  if (value === null) return null;
+  return action === "purge" ? null : redactSensitiveText(value);
+}
+
+function remediateRetainedPayload(
+  value: Record<string, unknown> | null | undefined,
+  action: RunLogRemediationAction,
+  redactedAt: string,
+): Record<string, unknown> | null {
+  if (action === "purge") {
+    return {
+      redacted: true,
+      redactionMode: "purge",
+      redactionReason: "retained_run_remediation",
+      redactedAt,
+    };
+  }
+  const redacted = redactRetainedRunPayload(value ?? null);
+  return {
+    ...(redacted ?? {}),
+    redacted: true,
+    redactionMode: "redact",
+    redactionReason: "retained_run_remediation",
+    redactedAt,
+  };
 }
 
 function truncateRunEventString(value: string) {
@@ -5068,6 +5122,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        originKind: issues.originKind,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -7291,6 +7346,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: { errorCode?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7300,12 +7356,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
+    const healthCheck = checkAgentHealthAfterRun({
+      adapterType: existing.adapterType,
+      outcome,
+      errorCode: options?.errorCode ?? null,
+    });
 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
+          ? "idle"
+          : healthCheck.status === "healthy"
           ? "idle"
           : "error";
 
@@ -7336,6 +7399,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          healthCheck: healthCheck.reason,
         },
       });
     }
@@ -9145,6 +9209,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      const identityProofContext = readAgentIdentityProofContext(context);
+      let identityProofValidation: AgentIdentityProofValidation | null = null;
       try {
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -9195,6 +9261,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      }
+      if (identityProofContext) {
+        identityProofValidation = validateAgentIdentityProof({
+          context: identityProofContext,
+          runId: run.id,
+          agentId: agent.id,
+          resultJson: adapterResult.resultJson ?? null,
+        });
+        adapterResult = {
+          ...adapterResult,
+          clearSession: true,
+          resultJson: {
+            ...(adapterResult.resultJson ?? {}),
+            identityProofValidation: {
+              passed: identityProofValidation.passed,
+              failures: identityProofValidation.failures,
+            },
+          },
+          ...(!identityProofValidation.passed
+            ? {
+                errorCode: "identity_proof_validation_failed",
+                errorMessage: `Identity proof validation failed: ${identityProofValidation.failures.join(", ")}`,
+              }
+            : {}),
+        };
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -9404,6 +9495,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
+        if (issueId && identityProofContext) {
+          if (outcome === "succeeded" && identityProofValidation?.passed && identityProofValidation.receipt) {
+            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+            if (!existingRunComment) {
+              await issuesSvc.addComment(
+                issueId,
+                buildAgentIdentityProofAcceptanceComment({
+                  context: identityProofContext,
+                  runId: livenessRun.id,
+                  receipt: identityProofValidation.receipt,
+                }),
+                { agentId: agent.id, runId: livenessRun.id },
+              );
+            }
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_accepted",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                priorIncompleteCommentIds: identityProofContext.priorIncompleteCommentIds,
+                proofRunId: livenessRun.id,
+              },
+            });
+          } else {
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_rejected",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                failures: identityProofValidation?.failures ?? ["identity_probe_execution_failed"],
+                proofRunId: livenessRun.id,
+              },
+            });
+          }
+        }
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
@@ -9530,7 +9670,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { errorCode: finalizedRun?.errorCode ?? runErrorCode });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -9626,21 +9766,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { errorCode: failedRun?.errorCode ?? failureErrorCode });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const workspaceValidationFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
+          const setupFailureCode = workspaceValidationFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -9684,7 +9826,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+            await finalizeAgentStatus(run.agentId, "failed", { errorCode: setupFailureCode }).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
@@ -9698,6 +9840,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          const reconciledRun = await getRun(run.id).catch(() => null);
+          if (
+            reconciledRun &&
+            (reconciledRun.status === "succeeded" ||
+              reconciledRun.status === "failed" ||
+              reconciledRun.status === "cancelled" ||
+              reconciledRun.status === "timed_out")
+          ) {
+            await finalizeAgentStatus(run.agentId, reconciledRun.status, {
+              errorCode: reconciledRun.errorCode,
+            }).catch(() => undefined);
+          }
         }
   }
 
@@ -11780,6 +11934,112 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null);
       return row?.message ?? null;
+    },
+
+    remediateRunRetention: async (
+      runId: string,
+      opts: { action: RunLogRemediationAction; reason?: string | null },
+    ) => {
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) throw notFound("Heartbeat run not found");
+
+      const redactedAt = new Date().toISOString();
+      const action = opts.action;
+      const reason = opts.reason ? redactSensitiveText(opts.reason) : null;
+      const logRemediation = run.logStore && run.logRef
+        ? await runLogStore.remediate(
+            { store: run.logStore as "local_file", logRef: run.logRef },
+            { action, redactText: redactSensitiveText },
+          ).catch((error) => {
+            if (error instanceof HttpError && error.status === 404) return null;
+            throw error;
+          })
+        : null;
+
+      const nextResultJson = remediateRetainedPayload(parseObject(run.resultJson), action, redactedAt);
+      const nextStdoutExcerpt = remediateRetainedText(run.stdoutExcerpt, action);
+      const nextStderrExcerpt = remediateRetainedText(run.stderrExcerpt, action);
+      const nextError = remediateRetainedText(run.error, action);
+
+      const updatedRun = await db
+        .update(heartbeatRuns)
+        .set({
+          resultJson: nextResultJson,
+          stdoutExcerpt: nextStdoutExcerpt,
+          stderrExcerpt: nextStderrExcerpt,
+          error: nextError,
+          ...(logRemediation
+            ? {
+                logBytes: logRemediation.bytesAfter,
+                logSha256: logRemediation.sha256 ?? null,
+                logCompressed: logRemediation.compressed,
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id))
+        .returning()
+        .then((rows) => rows[0] ?? run);
+
+      const events = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, run.id));
+      let eventRowsUpdated = 0;
+      for (const event of events) {
+        const nextMessage = action === "purge"
+          ? null
+          : (event.message ? redactSensitiveText(event.message) : event.message);
+        const nextPayload = action === "purge"
+          ? null
+          : redactRetainedRunPayload(event.payload ?? null);
+        if (nextMessage === event.message && JSON.stringify(nextPayload ?? null) === JSON.stringify(event.payload ?? null)) {
+          continue;
+        }
+        await db
+          .update(heartbeatRunEvents)
+          .set({
+            message: nextMessage,
+            payload: nextPayload,
+          })
+          .where(eq(heartbeatRunEvents.id, event.id));
+        eventRowsUpdated += 1;
+      }
+
+      await appendRunEvent(updatedRun, await nextRunEventSeq(updatedRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `retained run ${action === "purge" ? "purged" : "redacted"}`,
+        payload: {
+          action,
+          reason,
+          redactedAt,
+          logRemediation,
+          eventRowsUpdated,
+          resultJsonRemediated: true,
+          stdoutExcerptRemediated: run.stdoutExcerpt !== nextStdoutExcerpt,
+          stderrExcerptRemediated: run.stderrExcerpt !== nextStderrExcerpt,
+          errorRemediated: run.error !== nextError,
+        },
+      });
+
+      return {
+        runId: updatedRun.id,
+        companyId: updatedRun.companyId,
+        action,
+        redactedAt,
+        logRemediation,
+        eventRowsUpdated,
+        resultJsonRemediated: true,
+        stdoutExcerptRemediated: run.stdoutExcerpt !== nextStdoutExcerpt,
+        stderrExcerptRemediated: run.stderrExcerpt !== nextStderrExcerpt,
+        errorRemediated: run.error !== nextError,
+      };
     },
 
     readLog: async (

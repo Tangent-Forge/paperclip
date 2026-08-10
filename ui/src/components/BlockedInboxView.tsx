@@ -9,6 +9,8 @@ import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceCont
 import {
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
+  classifyBlockedInboxLane,
+  countBlockedInboxLanes,
   formatStoppedAge,
   groupBlockedInboxRows,
   sortBlockedInboxRows,
@@ -38,6 +40,7 @@ interface BlockedInboxViewProps {
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
+  lane?: "human" | "agent_operations" | "all";
 }
 
 const BLOCKED_LIST_LIMIT = 200;
@@ -57,6 +60,7 @@ export function BlockedInboxView({
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
+  lane = "human",
 }: BlockedInboxViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
@@ -78,9 +82,20 @@ export function BlockedInboxView({
   });
 
   const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
+  const laneCounts = useMemo(() => countBlockedInboxLanes(issues), [issues]);
+  const laneRows = useMemo(
+    () => allRows.filter((row) => {
+      if (lane === "all") return true;
+      const rowLane = classifyBlockedInboxLane(row.attention);
+      return lane === "human"
+        ? rowLane === "human"
+        : rowLane === "agent_operations" || rowLane === "external";
+    }),
+    [allRows, lane],
+  );
   const filteredRows = useMemo(
-    () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
-    [allRows, searchQuery],
+    () => laneRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
+    [laneRows, searchQuery],
   );
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(
@@ -166,7 +181,7 @@ export function BlockedInboxView({
     );
   }
 
-  if (allRows.length === 0) {
+  if (laneRows.length === 0) {
     return (
       <div
         data-testid="blocked-inbox-empty"
@@ -176,9 +191,13 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
+          <p className="text-sm font-medium text-foreground">
+            {lane === "human" ? "No human decisions are waiting." : "Agent Operations is clear."}
+          </p>
           <p className="text-xs text-muted-foreground">
-            Tasks that need a decision, recovery, or external action will appear here.
+            {lane === "human"
+              ? "Only questions and approvals that require a person appear here."
+              : "Agent-owned recovery, stalled chains, failed dispositions, and external waits appear here."}
           </p>
         </div>
       </div>
@@ -200,6 +219,13 @@ export function BlockedInboxView({
 
   return (
     <div data-testid="blocked-inbox" className="space-y-3">
+      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground" data-testid="blocked-inbox-lane-counts">
+        <span>Human Decisions {laneCounts.human}</span>
+        <span aria-hidden="true">·</span>
+        <span>Agent Operations {laneCounts.agentOperations}</span>
+        <span aria-hidden="true">·</span>
+        <span>External Waits {laneCounts.external}</span>
+      </div>
       <div className="overflow-hidden rounded-xl">
         {groupBy === "none" ? (
           sortedRows.map((row) => (

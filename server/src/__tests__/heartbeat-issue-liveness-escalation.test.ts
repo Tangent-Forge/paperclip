@@ -838,5 +838,50 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+    expect(blockers).toHaveLength(0);
+
+    const resumedSource = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0]);
+    expect(resumedSource?.status).toBe("todo");
+  });
+
+  it("does not auto-resume a human-assigned source when recovery blockers close", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: null, assigneeUserId: "owner-1" })
+      .where(eq(issues.id, blockedIssueId));
+
+    const escalation = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      )
+      .then((rows) => rows[0]);
+    expect(escalation).toBeTruthy();
+
+    await db.update(issues).set({ status: "done", blockedByIssueIds: [] }).where(eq(issues.id, escalation!.id));
+    await db.update(issues).set({ status: "done", blockedByIssueIds: [] }).where(eq(issues.id, blockerIssueId));
+    await heartbeat.reconcileIssueGraphLiveness();
+
+    const source = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0]);
+    expect(source?.status).toBe("blocked");
   });
 });

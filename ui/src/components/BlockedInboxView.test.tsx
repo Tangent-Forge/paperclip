@@ -120,6 +120,7 @@ const blockedViewProps = {
   sortBy: "most_recent" as const,
   issueFilters: defaultIssueFilterState,
   currentUserId: "local-board",
+  lane: "all" as const,
   liveIssueIds: new Set<string>(),
   workspaceFilterContext: {},
   showStatusColumn: true,

@@ -30,6 +30,7 @@ const issue = {
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
   executionState: null,
+  originKind: null,
 } as any;
 
 const agent = {
@@ -165,6 +166,13 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "source run is already a corrective handoff run",
+    });
+  });
+
+  it("does not recursively create a missing-disposition handoff for recovery-origin work", () => {
+    expect(decide({ issue: { ...issue, originKind: "stranded_issue_recovery" } as any })).toEqual({
+      kind: "skip",
+      reason: "recovery-origin issue owns its own disposition path",
     });
   });
 

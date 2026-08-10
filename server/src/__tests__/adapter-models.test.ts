@@ -6,7 +6,11 @@ import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-loca
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
-import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import {
+  resetCodexAppServerRunnerForTests,
+  resetCodexModelsCacheForTests,
+  setCodexAppServerRunnerForTests,
+} from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -26,6 +30,8 @@ describe("adapter model listing", () => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
+    resetCodexAppServerRunnerForTests();
+    setCodexAppServerRunnerForTests(async () => { throw new Error("fixture unavailable"); });
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
@@ -123,59 +129,58 @@ describe("adapter model listing", () => {
     expect(models).toEqual(claudeFallbackModels);
   });
 
-  it("loads codex models dynamically and merges fallback options", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        data: [
-          { id: "gpt-5-pro" },
-          { id: "gpt-5" },
-        ],
-      }),
-    } as Response);
+  it("loads Codex OAuth models and replaces the fallback catalog", async () => {
+    const runner = vi.fn(async () => [
+      { id: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", hidden: false },
+      { id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", hidden: false },
+      { id: "internal-hidden", displayName: "Hidden", hidden: true },
+    ]);
+    setCodexAppServerRunnerForTests(runner);
 
     const first = await listAdapterModels("codex_local");
     const second = await listAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(first).toEqual(second);
-    expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(first).toEqual([
+      { id: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+      { id: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
+    ]);
+    expect(second).toEqual(first);
+    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(false);
   });
 
-  it("refreshes cached codex models on demand", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5" }],
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5.5" }],
-        }),
-      } as Response);
+  it("refreshes cached Codex OAuth models on demand", async () => {
+    const runner = vi.fn()
+      .mockResolvedValueOnce([{ id: "gpt-5.6-sol", displayName: "Sol" }])
+      .mockResolvedValueOnce([{ id: "gpt-5.6-terra", displayName: "Terra" }]);
+    setCodexAppServerRunnerForTests(runner);
 
     const initial = await listAdapterModels("codex_local");
     const refreshed = await refreshAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.5")).toBe(true);
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(initial).toEqual([{ id: "gpt-5.6-sol", label: "Sol" }]);
+    expect(refreshed).toEqual([{ id: "gpt-5.6-terra", label: "Terra" }]);
   });
 
-  it("falls back to static codex models when OpenAI model discovery fails", async () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({}),
-    } as Response);
+  it("honors agent-scoped Codex command and OAuth home", async () => {
+    const runner = vi.fn(async () => [{ id: "gpt-5.6-luna", displayName: "Luna" }]);
+    setCodexAppServerRunnerForTests(runner);
 
+    const { listCodexModelsForContext } = await import("../adapters/codex-models.js");
+    const models = await listCodexModelsForContext({
+      command: "/managed/bin/codex",
+      env: { CODEX_HOME: "/managed/codex-home", OPENAI_API_KEY: "" },
+    });
+
+    expect(models).toEqual([{ id: "gpt-5.6-luna", label: "Luna" }]);
+    expect(runner).toHaveBeenCalledWith(
+      "/managed/bin/codex",
+      expect.objectContaining({ CODEX_HOME: "/managed/codex-home", OPENAI_API_KEY: "" }),
+    );
+  });
+
+  it("falls back to static Codex models when OAuth discovery fails", async () => {
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
   });

@@ -481,6 +481,7 @@ interface PluginToolExecuteRequest {
  * | POST | /plugins/tools/execute | Execute a plugin tool |
  * | GET | /plugins/:pluginId/config | Get current plugin config |
  * | POST | /plugins/:pluginId/config | Save (upsert) plugin config |
+ * | PATCH | /plugins/:pluginId/config | Safely merge a partial plugin config |
  * | POST | /plugins/:pluginId/config/test | Test config via validateConfig RPC |
  * | POST | /plugins/:pluginId/bridge/data | Proxy getData to plugin worker |
  * | POST | /plugins/:pluginId/bridge/action | Proxy performAction to plugin worker |
@@ -2246,6 +2247,89 @@ export function pluginRoutes(
           }
           // Other RPC errors (timeout, unavailable) are non-fatal — config is
           // already persisted and will take effect on next worker restart.
+        }
+      }
+
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  /**
+   * PATCH /api/plugins/:pluginId/config
+   *
+   * Shallow-merge a partial config without requiring callers to round-trip
+   * credential references that are already stored. New secret references are
+   * still rejected while company-scoped plugin config remains unavailable.
+   */
+  router.patch("/plugins/:pluginId/config", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
+      res.status(400).json({ error: '"configJson" is required and must be an object' });
+      return;
+    }
+
+    const patchJson = { ...body.configJson };
+    const schema = plugin.manifestJson?.instanceConfigSchema;
+    const existing = await registry.getConfig(plugin.id);
+    const existingJson = existing?.configJson && typeof existing.configJson === "object" && !Array.isArray(existing.configJson)
+      ? existing.configJson as Record<string, unknown>
+      : {};
+    const mergedJson = { ...existingJson, ...patchJson };
+
+    if (schema && Object.keys(schema).length > 0) {
+      const validation = validateInstanceConfig(mergedJson, schema);
+      if (!validation.valid) {
+        res.status(400).json({
+          error: "Configuration does not match the plugin's instanceConfigSchema",
+          fieldErrors: validation.errors,
+        });
+        return;
+      }
+    }
+
+    try {
+      const introducedSecretRefs = extractSecretRefPathsFromConfig(patchJson, schema);
+      if (introducedSecretRefs.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
+      const result = await registry.patchConfig(plugin.id, { configJson: patchJson });
+      const effectiveConfig = result?.configJson && typeof result.configJson === "object"
+        ? result.configJson as Record<string, unknown>
+        : mergedJson;
+      await logPluginMutationActivity(req, "plugin.config.patched", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        patchedKeys: Object.keys(patchJson).sort(),
+      });
+
+      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        try {
+          await bridgeDeps.workerManager.call(plugin.id, "configChanged", { config: effectiveConfig });
+        } catch (rpcErr) {
+          if (
+            rpcErr instanceof JsonRpcCallError
+            && rpcErr.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+          ) {
+            try {
+              await lifecycle.restartWorker(plugin.id);
+            } catch {
+              // Config is persisted; the next worker start will load it.
+            }
+          }
         }
       }
 

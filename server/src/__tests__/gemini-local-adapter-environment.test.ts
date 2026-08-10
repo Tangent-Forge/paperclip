@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
-async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
+async function writeFakeGeminiCommand(
+  binDir: string,
+  argsCapturePath: string,
+  commandName = "gemini",
+): Promise<string> {
+  const commandPath = path.join(binDir, commandName);
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
@@ -67,7 +71,7 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes model and yolo flags to the hello probe", async () => {
+  it("passes agy-compatible flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -76,13 +80,13 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
-    await writeFakeGeminiCommand(binDir, argsCapturePath);
+    await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "gemini",
+        command: "agy",
         cwd,
         model: "gemini-2.5-pro",
         yolo: true,
@@ -97,9 +101,15 @@ describe("gemini_local environment diagnostics", () => {
     expect(result.status).not.toBe("fail");
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--model");
-    expect(args).toContain("gemini-2.5-pro");
-    expect(args).toContain("--approval-mode");
-    expect(args).toContain("yolo");
+    // gemini-2.5-pro is configured; resolveGeminiLocalModel maps it onto an id agy
+    // actually serves, so the resolved value is what reaches the CLI.
+    expect(args).toContain("gemini-3.1-pro-low");
+    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--disable-slash-commands");
+    // agy-only since 2026-08-09: the Gemini CLI flags must never be emitted.
+    expect(args).not.toContain("--approval-mode");
+    expect(args).not.toContain("--skip-trust");
+    expect(args).not.toContain("--sandbox=none");
     expect(args).toContain("--prompt");
     await fs.rm(root, { recursive: true, force: true });
   });

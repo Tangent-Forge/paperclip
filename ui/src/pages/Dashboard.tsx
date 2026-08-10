@@ -24,6 +24,7 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { SystemHealthCard } from "../components/SystemHealthCard";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -236,6 +237,10 @@ export function Dashboard() {
               </Link>
             </div>
           ) : null}
+
+          {/* Above the metrics on purpose: infrastructure failures invalidate every
+              number below them, so they must be seen first, not scrolled to. */}
+          <SystemHealthCard />
 
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard

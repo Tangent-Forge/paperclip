@@ -695,6 +695,31 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not surface a stale successful-run handoff after the issue has a disposition", async () => {
+    const { companyId, agentId } = await createCompany("BSD");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "BSD-1",
+      title: "Already parked",
+      status: "backlog",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: issueId,
+      agentId,
+      details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    expect(rows.find((row) => row.id === issueId)?.blockedInboxAttention.reason)
+      .not.toBe("missing_successful_run_disposition");
+  });
+
   it("applies assigneeAgentId='null' as an IS NULL filter on the blocked-inbox path", async () => {
     const { companyId, agentId } = await createCompany("BAN");
     const unassignedParentId = await insertIssue({

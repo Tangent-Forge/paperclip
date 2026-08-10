@@ -38,6 +38,21 @@ export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
+export {
+  evidenceArtifacts,
+  evidenceAuthorities,
+  evidenceClaims,
+  evidenceConfidenceScores,
+  evidenceContradictions,
+  evidenceDatasets,
+  evidenceDateRanges,
+  evidenceDispositions,
+  evidenceExtractions,
+  evidenceHashes,
+  evidenceLineage,
+  evidenceOwners,
+  evidenceSources,
+} from "./evidence_registry.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
