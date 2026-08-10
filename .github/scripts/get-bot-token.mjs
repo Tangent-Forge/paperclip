@@ -36,6 +36,93 @@ export function normalizePrivateKey(raw) {
   return key;
 }
 
+// Matched with full delimiters so "RSA PRIVATE KEY" can never be reported as the
+// bare "PRIVATE KEY". Only labels from this fixed list are ever echoed — an
+// unrecognised header is reported as a boolean, so no part of the secret's own
+// content can reach the log.
+const KNOWN_PEM_TYPES = [
+  'ENCRYPTED PRIVATE KEY',
+  'OPENSSH PRIVATE KEY',
+  'RSA PRIVATE KEY',
+  'EC PRIVATE KEY',
+  'DSA PRIVATE KEY',
+  'PRIVATE KEY',
+];
+
+/**
+ * Describe the *shape* of the configured key without revealing any of it.
+ *
+ * Every OpenSSL rejection surfaces as the same opaque ERR_OSSL_UNSUPPORTED, so
+ * three separate CI fixes were attempted by guessing at the cause. Every field
+ * here is metadata — lengths, counts, booleans, and labels from KNOWN_PEM_TYPES.
+ */
+export function describePrivateKeyShape(raw) {
+  const value = String(raw ?? '');
+  const trimmed = value.trim();
+  const pemType = KNOWN_PEM_TYPES.find(type => value.includes(`-----BEGIN ${type}-----`)) ?? null;
+  const hasBeginLine = value.includes('-----BEGIN');
+
+  return {
+    byteLength: value.length,
+    isEmpty: trimmed.length === 0,
+    hasBeginLine,
+    pemType,
+    unrecognisedPemType: hasBeginLine && pemType === null,
+    lineCount: value.split(/\r?\n/).length,
+    hasRealNewlines: value.includes('\n'),
+    hasEscapedNewlines: value.includes('\\n'),
+    hasCarriageReturns: value.includes('\r'),
+    looksEncrypted: value.includes('ENCRYPTED') || value.includes('Proc-Type:'),
+    // Compact first, then require real base64 length and alphabet. Matching the
+    // charset alone is not enough: ordinary prose is letters and spaces, so
+    // "not a pem at all" would otherwise be reported as base64.
+    looksBase64Wrapped: (() => {
+      if (hasBeginLine) return false;
+      const compact = trimmed.replace(/\s+/g, '');
+      return compact.length >= 64 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
+    })(),
+    wrappedInQuotes: /^(["']).*\1$/s.test(trimmed),
+  };
+}
+
+/**
+ * Turn a shape into the single most specific remedy, so the log says what to do
+ * rather than that something is "unsupported".
+ */
+export function explainPrivateKeyShape(shape) {
+  if (shape.isEmpty) {
+    return 'The secret is set but empty. Upload the PEM with "gh secret set REVIEW_APP_PRIVATE_KEY < key.pem".';
+  }
+  if (shape.wrappedInQuotes) {
+    return 'The stored value is wrapped in quotes. Re-upload by redirecting the file rather than pasting: "gh secret set REVIEW_APP_PRIVATE_KEY < key.pem".';
+  }
+  if (shape.pemType === 'OPENSSH PRIVATE KEY') {
+    return 'This is an OpenSSH-format key, which GitHub App JWT signing cannot use. Convert it: "ssh-keygen -p -m PKCS8 -f key.pem", then re-upload.';
+  }
+  if (shape.pemType === 'ENCRYPTED PRIVATE KEY' || shape.looksEncrypted) {
+    return 'The key is passphrase-encrypted; CI cannot decrypt it. Export an unencrypted copy: "openssl pkcs8 -topk8 -nocrypt -in key.pem -out key.unencrypted.pem", then re-upload.';
+  }
+  if (shape.unrecognisedPemType) {
+    return 'The value has a PEM header, but not one usable for App JWT signing. Download a fresh private key from https://github.com/settings/apps/commitperclip and re-upload it.';
+  }
+  if (shape.looksBase64Wrapped) {
+    return 'The value looks base64-encoded but does not decode to a PEM. Upload the .pem file itself, not an encoding of it.';
+  }
+  if (!shape.hasBeginLine) {
+    return 'The value has no "-----BEGIN" line, so it is not a PEM. Upload the .pem file with "gh secret set REVIEW_APP_PRIVATE_KEY < key.pem".';
+  }
+  if (shape.hasEscapedNewlines && !shape.hasRealNewlines) {
+    return 'The PEM newlines are escaped as literal backslash-n. Re-upload by redirecting the file rather than pasting.';
+  }
+  if (shape.hasCarriageReturns) {
+    return 'The PEM has CRLF line endings. Convert to LF ("dos2unix key.pem") and re-upload.';
+  }
+  if (shape.lineCount < 3) {
+    return 'The PEM is a single line, so its body was flattened. Re-upload by redirecting the file rather than pasting.';
+  }
+  return 'The PEM looks structurally intact, so it may be truncated or from a deleted App key. Generate a fresh private key at https://github.com/settings/apps/commitperclip and re-upload it.';
+}
+
 export function generateJWT(privateKey) {
   const now = Math.floor(Date.now() / 1000);
   const payload = { iat: now - 10, exp: now + 60, iss: APP_ID };
@@ -47,12 +134,22 @@ export function generateJWT(privateKey) {
   try {
     key = createPrivateKey(normalizePrivateKey(privateKey));
   } catch (error) {
-    // Never echo the key or any fragment of it.
+    // Never echo the key or any fragment of it — only its shape.
+    const shape = describePrivateKeyShape(privateKey);
+    const facts = [
+      `bytes=${shape.byteLength}`,
+      `lines=${shape.lineCount}`,
+      `pemType=${shape.pemType ?? (shape.hasBeginLine ? 'unrecognised' : 'none')}`,
+      `realNewlines=${shape.hasRealNewlines}`,
+      `escapedNewlines=${shape.hasEscapedNewlines}`,
+      `crlf=${shape.hasCarriageReturns}`,
+      `encrypted=${shape.looksEncrypted}`,
+    ].join(' ');
+
     throw new Error(
-      `Could not parse the commitperclip private key (${error.code ?? error.message}). ` +
-        'Expected a PEM beginning with "-----BEGIN RSA PRIVATE KEY-----" or ' +
-        '"-----BEGIN PRIVATE KEY-----", with real newlines. Re-upload the secret with ' +
-        'e.g. "gh secret set COMMITPERCLIP_KEY < key.pem" rather than pasting it.'
+      `Could not parse the commitperclip private key (${error.code ?? error.message}).\n` +
+        `  Key shape: ${facts}\n` +
+        `  Fix: ${explainPrivateKeyShape(shape)}`
     );
   }
 
