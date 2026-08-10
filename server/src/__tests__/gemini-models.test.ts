@@ -45,6 +45,19 @@ describe("gemini model discovery", () => {
     ]);
   });
 
+  it("parses the newer tab-separated format and prefers agy's own labels", () => {
+    // agy changed its output between 2026-08-06 and 2026-08-09: it now prints a
+    // banner and "<id>\t<label>" instead of bare ids. The original whole-line slug
+    // guard rejected every row, so discovery silently served the static catalog.
+    const parsed = parseAgyModelList(
+      "Fetching available models...\n" +
+        "gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n" +
+        "claude-opus-4-6-thinking\tClaude Opus 4.6 Thinking\n",
+    );
+    expect(parsed.map((m) => m.id)).toEqual(["gemini-3.6-flash-high", "claude-opus-4-6-thinking"]);
+    expect(parsed[0].label).toBe("Gemini 3.6 Flash (High)");
+  });
+
   it("builds readable labels from slugs", () => {
     expect(humanizeGeminiModelId("gemini-3.6-flash-high")).toBe("Gemini 3.6 Flash High");
     expect(humanizeGeminiModelId("claude-opus-4-6-thinking")).toBe("Claude Opus 4.6 Thinking");

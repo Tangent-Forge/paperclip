@@ -54,13 +54,29 @@ export function humanizeGeminiModelId(id: string): string {
   return words.join(" ").replace(/\b(\d+) (\d+)\b/g, "$1.$2");
 }
 
+/**
+ * Handles both shapes agy has emitted:
+ *   older:  "gemini-3.6-flash-high"
+ *   newer:  "gemini-3.6-flash-high\tGemini 3.6 Flash (High)", preceded by a
+ *           "Fetching available models..." banner
+ *
+ * The original parser required the whole line to be slug-shaped, so when agy
+ * started appending labels every line was rejected, nothing parsed, and lookups
+ * silently fell back to the static catalog. Take the first field as the id and
+ * prefer agy's own label when it supplies one.
+ */
 export function parseAgyModelList(stdout: string): AdapterModel[] {
-  const models = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    // Guard against banners or prompts sneaking into stdout: ids are slug-shaped.
-    .filter((line) => /^[a-z0-9][a-z0-9._-]*$/i.test(line))
-    .map((id) => ({ id, label: humanizeGeminiModelId(id) }));
+  const models: AdapterModel[] = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [id, ...rest] = line.split(/\s+/);
+    // Ids are slugs and always contain a separator, which is what distinguishes
+    // them from prose lines such as the "Fetching available models..." banner.
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id) || !/[-.]/.test(id)) continue;
+    const label = rest.join(" ").trim();
+    models.push({ id, label: label || humanizeGeminiModelId(id) });
+  }
   return dedupeModels(models);
 }
 
