@@ -104,6 +104,12 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import {
+  buildAgentIdentityProofAcceptanceComment,
+  readAgentIdentityProofContext,
+  validateAgentIdentityProof,
+  type AgentIdentityProofValidation,
+} from "./agent-identity-proof.js";
+import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
@@ -954,6 +960,26 @@ function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+type AgentHealthCheck = {
+  status: "healthy" | "error";
+  reason: "workspace_validation" | "interrupted_stream" | null;
+};
+
+export function checkAgentHealthAfterRun(input: {
+  adapterType: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  errorCode?: string | null;
+}): AgentHealthCheck {
+  if (input.outcome !== "failed") return { status: "healthy", reason: null };
+  if (input.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE) {
+    return { status: "healthy", reason: "workspace_validation" };
+  }
+  if (input.adapterType === "claude_local" && input.errorCode === "claude_interrupted_stream") {
+    return { status: "healthy", reason: "interrupted_stream" };
+  }
+  return { status: "error", reason: null };
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -7320,6 +7346,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    options?: { errorCode?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7329,12 +7356,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
+    const healthCheck = checkAgentHealthAfterRun({
+      adapterType: existing.adapterType,
+      outcome,
+      errorCode: options?.errorCode ?? null,
+    });
 
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
+          ? "idle"
+          : healthCheck.status === "healthy"
           ? "idle"
           : "error";
 
@@ -7365,6 +7399,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? new Date(updated.lastHeartbeatAt).toISOString()
             : null,
           outcome,
+          healthCheck: healthCheck.reason,
         },
       });
     }
@@ -9174,6 +9209,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      const identityProofContext = readAgentIdentityProofContext(context);
+      let identityProofValidation: AgentIdentityProofValidation | null = null;
       try {
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -9224,6 +9261,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      }
+      if (identityProofContext) {
+        identityProofValidation = validateAgentIdentityProof({
+          context: identityProofContext,
+          runId: run.id,
+          agentId: agent.id,
+          resultJson: adapterResult.resultJson ?? null,
+        });
+        adapterResult = {
+          ...adapterResult,
+          clearSession: true,
+          resultJson: {
+            ...(adapterResult.resultJson ?? {}),
+            identityProofValidation: {
+              passed: identityProofValidation.passed,
+              failures: identityProofValidation.failures,
+            },
+          },
+          ...(!identityProofValidation.passed
+            ? {
+                errorCode: "identity_proof_validation_failed",
+                errorMessage: `Identity proof validation failed: ${identityProofValidation.failures.join(", ")}`,
+              }
+            : {}),
+        };
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -9433,6 +9495,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         const skipRunIssueComment = parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
+        if (issueId && identityProofContext) {
+          if (outcome === "succeeded" && identityProofValidation?.passed && identityProofValidation.receipt) {
+            const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
+            if (!existingRunComment) {
+              await issuesSvc.addComment(
+                issueId,
+                buildAgentIdentityProofAcceptanceComment({
+                  context: identityProofContext,
+                  runId: livenessRun.id,
+                  receipt: identityProofValidation.receipt,
+                }),
+                { agentId: agent.id, runId: livenessRun.id },
+              );
+            }
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_accepted",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                priorIncompleteCommentIds: identityProofContext.priorIncompleteCommentIds,
+                proofRunId: livenessRun.id,
+              },
+            });
+          } else {
+            await issuesSvc.update(issueId, { status: "done" });
+            await logActivity(db, {
+              companyId: livenessRun.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: agent.id,
+              runId: livenessRun.id,
+              action: "issue.agent_identity_proof_rejected",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                identifier: identityProofContext.issueIdentifier,
+                failures: identityProofValidation?.failures ?? ["identity_probe_execution_failed"],
+                proofRunId: livenessRun.id,
+              },
+            });
+          }
+        }
         if (issueId && outcome === "succeeded" && !skipRunIssueComment) {
           try {
             const existingRunComment = await findRunIssueComment(livenessRun.id, livenessRun.companyId, issueId);
@@ -9559,7 +9670,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { errorCode: finalizedRun?.errorCode ?? runErrorCode });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -9655,21 +9766,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { errorCode: failedRun?.errorCode ?? failureErrorCode });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const workspaceValidationFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
+          const setupFailureCode = workspaceValidationFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureCode,
                 errorMessage: message,
               }),
             } : {}),
@@ -9713,7 +9826,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+            await finalizeAgentStatus(run.agentId, "failed", { errorCode: setupFailureCode }).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
@@ -9727,6 +9840,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          const reconciledRun = await getRun(run.id).catch(() => null);
+          if (
+            reconciledRun &&
+            (reconciledRun.status === "succeeded" ||
+              reconciledRun.status === "failed" ||
+              reconciledRun.status === "cancelled" ||
+              reconciledRun.status === "timed_out")
+          ) {
+            await finalizeAgentStatus(run.agentId, reconciledRun.status, {
+              errorCode: reconciledRun.errorCode,
+            }).catch(() => undefined);
+          }
         }
   }
 

@@ -24,6 +24,7 @@ import {
   findServerAdapter,
   findActiveServerAdapter,
   listEnabledServerAdapters,
+  listAdapterModels,
   registerServerAdapter,
   resolveExternalAdapterRegistration,
   unregisterServerAdapter,
@@ -209,9 +210,17 @@ export function adapterRoutes() {
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
 
-    const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
-      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
-    ).sort((a, b) => a.type.localeCompare(b.type));
+    const result: AdapterInfo[] = (await Promise.all(
+      registeredAdapters.map(async (adapter) => {
+        const info = buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet);
+        try {
+          info.modelsCount = (await listAdapterModels(adapter.type)).length;
+        } catch (err) {
+          logger.warn({ err, adapterType: adapter.type }, "Failed to resolve adapter models for summary count");
+        }
+        return info;
+      }),
+    )).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);
   });

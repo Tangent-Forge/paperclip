@@ -100,6 +100,36 @@ import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
+
+import {
+  execute as kimiExecute,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+} from "@paperclipai/adapter-kimi-local";
+import {
+  execute as qwenExecute,
+  testEnvironment as qwenTestEnvironment,
+  sessionCodec as qwenSessionCodec,
+} from "@paperclipai/adapter-qwen-local/server";
+import {
+  agentConfigurationDoc as qwenAgentConfigurationDoc,
+  models as qwenModels,
+} from "@paperclipai/adapter-qwen-local";
+
+import {
+  execute as devinExecute,
+  testEnvironment as devinTestEnvironment,
+  listDevinModels,
+  getConfigSchema as getDevinConfigSchema,
+} from "@paperclipai/adapter-devin-local/server";
+import {
+  agentConfigurationDoc as devinAgentConfigurationDoc,
+  models as devinModels,
+} from "@paperclipai/adapter-devin-local";
 import {
   execute as openCodeExecute,
   listOpenCodeSkills,
@@ -163,6 +193,8 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { executeHermesIdentityProof } from "./hermes-identity-proof.js";
+import { readAgentIdentityProofContext } from "../services/agent-identity-proof.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -490,6 +522,25 @@ const grokLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: grokAgentConfigurationDoc,
 };
 
+const devinLocalAdapter: ServerAdapterModule = {
+  type: "devin_local",
+  execute: devinExecute,
+  testEnvironment: devinTestEnvironment,
+  models: devinModels,
+  listModels: () => listDevinModels(),
+  refreshModels: () => listDevinModels(true),
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getConfigSchema: getDevinConfigSchema,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "devin"),
+    detectCommand: readConfiguredCommand(config, "devin"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: devinAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -556,7 +607,12 @@ const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    const identityProof = readAgentIdentityProofContext(normalizedCtx.context);
+    if (!normalizedCtx.authToken) {
+      return identityProof
+        ? executeHermesIdentityProof(normalizedCtx, identityProof)
+        : executeHermesLocal(normalizedCtx);
+    }
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -604,6 +660,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
+    if (identityProof) return executeHermesIdentityProof(patchedCtx, identityProof);
     return executeHermesLocal(patchedCtx);
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
@@ -616,6 +673,33 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
+};
+
+
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
+const qwenLocalAdapter: ServerAdapterModule = {
+  type: "qwen_local",
+  execute: qwenExecute,
+  testEnvironment: qwenTestEnvironment,
+  sessionCodec: qwenSessionCodec,
+  sessionManagement: getAdapterSessionManagement("qwen_local") ?? undefined,
+  models: qwenModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: qwenAgentConfigurationDoc,
 };
 
 const providerRouterLocalAdapter: ServerAdapterModule = {
@@ -667,12 +751,15 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
+    devinLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     providerRouterLocalAdapter,
     janitorLocalAdapter,
     processAdapter,
     httpAdapter,
+    kimiLocalAdapter,
+    qwenLocalAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }

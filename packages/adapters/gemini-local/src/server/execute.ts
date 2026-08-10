@@ -47,7 +47,12 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  DEFAULT_GEMINI_LOCAL_MODEL,
+  resolveGeminiLocalModel,
+  sanitizeGeminiLocalExtraArgs,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
@@ -308,11 +313,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  const extraArgs = (() => {
+  const configuredExtraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
     return asStringArray(config.args);
   })();
+  const extraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand, configuredExtraArgs);
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
   let remoteSkillsDir: string | null = null;
   let localSkillsDir: string | null = null;
@@ -482,12 +488,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  const resolvedModel = resolveGeminiLocalModel(resolvedCommand, model);
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
-    if (executionTargetIsRemote) {
-      notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
-    }
+    const notes: string[] = ["Prompt is passed to agy via --prompt for non-interactive execution."];
+    notes.push("Using agy-compatible unattended execution flags.");
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
@@ -543,9 +547,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--dangerously-skip-permissions");
+    // gemini_local is agy-only; the plain Gemini CLI path was dropped 2026-08-09.
+    // agy exposes no --resume (verified against agy --help): resuming by id is
+    // --conversation. Model ids go through resolveGeminiLocalModel so legacy
+    // gemini-2.5-* config values map onto ids agy actually serves.
+    if (resumeSessionId) args.push("--conversation", resumeSessionId);
+    if (resolvedModel) args.push("--model", resolvedModel);
+    args.push("--dangerously-skip-permissions", "--disable-slash-commands");
     if (sandbox) {
       args.push("--sandbox");
     }
