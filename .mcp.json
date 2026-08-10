@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "gumroad": {
-      "command": "/usr/local/opt/node@22/bin/node",
+      "command": "node",
       "args": [
-        "/Users/tangentforge/tangent-forge/repos/paperclip/packages/mcp-server-gumroad/dist/stdio.js"
+        "packages/mcp-server-gumroad/dist/stdio.js"
       ],
       "env": {
         "GUMROAD_ACCESS_TOKEN": "${GUMROAD_ACCESS_TOKEN}"
