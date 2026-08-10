@@ -200,14 +200,15 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })());
 
+      // agy-only since 2026-08-09. The prompt is appended once below, after
+      // extraArgs -- master's variant seeded it into the initial array as well,
+      // which would have sent --prompt twice.
       const args = ["--output-format", "stream-json"];
       const resolvedModel = resolveGeminiLocalModel(command, model);
       if (resolvedModel) args.push("--model", resolvedModel);
-      if (commandIsAgy) {
-        args.push("--dangerously-skip-permissions", "--disable-slash-commands");
-        if (sandbox) args.push("--sandbox");
-      } else {
-        args.push("--approval-mode", "yolo", "--skip-trust", sandbox ? "--sandbox" : "--sandbox=none");
+      args.push("--dangerously-skip-permissions", "--disable-slash-commands");
+      if (sandbox) {
+        args.push("--sandbox");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("--prompt", "Respond with hello.");

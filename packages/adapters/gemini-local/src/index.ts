@@ -4,7 +4,8 @@ import {
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
-export const label = "Gemini / Antigravity CLI (local)";
+// agy-only as of 2026-08-09; the plain Gemini CLI path was dropped.
+export const label = "Antigravity CLI (local)";
 
 export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
 

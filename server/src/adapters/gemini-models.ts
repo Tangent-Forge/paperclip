@@ -5,12 +5,14 @@ import { models as geminiFallbackModels } from "@paperclipai/adapter-gemini-loca
 
 const GEMINI_MODELS_TIMEOUT_MS = 8000;
 const GEMINI_MODELS_CACHE_TTL_MS = 60_000;
-const DEFAULT_GEMINI_COMMAND = "gemini";
+// gemini_local is agy-only as of 2026-08-09; an agent with no explicit command
+// should resolve to Antigravity, not the Gemini CLI.
+const DEFAULT_GEMINI_COMMAND = "agy";
 
 /**
- * Discovery runs only against `agy` (Antigravity). The gemini_local adapter also
- * drives the plain Gemini CLI, which has no equivalent `models` subcommand, so
- * that path keeps the static catalog exported by the adapter package.
+ * Kept as a guard rather than removed: a misconfigured agent can still point
+ * `command` at something that is not agy, and shelling `models` at an arbitrary
+ * binary is not a safe default. Non-agy commands fall back to the static catalog.
  */
 function isAgy(command: string): boolean {
   return path.basename(command).toLowerCase().replace(/\.(cmd|exe)$/, "") === "agy";
