@@ -8,12 +8,33 @@
  * Also exports: generateJWT(privateKey), ghFetch(path, token, options)
  * These are used by all other gate scripts.
  */
-import { createSign } from 'node:crypto';
+import { createPrivateKey, createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const APP_ID = '3718661';
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+
+// GitHub issues app keys as PKCS#1 ("BEGIN RSA PRIVATE KEY"), and pasting a PEM
+// into a CI secret frequently escapes its newlines. Both reach OpenSSL as an
+// undecodable blob and fail with the same opaque
+// "error:1E08010C:DECODER routines::unsupported". Normalise here, and route
+// through createPrivateKey so PKCS#1 and PKCS#8 are both accepted.
+export function normalizePrivateKey(raw) {
+  let key = String(raw).trim();
+  // Secret stored with literal backslash-n rather than real newlines.
+  if (!key.includes('\n') && key.includes('\\n')) {
+    key = key.replace(/\\n/g, '\n');
+  }
+  // Secret stored base64-wrapped around the whole PEM.
+  if (!key.includes('-----BEGIN')) {
+    const decoded = Buffer.from(key, 'base64').toString('utf8');
+    if (decoded.includes('-----BEGIN')) {
+      key = decoded.trim();
+    }
+  }
+  return key;
+}
 
 export function generateJWT(privateKey) {
   const now = Math.floor(Date.now() / 1000);
@@ -21,7 +42,21 @@ export function generateJWT(privateKey) {
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const data = `${header}.${body}`;
-  const sig = createSign('RSA-SHA256').update(data).sign(privateKey, 'base64url');
+
+  let key;
+  try {
+    key = createPrivateKey(normalizePrivateKey(privateKey));
+  } catch (error) {
+    // Never echo the key or any fragment of it.
+    throw new Error(
+      `Could not parse the commitperclip private key (${error.code ?? error.message}). ` +
+        'Expected a PEM beginning with "-----BEGIN RSA PRIVATE KEY-----" or ' +
+        '"-----BEGIN PRIVATE KEY-----", with real newlines. Re-upload the secret with ' +
+        'e.g. "gh secret set COMMITPERCLIP_KEY < key.pem" rather than pasting it.'
+    );
+  }
+
+  const sig = createSign('RSA-SHA256').update(data).sign(key, 'base64url');
   return `${data}.${sig}`;
 }
 
