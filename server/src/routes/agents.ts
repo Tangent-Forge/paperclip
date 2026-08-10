@@ -53,7 +53,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -79,7 +79,15 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  listCodexModelsForContext,
+  refreshCodexModelsForContext,
+} from "../adapters/codex-models.js";
+import {
+  listGeminiModelsForContext,
+  refreshGeminiModelsForContext,
+} from "../adapters/gemini-models.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1619,9 +1627,50 @@ export function agentRoutes(
       res.json(adapter.models ?? []);
       return;
     }
-    const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
+    let models: { id: string; label: string }[];
+    const agentId = asNonEmptyString(req.query.agentId);
+    // Adapters whose real catalog depends on the agent's configured CLI. codex_local
+    // discovers over the app-server; gemini_local shells out to `agy models` when the
+    // command is Antigravity. Both need the agent's command/env, which the config-less
+    // listModels() hook on ServerAdapterModule cannot see.
+    const configAwareModelTypes = new Set(["codex_local", "gemini_local"]);
+    if (agentId && configAwareModelTypes.has(type)) {
+      const agent = await svc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        companyId,
+        (agent.adapterConfig ?? {}) as Record<string, unknown>,
+      );
+      const config = runtimeConfig as Record<string, unknown>;
+      const rawEnv = readObject(config.env) ?? {};
+      const env: NodeJS.ProcessEnv = {};
+      for (const [key, rawValue] of Object.entries(rawEnv)) {
+        const value = typeof rawValue === "string"
+          ? rawValue
+          : readObject(rawValue)?.value;
+        if (typeof value === "string") env[key] = value;
+      }
+      const context = {
+        command: typeof config.command === "string" ? config.command : null,
+        env,
+      };
+      if (type === "gemini_local") {
+        models = refresh
+          ? await refreshGeminiModelsForContext(context)
+          : await listGeminiModelsForContext(context);
+      } else {
+        models = refresh
+          ? await refreshCodexModelsForContext(context)
+          : await listCodexModelsForContext(context);
+      }
+    } else {
+      models = refresh
+        ? await refreshAdapterModels(type)
+        : await listAdapterModels(type);
+    }
     res.json(models);
   });
 
@@ -3659,6 +3708,45 @@ export function agentRoutes(
     }
 
     res.json(run);
+  });
+
+  router.post("/heartbeat-runs/:runId/retention-remediation", async (req, res) => {
+    assertBoard(req);
+    const runId = req.params.runId as string;
+    const action = typeof req.body?.action === "string" ? req.body.action : "redact";
+    if (action !== "redact" && action !== "purge") {
+      throw badRequest("action must be redact or purge");
+    }
+    const rawReason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    const reason = rawReason ? redactSensitiveText(rawReason) : null;
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await heartbeat.remediateRunRetention(runId, {
+      action,
+      reason,
+    });
+
+    await logActivity(db, {
+      companyId: result.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "heartbeat.retention_remediated",
+      entityType: "heartbeat_run",
+      entityId: result.runId,
+      details: {
+        action: result.action,
+        reason,
+        logRemediation: result.logRemediation,
+        eventRowsUpdated: result.eventRowsUpdated,
+      },
+    });
+
+    res.json(result);
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {

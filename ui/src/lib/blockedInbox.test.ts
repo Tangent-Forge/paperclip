@@ -16,8 +16,10 @@ import {
   blockedSeverityRank,
   blockedVariantLabel,
   buildBlockedInboxRows,
+  classifyBlockedInboxLane,
   compareBlockedAttention,
   compareBlockedRows,
+  countBlockedInboxLanes,
   formatStoppedAge,
   groupBlockedInboxRows,
   sortBlockedInboxRows,
@@ -91,6 +93,24 @@ function makeIssue(
 }
 
 describe("blockedInbox", () => {
+  it("separates genuine human decisions from agent operations and external waits", () => {
+    const human = makeAttention({ owner: { type: "board", agentId: null, userId: null, label: "Board" } });
+    const agent = makeAttention({ owner: { type: "agent", agentId: "agent-1", userId: null, label: "Flow Steward" } });
+    const unknown = makeAttention({ owner: { type: "unknown", agentId: null, userId: null, label: null } });
+    const external = makeAttention({ owner: { type: "external", agentId: null, userId: null, label: "Vendor" } });
+
+    expect(classifyBlockedInboxLane(human)).toBe("human");
+    expect(classifyBlockedInboxLane(agent)).toBe("agent_operations");
+    expect(classifyBlockedInboxLane(unknown)).toBe("agent_operations");
+    expect(classifyBlockedInboxLane(external)).toBe("external");
+    expect(countBlockedInboxLanes([
+      makeIssue({ id: "human" }, human),
+      makeIssue({ id: "agent" }, agent),
+      makeIssue({ id: "unknown" }, unknown),
+      makeIssue({ id: "external" }, external),
+    ])).toEqual({ human: 1, agentOperations: 2, external: 1 });
+  });
+
   it("maps every reason to a known variant and label", () => {
     const reasons: IssueBlockedInboxReason[] = [
       "pending_board_decision",

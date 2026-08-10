@@ -8,6 +8,8 @@ export const WEBHOOK_KEYS = {
 export const API_ROUTE_KEYS = {
   syncNow: "sync-now",
   status: "status",
+  portfolioInventory: "portfolio-inventory",
+  reconcileWorkState: "reconcile-work-state",
 } as const;
 export const ORIGIN_KIND_LINEAR_ISSUE = `plugin:${PLUGIN_ID}:linear-issue`;
 export const ORIGIN_KIND_INCIDENT = `plugin:${PLUGIN_ID}:incident`;

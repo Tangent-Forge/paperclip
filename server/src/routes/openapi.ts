@@ -508,6 +508,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
+  "GET /api/health/metrics",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -578,6 +579,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "POST /api/issues/{id}/agent-identity-proofs",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -757,6 +759,36 @@ registry.registerPath({
       bootstrapInviteActive: z.boolean().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/metrics",
+  tags: ["health"],
+  summary: "Get Prometheus-formatted health metrics",
+  responses: {
+    200: {
+      description: "Prometheus metrics",
+      content: { "text/plain": { schema: { type: "string" } } },
+    },
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/hub",
+  tags: ["health"],
+  summary: "Get host infrastructure health snapshot for the dashboard",
+  responses: {
+    200: {
+      description: "Hub health snapshot (arbitrary JSON written by the host monitor)",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    403: r.forbidden,
+    404: { description: "Hub health monitoring not configured on this host", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Hub health snapshot unreadable", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -1378,6 +1410,29 @@ registry.registerPath({
   summary: "Get issue heartbeat context",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/agent-identity-proofs",
+  tags: ["issues"],
+  summary: "Request an agent identity proof for an issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        idempotencyKey: z.string().trim().min(1).max(160),
+        priorIncompleteCommentIds: z.array(z.string().uuid()).min(1).max(10),
+      })
+    ),
+  },
+  responses: {
+    202: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
@@ -2826,6 +2881,21 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/heartbeat-runs/{runId}/retention-remediation",
+  tags: ["runs"],
+  summary: "Redact or purge sensitive values retained on a heartbeat run",
+  request: {
+    params: z.object({ runId: z.string() }),
+    body: jsonBody(z.object({
+      action: z.enum(["redact", "purge"]).optional(),
+      reason: z.string().optional(),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/heartbeat-runs/{runId}/watchdog-decisions",
   tags: ["runs"],
   summary: "Submit watchdog decisions for a run",
@@ -3614,6 +3684,18 @@ registry.registerPath({
   path: "/api/plugins/{pluginId}/config",
   tags: ["plugins"],
   summary: "Set plugin config",
+  request: {
+    params: z.object({ pluginId: z.string() }),
+    body: jsonBody(z.object({ configJson: z.record(z.unknown()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/plugins/{pluginId}/config",
+  tags: ["plugins"],
+  summary: "Patch plugin config without replacing existing values",
   request: {
     params: z.object({ pluginId: z.string() }),
     body: jsonBody(z.object({ configJson: z.record(z.unknown()) })),

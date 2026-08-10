@@ -13,6 +13,7 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_INTERRUPTED_STREAM_RE = /(?:aborted_streaming|request\s+interrupted\s+by\s+user|interrupted\s+stream|stream(?:ing)?\s+aborted)/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -412,4 +413,22 @@ export function isClaudeTransientUpstreamError(input: {
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+export function isClaudeInterruptedStreamFailure(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
+}): boolean {
+  const haystack = [
+    input.errorMessage ?? "",
+    input.stdout ?? "",
+    input.stderr ?? "",
+    input.parsed ? JSON.stringify(input.parsed) : "",
+  ].join("\n");
+  if (!CLAUDE_INTERRUPTED_STREAM_RE.test(haystack)) return false;
+  return input.exitCode === 143 || input.signal === "SIGTERM" || input.parsed?.subtype === "error_during_execution";
 }

@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeInterruptedStreamFailure,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
+
+describe("isClaudeInterruptedStreamFailure", () => {
+  it("detects Claude's aborted streaming result without treating it as auth or upstream quota", () => {
+    expect(
+      isClaudeInterruptedStreamFailure({
+        parsed: {
+          subtype: "error_during_execution",
+          result: "[Request interrupted by user]",
+        },
+        exitCode: 143,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify an ordinary SIGTERM or unrelated error as an interrupted stream", () => {
+    expect(isClaudeInterruptedStreamFailure({ stderr: "terminated", exitCode: 143 })).toBe(false);
+    expect(isClaudeInterruptedStreamFailure({ errorMessage: "Claude failed", exitCode: 1 })).toBe(false);
+  });
+});
 
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {

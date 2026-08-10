@@ -561,6 +561,7 @@ export const pluginApiRouteDeclarationSchema = z.object({
   companyResolution: z.discriminatedUnion("from", [
     z.object({ from: z.literal("body"), key: z.string().min(1) }),
     z.object({ from: z.literal("query"), key: z.string().min(1) }),
+    z.object({ from: z.literal("path"), param: z.string().min(1) }),
     z.object({ from: z.literal("issue"), param: z.string().min(1) }),
   ]).optional(),
 });

@@ -25,7 +25,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "operations" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -78,6 +78,7 @@ export interface InboxBadgeData {
   inbox: number;
   approvals: number;
   failedRuns: number;
+  agentOperations: number;
   joinRequests: number;
   mineIssues: number;
   alerts: number;
@@ -636,6 +637,7 @@ export function loadLastInboxTab(): InboxTab {
       || raw === "recent"
       || raw === "mine"
       || raw === "blocked"
+      || raw === "operations"
     ) return raw;
     if (raw === "new") return "mine";
     return "mine";
@@ -657,7 +659,7 @@ export function isMineInboxTab(tab: InboxTab): boolean {
 }
 
 export function shouldShowCompanyAlerts(tab: InboxTab): boolean {
-  return tab === "all";
+  return tab === "operations" || tab === "all";
 }
 
 export function resolveInboxSelectionIndex(
@@ -1258,9 +1260,13 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
+    // Keep this API-compatible with server/sidebar-badges.ts. Alerts remain
+    // visible in Agent Operations and All, but are informational rather than
+    // actionable badge work.
+    agentOperations: failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,
