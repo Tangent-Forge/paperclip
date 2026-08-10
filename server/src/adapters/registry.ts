@@ -193,6 +193,8 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { executeHermesIdentityProof } from "./hermes-identity-proof.js";
+import { readAgentIdentityProofContext } from "../services/agent-identity-proof.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -593,11 +595,24 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+export function sanitizeHermesPaperclipEnv(existingEnv: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(existingEnv).filter(
+      ([key]) => key !== "PAPERCLIP_API_KEY" && key !== "PAPERCLIP_AGENT_JWT_SECRET",
+    ),
+  );
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
     const normalizedCtx = normalizeHermesConfig(ctx);
-    if (!normalizedCtx.authToken) return executeHermesLocal(normalizedCtx);
+    const identityProof = readAgentIdentityProofContext(normalizedCtx.context);
+    if (!normalizedCtx.authToken) {
+      return identityProof
+        ? executeHermesIdentityProof(normalizedCtx, identityProof)
+        : executeHermesLocal(normalizedCtx);
+    }
 
     const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
     const existingEnv =
@@ -618,7 +633,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
-        ...existingEnv,
+        ...sanitizeHermesPaperclipEnv(existingEnv),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
         // The Hermes plugin applies config.env after the Paperclip process env.
         // Force the run-scoped JWT last so neither host nor stale adapter config
@@ -645,6 +660,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
+    if (identityProof) return executeHermesIdentityProof(patchedCtx, identityProof);
     return executeHermesLocal(patchedCtx);
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
