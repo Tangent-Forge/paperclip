@@ -176,7 +176,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   async function seedAssignableAgentCompany() {
     const companyId = randomUUID();
@@ -2185,7 +2185,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
@@ -2956,7 +2956,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
     const companyId = randomUUID();
@@ -3550,7 +3550,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
@@ -4043,7 +4043,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   it("can skip comment-body scans for bounded issue detail reads", async () => {
     const companyId = randomUUID();
@@ -4125,7 +4125,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   async function seedIssueWithRun(status: string | null) {
     const companyId = randomUUID();
@@ -4600,7 +4600,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   async function seedAcceptedPlanContext() {
     const companyId = randomUUID();
@@ -5294,7 +5294,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 20_000);
 
   async function seedOwnershipIssue(params: {
     checkoutStatus: "running" | "failed" | "timed_out";
