@@ -14,7 +14,7 @@ The `gemini_local` adapter runs Google's Gemini CLI locally, or the compatible `
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `cwd` | string | Yes | Existing absolute working directory for the agent process. Missing directories are rejected so execution cannot fall back to an unrelated server directory. |
 | `model` | string | No | Gemini model to use. Defaults to `auto`. |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `instructionsFilePath` | string | No | Markdown instructions file prepended to the prompt |
@@ -43,6 +43,6 @@ The adapter symlinks Paperclip skills into the Gemini global skills directory (`
 Use the "Test Environment" button in the UI to validate the adapter config. It checks:
 
 - Gemini CLI is installed and accessible
-- Working directory is absolute and available (auto-created if missing and permitted)
+- Working directory is absolute and already available; missing directories fail the probe
 - API key/auth hints (`GEMINI_API_KEY` or `GOOGLE_API_KEY`)
 - A live hello probe using the selected CLI's supported flags to verify readiness
