@@ -20,7 +20,14 @@ permissions:
   id-token: write   # cosign keyless OIDC
 
 env:
-  REGISTRY: ghcr.io/paperclipai
+  # This fork cannot push to ghcr.io/paperclipai -- that namespace belongs to
+  # the upstream project. Lowercase is required: GHCR namespaces are
+  # case-sensitive on push, and github.repository_owner is "Tangent-Forge".
+  # Every image reference flows through this variable (see
+  # docker/agent-runtime/buildx-bake.hcl), and the kubernetes sandbox provider
+  # resolves images through its own imageRegistry/imageAllowList config, so
+  # nothing in-tree is pinned to the old namespace.
+  REGISTRY: ghcr.io/tangent-forge
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
