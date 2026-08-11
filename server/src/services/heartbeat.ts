@@ -3266,12 +3266,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getRunLogAccess(runId: string) {
-    return db
+  async function getRunLogAccess(runId: string, companyId?: string) {
+    let query = db
       .select(heartbeatRunLogAccessColumns)
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+      .where(eq(heartbeatRuns.id, runId));
+
+    if (companyId) {
+      query = query.where(eq(heartbeatRuns.companyId, companyId));
+    }
+
+    return query.then((rows) => rows[0] ?? null);
   }
 
   async function getIssueExecutionContext(companyId: string, issueId: string) {

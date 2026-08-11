@@ -57,6 +57,8 @@ import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
+import { observeIssueGraphLiveness } from "./liveness-observer.js";
+import { reconcileIssueGraphLivenessV2, type LivenessV2Options } from "./liveness-v2.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -314,31 +316,31 @@ function formatIssueLinksForComment(relations: Array<{ identifier?: string | nul
 function unwrapDatabaseConflictError(error: unknown) {
   if (!error || typeof error !== "object") return null;
 
-  const seen = new Set<unknown>();
-  let current: unknown = error;
+  const candidate = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+    cause?: unknown;
+  };
 
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
-    seen.add(current);
-    const candidate = current as {
-      code?: string;
-      constraint?: string;
-      constraint_name?: string;
-      message?: string;
-      cause?: unknown;
-    };
-
-    if (
-      typeof candidate.code === "string" ||
-      typeof candidate.constraint === "string" ||
-      typeof candidate.constraint_name === "string"
-    ) {
-      return candidate;
-    }
-
-    current = candidate.cause;
+  if (
+    typeof candidate.code === "string" ||
+    typeof candidate.constraint === "string" ||
+    typeof candidate.constraint_name === "string"
+  ) {
+    return candidate;
   }
 
-  return null;
+  const cause = candidate.cause;
+  if (!cause || typeof cause !== "object") return candidate;
+
+  return cause as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+    message?: string;
+  };
 }
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
@@ -394,9 +396,9 @@ function livenessRecoveryLeafKey(companyId: string, state: string, leafIssueId: 
   return buildIssueGraphLivenessLeafKey({ companyId, state, leafIssueId });
 }
 
-export function isUniqueLivenessRecoveryConflict(error: unknown) {
-  const maybe = unwrapDatabaseConflictError(error);
-  if (!maybe) return false;
+function isUniqueLivenessRecoveryConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const maybe = error as { code?: string; constraint?: string; message?: string };
   return maybe.code === "23505" &&
     (
       maybe.constraint === "issues_active_liveness_recovery_incident_uq" ||
@@ -596,6 +598,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+  async function hasPendingIssueThreadInteraction(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasPendingFormalApproval(companyId: string, issueId: string) {
+    const approval = await db
+      .select({ approvalId: issueApprovals.approvalId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(approval);
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2964,6 +2997,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function collectIssueGraphLivenessFindings() {
+    return observeIssueGraphLiveness(db);
+  }
+
+  // Retained temporarily for comparison/debugging; the active preview and
+  // reconciler use the pure observer above and never call this legacy emitter.
+  async function collectLegacyIssueGraphLivenessFindings() {
     const issueRowsPromise = Promise.resolve(db
       .select({
         id: issues.id,
@@ -3185,6 +3224,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findAnyLivenessEscalation(companyId: string, incidentKey: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originId, incidentKey),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findOpenLivenessRecoveryIssueForLeaf(finding: IssueLivenessFinding) {
     const byFingerprint = await db
       .select()
@@ -3220,46 +3275,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
-  async function removeRecoveryBlockersFromSources(recovery: typeof issues.$inferSelect) {
+  async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
-    const sourceIssueIds = new Set<string>();
-    if (parsed?.issueId) {
-      sourceIssueIds.add(parsed.issueId);
-    }
+    if (!parsed) return false;
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, recovery.companyId), eq(issues.id, parsed.issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue) return false;
 
-    const relatedSources = await db
-      .select({ sourceIssueId: issueRelations.relatedIssueId })
-      .from(issueRelations)
-      .where(
-        and(
-          eq(issueRelations.companyId, recovery.companyId),
-          eq(issueRelations.issueId, recovery.id),
-          eq(issueRelations.type, "blocks"),
-        ),
-      );
-    for (const row of relatedSources) {
-      sourceIssueIds.add(row.sourceIssueId);
-    }
-
-    let removed = 0;
-    for (const sourceIssueId of sourceIssueIds) {
-      const sourceIssue = await db
-        .select()
+    const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
+    if (!blockerIds.includes(recovery.id)) return false;
+    const remainingBlockerIds = blockerIds.filter((blockerId) => blockerId !== recovery.id);
+    const remainingBlockers = remainingBlockerIds.length > 0
+      ? await db
+        .select({ id: issues.id, status: issues.status })
         .from(issues)
-        .where(and(eq(issues.companyId, recovery.companyId), eq(issues.id, sourceIssueId)))
-        .then((rows) => rows[0] ?? null);
-      if (!sourceIssue) continue;
-
-      const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
-      if (!blockerIds.includes(recovery.id)) continue;
-
-      await issuesSvc.update(sourceIssue.id, {
-        blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
-      });
-      removed += 1;
+        .where(
+          and(
+            eq(issues.companyId, sourceIssue.companyId),
+            inArray(issues.id, remainingBlockerIds),
+          ),
+        )
+      : [];
+    const nextBlockerIds = remainingBlockers
+      .filter((blocker) => !isTerminalIssueStatus(blocker.status))
+      .map((blocker) => blocker.id);
+    await issuesSvc.update(sourceIssue.id, {
+      blockedByIssueIds: nextBlockerIds,
+    });
+    if (
+      sourceIssue.status === "blocked" &&
+      nextBlockerIds.length === 0 &&
+      !!sourceIssue.assigneeAgentId &&
+      !sourceIssue.assigneeUserId &&
+      !(await hasPendingIssueThreadInteraction(sourceIssue.companyId, sourceIssue.id)) &&
+      !(await hasPendingFormalApproval(sourceIssue.companyId, sourceIssue.id))
+    ) {
+      await issuesSvc.update(sourceIssue.id, { status: "todo" });
     }
-
-    return removed;
+    return true;
   }
 
   async function hasActiveRunForIssueId(companyId: string, issueId: string) {
@@ -3348,9 +3404,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
       }
-      const removedCount = await removeRecoveryBlockersFromSources(recovery);
-      if (removedCount > 0) {
-        result.blockerRelationsRemoved += removedCount;
+      if (await removeRecoveryBlockerFromSource(recovery)) {
+        result.blockerRelationsRemoved += 1;
       }
       if (await hasActiveRunForIssueId(recovery.companyId, recovery.id)) {
         result.activeSkipped += 1;
@@ -3378,9 +3433,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     let blockerRelationsRemoved = 0;
     for (const recovery of closedRecoveries) {
-      const removedCount = await removeRecoveryBlockersFromSources(recovery);
-      if (removedCount > 0) {
-        blockerRelationsRemoved += removedCount;
+      if (await removeRecoveryBlockerFromSource(recovery)) {
+        blockerRelationsRemoved += 1;
       }
     }
 
@@ -3619,9 +3673,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
     if (!recoveryIssue) return { kind: "skipped" as const };
 
-    const existing =
+    let existing =
       await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
       await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+    if (!existing) {
+      const terminal = await findAnyLivenessEscalation(issue.companyId, input.finding.incidentKey);
+      if (terminal) {
+        await issuesSvc.update(terminal.id, { status: "todo", cancelledAt: null, completedAt: null });
+        existing = terminal;
+      }
+    }
     if (existing) {
       await ensureIssueBlockedByEscalation({
         issue,
@@ -3765,11 +3826,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
-  async function reconcileIssueGraphLiveness(opts?: {
+  async function reconcileIssueGraphLiveness(opts?: LivenessV2Options & {
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
   }) {
+    // Keep the compatibility-facing heartbeat contract on the mature recovery
+    // path. The v2 observer/reconciler remains available as an explicit durable
+    // path, but the legacy result includes cleanup, pause-hold, owner-selection,
+    // blocker, and wake semantics that callers still rely on.
     const findings = await collectIssueGraphLivenessFindings();
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
@@ -3779,7 +3844,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(
       opts?.lookbackHours ?? experimentalSettings.issueGraphLivenessAutoRecoveryLookbackHours,
     );
-    const now = new Date();
+    const now = opts?.now instanceof Date && !Number.isNaN(opts.now.getTime()) ? opts.now : new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
@@ -3830,7 +3895,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
       }
     }
-
     return result;
   }
 
