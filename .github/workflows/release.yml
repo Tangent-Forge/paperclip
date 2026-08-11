@@ -77,7 +77,12 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Gated off by default: this fork cannot publish to the @paperclipai npm
+    # scope, which belongs to the upstream project, and the npm-canary
+    # environment has no credentials. Left running, this fired on every push
+    # to master and failed with ENEEDAUTH. Set the repository variable
+    # ENABLE_NPM_PUBLISH=true to re-enable once a publishable scope exists.
+    if: github.event_name == 'push' && vars.ENABLE_NPM_PUBLISH == 'true'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -225,7 +230,12 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    # Gated off by default: this fork cannot publish to the @paperclipai npm
+    # scope, which belongs to the upstream project, and the npm-canary
+    # environment has no credentials. Left running, this fired on every push
+    # to master and failed with ENEEDAUTH. Set the repository variable
+    # ENABLE_NPM_PUBLISH=true to re-enable once a publishable scope exists.
+    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run && vars.ENABLE_NPM_PUBLISH == 'true'
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
