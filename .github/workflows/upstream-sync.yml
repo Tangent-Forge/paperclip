@@ -204,7 +204,13 @@ jobs:
         run: |
           BRANCH="${{ steps.branch.outputs.branch }}"
           DATE="${{ steps.branch.outputs.date }}"
+          # --repo is required: this repository is a fork of paperclipai/paperclip,
+          # and `gh pr create` defaults the base repository to the fork's parent.
+          # Without it the call targets paperclipai/paperclip, which this token
+          # cannot write to, and fails with
+          # "GraphQL: Resource not accessible by integration (createPullRequest)".
           pr_url="$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
             --base master \
             --head "$BRANCH" \
             --title "chore: sync upstream ($DATE)" \
