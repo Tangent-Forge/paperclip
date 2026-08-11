@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * get-bot-token.mjs
- * Generates a short-lived GitHub installation token for the commitperclip app.
+ * Generates a short-lived GitHub installation token for the review App.
  * Reads COMMITPERCLIP_KEY env var (PEM content of private key).
  * Prints the token to stdout.
  *
@@ -11,7 +11,19 @@
 import { createPrivateKey, createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ID = '3718661';
+// Which App we authenticate as. The default is upstream's `commitperclip`
+// (app 3718661, owned by the paperclipai org), inherited with this fork --
+// but a fork can never hold that App's private key, so signing as it cannot
+// work here. Tangent-Forge owns `tfrm-review` (app 4541043) for this purpose;
+// the REVIEW_APP_ID / REVIEW_APP_SLUG repository variables select it.
+const APP_ID = (process.env.REVIEW_APP_ID || '3718661').trim();
+const APP_SLUG = (process.env.REVIEW_APP_SLUG || 'commitperclip').trim();
+
+if (!/^\d+$/.test(APP_ID)) {
+  console.error(`ERROR: REVIEW_APP_ID must be the numeric App ID, got "${APP_ID}".`);
+  console.error('Find it at Settings -> Developer settings -> GitHub Apps -> your App.');
+  process.exit(1);
+}
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -103,7 +115,7 @@ export function explainPrivateKeyShape(shape) {
     return 'The key is passphrase-encrypted; CI cannot decrypt it. Export an unencrypted copy: "openssl pkcs8 -topk8 -nocrypt -in key.pem -out key.unencrypted.pem", then re-upload.';
   }
   if (shape.unrecognisedPemType) {
-    return 'The value has a PEM header, but not one usable for App JWT signing. Download a fresh private key from https://github.com/settings/apps/commitperclip and re-upload it.';
+    return `The value has a PEM header, but not one usable for App JWT signing. Download a fresh private key for the ${APP_SLUG} App and re-upload it.`;
   }
   if (shape.looksBase64Wrapped) {
     return 'The value looks base64-encoded but does not decode to a PEM. Upload the .pem file itself, not an encoding of it.';
@@ -120,7 +132,7 @@ export function explainPrivateKeyShape(shape) {
   if (shape.lineCount < 3) {
     return 'The PEM is a single line, so its body was flattened. Re-upload by redirecting the file rather than pasting.';
   }
-  return 'The PEM looks structurally intact, so it may be truncated or from a deleted App key. Generate a fresh private key at https://github.com/settings/apps/commitperclip and re-upload it.';
+  return `The PEM looks structurally intact, so it may be truncated or from a deleted App key. Generate a fresh private key for the ${APP_SLUG} App and re-upload it.`;
 }
 
 export function generateJWT(privateKey) {
@@ -147,7 +159,7 @@ export function generateJWT(privateKey) {
     ].join(' ');
 
     throw new Error(
-      `Could not parse the commitperclip private key (${error.code ?? error.message}).\n` +
+      `Could not parse the ${APP_SLUG} private key (${error.code ?? error.message}).\n` +
         `  Key shape: ${facts}\n` +
         `  Fix: ${explainPrivateKeyShape(shape)}`
     );
@@ -204,7 +216,7 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
   const installations = await fetchInstallation('/app/installations', token);
   if (!installations.length) {
     throw new Error(
-      'ERROR: No installations found for commitperclip. Install URL: https://github.com/apps/commitperclip/installations/new'
+      `ERROR: No installations found for ${APP_SLUG}. Install URL: https://github.com/apps/${APP_SLUG}/installations/new`
     );
   }
 
@@ -227,15 +239,15 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
   }
 
   throw new Error(
-    'ERROR: Multiple commitperclip installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.'
+    `ERROR: Multiple ${APP_SLUG} installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.`
   );
 }
 
 async function main() {
   const privateKey = process.env.COMMITPERCLIP_KEY;
   if (!privateKey) {
-    console.error('ERROR: COMMITPERCLIP_KEY env var not set.');
-    console.error('Add to ~/.bash_profile: export COMMITPERCLIP_KEY="$(cat ~/.config/commitperclip/private-key.pem)"');
+    console.error(`ERROR: COMMITPERCLIP_KEY env var not set (private key for App ${APP_SLUG}, id ${APP_ID}).`);
+    console.error(`Locally: export COMMITPERCLIP_KEY="$(cat ~/.config/${APP_SLUG}/private-key.pem)"`);
     process.exit(1);
   }
 
