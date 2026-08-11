@@ -46,7 +46,10 @@ process.exit(1);
 }
 
 describe("gemini_local environment diagnostics", () => {
-  it("creates a missing working directory when cwd is absolute", async () => {
+  it("rejects a missing absolute working directory", async () => {
+    // A configured Paperclip workspace is an execution boundary, not a hint --
+    // a missing directory must fail the probe rather than get silently
+    // created, which could mask a workspace/configuration error as success.
     const cwd = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -64,10 +67,9 @@ describe("gemini_local environment diagnostics", () => {
       },
     });
 
-    expect(result.checks.some((check) => check.code === "gemini_cwd_valid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(false);
-    const stats = await fs.stat(cwd);
-    expect(stats.isDirectory()).toBe(true);
+    expect(result.checks.some((check) => check.code === "gemini_cwd_invalid")).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(true);
+    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
@@ -80,6 +82,7 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
 
     const result = await testEnvironment({
@@ -122,6 +125,7 @@ describe("gemini_local environment diagnostics", () => {
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeQuotaGeminiCommand(binDir);
 
     const result = await testEnvironment({
