@@ -206,7 +206,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  // A configured Paperclip workspace is an execution boundary, not a hint.
+  // Never create a missing directory or silently run from the Paperclip server
+  // cwd: that can turn a workspace/configuration error into unrelated work.
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
   if (!executionTargetIsRemote) {
