@@ -77,10 +77,35 @@ jobs:
           else
             git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
             git merge --abort || true
-            # Create a placeholder commit on the branch documenting the conflict
-            # so we still have something to PR for human resolution.
             echo "Merge conflicts encountered; aborted merge. Recording conflict list."
             echo "sync_status=conflicts" >> "$GITHUB_OUTPUT"
+            # Actually create the commit the conflict path has always claimed to.
+            # After `git merge --abort` the branch is byte-identical to master, so
+            # the push below produces an empty branch and `gh pr create` dies with
+            # "No commits between master and <branch>". That is what left
+            # chore/upstream-sync-2026-07-06 .. -2026-08-10 orphaned on origin with
+            # no PR and no notification.
+            DATE="${{ steps.branch.outputs.date }}"
+            {
+              echo "# Upstream sync conflicts (${DATE})"
+              echo
+              echo "\`git merge --no-ff upstream/master\` conflicted and was aborted, so"
+              echo "this branch carries no upstream changes yet -- only this report."
+              echo
+              echo "Resolve locally, then force-push this branch:"
+              echo
+              echo '```bash'
+              echo "git fetch upstream master && git checkout ${BRANCH}"
+              echo "git merge --no-ff upstream/master   # resolve, then commit"
+              echo "git push --force-with-lease origin ${BRANCH}"
+              echo '```'
+              echo
+              echo "## Conflicting paths ($(wc -l < /tmp/conflicts.txt))"
+              echo
+              sed 's/^/- `/; s/$/`/' /tmp/conflicts.txt
+            } > UPSTREAM_SYNC_CONFLICTS.md
+            git add UPSTREAM_SYNC_CONFLICTS.md
+            git commit -q -m "chore: record upstream sync conflicts (${DATE})"
           fi
 
       - name: Setup pnpm
