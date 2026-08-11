@@ -2577,8 +2577,8 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     const attention = req.query.attention as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
-    if (attention !== "blocked") {
-      res.status(400).json({ error: "issues/count currently requires attention=blocked" });
+    if (attention !== undefined && attention !== "blocked") {
+      res.status(400).json({ error: "attention must be 'blocked' when provided" });
       return;
     }
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
