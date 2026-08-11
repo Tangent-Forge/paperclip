@@ -3224,6 +3224,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findAnyLivenessEscalation(companyId: string, incidentKey: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originId, incidentKey),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findOpenLivenessRecoveryIssueForLeaf(finding: IssueLivenessFinding) {
     const byFingerprint = await db
       .select()
@@ -3657,9 +3673,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
     if (!recoveryIssue) return { kind: "skipped" as const };
 
-    const existing =
+    let existing =
       await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
       await findOpenLivenessRecoveryIssueForLeaf(input.finding);
+    if (!existing) {
+      const terminal = await findAnyLivenessEscalation(issue.companyId, input.finding.incidentKey);
+      if (terminal) {
+        await issuesSvc.update(terminal.id, { status: "todo", cancelledAt: null, completedAt: null });
+        existing = terminal;
+      }
+    }
     if (existing) {
       await ensureIssueBlockedByEscalation({
         issue,
@@ -3808,8 +3831,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     force?: boolean;
     lookbackHours?: number;
   }) {
-    return reconcileIssueGraphLivenessV2(db, deps, opts);
-    /* istanbul ignore next -- legacy emitter kept unreachable during v2 soak */
+    // Keep the compatibility-facing heartbeat contract on the mature recovery
+    // path. The v2 observer/reconciler remains available as an explicit durable
+    // path, but the legacy result includes cleanup, pause-hold, owner-selection,
+    // blocker, and wake semantics that callers still rely on.
     const findings = await collectIssueGraphLivenessFindings();
     const experimentalSettings = await instanceSettings.getExperimental();
     const autoRecoveryEnabled = asBoolean(
@@ -3819,7 +3844,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(
       opts?.lookbackHours ?? experimentalSettings.issueGraphLivenessAutoRecoveryLookbackHours,
     );
-    const now = new Date();
+    const now = opts?.now instanceof Date && !Number.isNaN(opts.now.getTime()) ? opts.now : new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
@@ -3861,18 +3886,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);
-        const escalationIssueId = escalation.escalationIssueId;
-        if (escalationIssueId) result.escalationIssueIds.push(escalationIssueId as string);
+        result.escalationIssueIds.push(escalation.escalationIssueId);
       } else if (escalation.kind === "existing") {
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
-        const escalationIssueId = escalation.escalationIssueId;
-        if (escalationIssueId) result.escalationIssueIds.push(escalationIssueId as string);
+        result.escalationIssueIds.push(escalation.escalationIssueId);
       } else {
         result.skipped += 1;
       }
     }
-
     return result;
   }
 

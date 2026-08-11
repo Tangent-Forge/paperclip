@@ -12,7 +12,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseObject } from "../../adapters/utils.js";
-import { RECOVERY_ORIGIN_KINDS } from "./origins.js";
+import { RECOVERY_ORIGIN_KINDS, parseIssueGraphLivenessIncidentKey } from "./origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./issue-graph-liveness.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -22,6 +22,8 @@ const WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 export type CanonicalLivenessFinding = IssueLivenessFinding & {
   sourceProvider: string;
   sourceOriginId: string;
+  sourceIssueCreatedAt: Date | null;
+  sourceIssueUpdatedAt: Date | null;
   incidentClass: "issue_graph_liveness";
   canonicalIdentity: { companyId: string; provider: string; originId: string; incidentClass: "issue_graph_liveness" };
 };
@@ -82,6 +84,7 @@ export async function observeIssueGraphLiveness(db: Db, now = new Date()): Promi
     assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
     createdByAgentId: issues.createdByAgentId, createdByUserId: issues.createdByUserId,
     originKind: issues.originKind, originId: issues.originId,
+    createdAt: issues.createdAt, updatedAt: issues.updatedAt,
     executionPolicy: issues.executionPolicy, executionState: issues.executionState,
     monitorNextCheckAt: issues.monitorNextCheckAt, monitorAttemptCount: issues.monitorAttemptCount,
   }).from(issues).where(candidateFilter);
@@ -94,13 +97,21 @@ export async function observeIssueGraphLiveness(db: Db, now = new Date()): Promi
     db.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])),
     db.select({ companyId: issueThreadInteractions.companyId, issueId: issueThreadInteractions.issueId, status: issueThreadInteractions.status }).from(issueThreadInteractions).where(eq(issueThreadInteractions.status, "pending")),
     db.select({ companyId: issueApprovals.companyId, issueId: issueApprovals.issueId, status: approvals.status }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(inArray(approvals.status, ["pending", "revision_requested"])),
-    db.select({ companyId: issues.companyId, id: issues.id, status: issues.status, originKind: issues.originKind, originId: issues.originId }).from(issues).where(and(isNull(issues.hiddenAt), inArray(issues.originKind, [...RECOVERY_ORIGINS]), sql`${issues.status} not in ('done','cancelled')`)),
+    db.select({ companyId: issues.companyId, id: issues.id, parentId: issues.parentId, status: issues.status, originKind: issues.originKind, originId: issues.originId }).from(issues).where(and(isNull(issues.hiddenAt), inArray(issues.originKind, [...RECOVERY_ORIGINS]), sql`${issues.status} not in ('done','cancelled')`)),
     issueRowsPromise.then((rows) => rows.length === 0 ? [] : db.select({ companyId: issueRecoveryActions.companyId, issueId: issueRecoveryActions.sourceIssueId, status: issueRecoveryActions.status }).from(issueRecoveryActions).where(and(inArray(issueRecoveryActions.status, ["active", "escalated"]), inArray(issueRecoveryActions.sourceIssueId, rows.map((row) => row.id))))),
   ]);
   const openRecoveryIssues = recoveryRows.flatMap((row) => {
-    const originId = text(row.originId);
-    return originId ? [{ companyId: row.companyId, issueId: originId, status: row.status }] : [];
+    const originParts = text(row.originId)?.split(":") ?? [];
+    const sourceIssueId = originParts[0] === "harness_liveness" ? originParts[2] : null;
+    return [row.parentId ?? row.id, sourceIssueId]
+      .filter((issueId): issueId is string => Boolean(issueId))
+      .map((issueId) => ({ companyId: row.companyId, issueId, status: row.status }));
   });
+  const activeRecoverySourceIds = new Set(
+    recoveryRows
+      .map((row) => parseIssueGraphLivenessIncidentKey(text(row.originId))?.issueId)
+      .filter((value): value is string => Boolean(value)),
+  );
   const findings = classifyIssueGraphLiveness({
     issues: issueRows,
     relations: relationRows,
@@ -115,10 +126,11 @@ export async function observeIssueGraphLiveness(db: Db, now = new Date()): Promi
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
   const deduped = new Map<string, CanonicalLivenessFinding>();
   for (const finding of findings) {
-    const source = issueById.get(finding.issueId);
+    if (activeRecoverySourceIds.has(finding.issueId)) continue;
+    const source = issueById.get(finding.issueId) as { companyId: string; id: string; originKind: string | null; originId: string | null; createdAt?: Date | null; updatedAt?: Date | null } | undefined;
     if (!source || isRecoveryOriginKind(source.originKind)) continue;
     const identity = canonicalLivenessSourceIdentity(source);
-    const canonical: CanonicalLivenessFinding = { ...finding, sourceProvider: identity.provider, sourceOriginId: identity.originId, incidentClass: "issue_graph_liveness", canonicalIdentity: identity };
+    const canonical: CanonicalLivenessFinding = { ...finding, sourceProvider: identity.provider, sourceOriginId: identity.originId, sourceIssueCreatedAt: source.createdAt ?? null, sourceIssueUpdatedAt: source.updatedAt ?? null, incidentClass: "issue_graph_liveness", canonicalIdentity: identity };
     const key = findingKey(finding, identity.provider, identity.originId);
     const previous = deduped.get(key);
     if (!previous || evidenceOrder(canonical, previous) < 0) deduped.set(key, canonical);

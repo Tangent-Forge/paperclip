@@ -142,6 +142,10 @@ vi.mock("../services/index.js", () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  issueRecoveryActionService: vi.fn(() => ({
+    reconcileStaleSourceRecovery: vi.fn(async () => ({ reconciled: 0 })),
+    reconcileStaleSourceRecoveryActions: vi.fn(async () => ({ reconciled: 0 })),
+  })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
