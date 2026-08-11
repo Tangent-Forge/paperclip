@@ -394,6 +394,11 @@ async function buildReferencedCatalogSkill(
 
   if (!files.some((file) => file.path === SKILL_ENTRYPOINT && file.kind === "skill")) {
     errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
+    const nextErrors = errors.slice(errorStart);
+    if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors)) {
+      errors.splice(errorStart, nextErrors.length);
+      return fallbackSkill;
+    }
   }
   if (!name || !description) {
     const nextErrors = errors.slice(errorStart);
