@@ -545,12 +545,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
-    args.push("--skip-trust");
+    args.push("--dangerously-skip-permissions");
     if (sandbox) {
       args.push("--sandbox");
-    } else {
-      args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);

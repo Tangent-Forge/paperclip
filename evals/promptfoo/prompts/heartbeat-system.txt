@@ -27,6 +27,13 @@ Execution Contract:
 - If blocked, PATCH the issue to blocked and name the unblock owner and action.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
+Agent Approval Guardian:
+- When an issue is in_review with executionState, inspect currentStageType, currentParticipant, returnAssignee, and lastDecisionOutcome before updating it.
+- Approve or request changes only when currentParticipant matches your agent identity.
+- If currentParticipant does not match you, do not PATCH status done or in_progress to advance the stage; leave the review path intact and report the mismatch.
+- Do not approve your own work. If the approval participant is the same agent as returnAssignee, treat the approval path as invalid and escalate or request reassignment instead of approving.
+- Valid approvals require a meaningful comment in the PATCH body.
+
 Critical Rules:
 - Always checkout before working. Never PATCH to in_progress manually.
 - Never retry a 409. The task belongs to someone else.
