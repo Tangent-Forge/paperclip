@@ -10,6 +10,8 @@ import { RECOVERY_ORIGIN_KINDS } from "./origins.js";
 
 export type LivenessV2Options = {
   now?: Date;
+  autoRecoveryEnabled?: boolean;
+  lookbackHours?: number;
   presentObservations?: number;
   absentObservations?: number;
   observationSpacingMs?: number;
@@ -32,6 +34,8 @@ function bounded(value: unknown, fallback: number, min: number, max: number) {
 function options(input?: LivenessV2Options) {
   return {
     now: input?.now && !Number.isNaN(input.now.getTime()) ? new Date(input.now) : new Date(),
+    autoRecoveryEnabled: input?.autoRecoveryEnabled ?? true,
+    lookbackHours: bounded(input?.lookbackHours, 24, 0, 168),
     presentObservations: bounded(input?.presentObservations, DEFAULTS.presentObservations, 1, 10),
     absentObservations: bounded(input?.absentObservations, DEFAULTS.absentObservations, 1, 10),
     observationSpacingMs: bounded(input?.observationSpacingMs, DEFAULTS.observationSpacingMs, 1_000, 24 * 60 * 60_000),
@@ -46,6 +50,13 @@ function options(input?: LivenessV2Options) {
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n\t]/g, " ").slice(0, 500);
+}
+
+function isUniqueConstraintViolation(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return code === "23505" || constraint === "issues_liveness_incident_uq";
 }
 
 function identityJson(finding: CanonicalLivenessFinding) {
@@ -69,8 +80,8 @@ async function reconcileCompany(db: Db, companyId: string, findings: CanonicalLi
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`liveness-v2:${companyId}`}, 0))`);
     const now = cfg.now;
     const companyFindings = findings.filter((f) => f.companyId === companyId);
-    const existing = await tx.select().from(livenessIncidents).where(and(eq(livenessIncidents.companyId, companyId), eq(livenessIncidents.incidentClass, INCIDENT_CLASS)));
-    const byKey = new Map(existing.map((row) => [`${row.sourceProvider}\0${row.sourceOriginId}`, row]));
+    const existing = (await tx.select().from(livenessIncidents).where(and(eq(livenessIncidents.companyId, companyId), eq(livenessIncidents.incidentClass, INCIDENT_CLASS)))) as any[];
+    const byKey = new Map<string, any>(existing.map((row) => [`${row.sourceProvider}\0${row.sourceOriginId}`, row]));
     let activated = 0, cleared = 0, effects = 0, suppressed = 0;
     const currentKeys = new Set<string>();
     for (const finding of companyFindings) {
@@ -179,13 +190,24 @@ export function livenessEffectWorker(db: Db, deps: { enqueueWakeup: (agentId: st
       try {
         const payload = (claimed.effect.payload ?? {}) as { finding?: CanonicalLivenessFinding; sourceIssueId?: string; recoveryIssueId?: string; ownerAgentId?: string | null };
         const finding = payload.finding;
-        const sentinel = await db.select().from(issues).where(eq(issues.livenessIncidentId, claimed.incident.id)).then((rows) => rows[0] ?? null);
-        if (claimed.effect.effectKind === "open_or_reopen_sentinel" && finding && !sentinel) {
-          const recovery = await db.select().from(issues).where(and(eq(issues.id, finding.recoveryIssueId), eq(issues.companyId, claimed.incident.companyId))).then((rows) => rows[0] ?? null);
-          const created = await issuesSvc.create(claimed.incident.companyId, { title: `Unblock liveness incident for ${finding.identifier ?? finding.issueId}`, description: finding.reason, status: "todo", priority: "high", parentId: recovery?.id ?? null, projectId: recovery?.projectId ?? null, goalId: recovery?.goalId ?? null, assigneeAgentId: finding.recommendedOwnerAgentId, originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation, originId: claimed.incident.id, originFingerprint: fingerprint(finding), livenessIncidentId: claimed.incident.id });
-          await db.update(livenessIncidents).set({ sentinelIssueId: created.id, updatedAt: cfg.now }).where(eq(livenessIncidents.id, claimed.incident.id));
-        } else if (claimed.effect.effectKind === "open_or_reopen_sentinel" && sentinel) {
-          if (TERMINAL.includes(sentinel.status as (typeof TERMINAL)[number])) await issuesSvc.update(sentinel.id, { status: "todo", cancelledAt: null, completedAt: null });
+        let sentinel = await db.select().from(issues).where(eq(issues.livenessIncidentId, claimed.incident.id)).then((rows) => rows[0] ?? null);
+        if (claimed.effect.effectKind === "open_or_reopen_sentinel" && finding) {
+          if (!sentinel) {
+            const recovery = await db.select().from(issues).where(and(eq(issues.id, finding.recoveryIssueId), eq(issues.companyId, claimed.incident.companyId))).then((rows) => rows[0] ?? null);
+            try {
+              const created = await issuesSvc.create(claimed.incident.companyId, { title: `Unblock liveness incident for ${finding.identifier ?? finding.issueId}`, description: finding.reason, status: "todo", priority: "high", parentId: recovery?.id ?? null, projectId: recovery?.projectId ?? null, goalId: recovery?.goalId ?? null, assigneeAgentId: finding.recommendedOwnerAgentId, originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation, originId: claimed.incident.id, originFingerprint: fingerprint(finding), livenessIncidentId: claimed.incident.id });
+              sentinel = created;
+              await db.update(livenessIncidents).set({ sentinelIssueId: created.id, updatedAt: cfg.now }).where(eq(livenessIncidents.id, claimed.incident.id));
+            } catch (error) {
+              if (!isUniqueConstraintViolation(error)) throw error;
+              const racedSentinel = await db.select().from(issues).where(and(eq(issues.companyId, claimed.incident.companyId), eq(issues.livenessIncidentId, claimed.incident.id))).then((rows) => rows[0] ?? null);
+              if (!racedSentinel) throw error;
+              sentinel = racedSentinel;
+              await db.update(livenessIncidents).set({ sentinelIssueId: racedSentinel.id, updatedAt: cfg.now }).where(eq(livenessIncidents.id, claimed.incident.id));
+            }
+          } else if (TERMINAL.includes(sentinel.status as (typeof TERMINAL)[number])) {
+            await issuesSvc.update(sentinel.id, { status: "todo", cancelledAt: null, completedAt: null });
+          }
         } else if (claimed.effect.effectKind === "sync_blocker" && sentinel && finding) {
           const source = await db.select().from(issues).where(eq(issues.id, finding.issueId)).then((rows) => rows[0] ?? null);
           if (source && !TERMINAL.includes(sentinel.status as (typeof TERMINAL)[number])) {
@@ -218,19 +240,49 @@ export function livenessEffectWorker(db: Db, deps: { enqueueWakeup: (agentId: st
 
 export async function reconcileIssueGraphLivenessV2(db: Db, deps: { enqueueWakeup: (agentId: string, opts: any) => Promise<unknown> }, input?: LivenessV2Options) {
   const cfg = options(input);
+  const findings = await livenessObserver.observeIssueGraphLiveness(db, cfg.now);
+  const cutoff = new Date(cfg.now.getTime() - cfg.lookbackHours * 60 * 60_000);
+  const withinLookback = findings.filter((finding) => !finding.sourceIssueUpdatedAt || finding.sourceIssueUpdatedAt >= cutoff);
+  const skippedOutsideLookback = findings.length - withinLookback.length;
+  if (!cfg.autoRecoveryEnabled) {
+    return {
+      findings: findings.length,
+      autoRecoveryEnabled: false,
+      lookbackHours: cfg.lookbackHours,
+      cutoff: cutoff.toISOString(),
+      escalationsCreated: 0,
+      existingEscalations: 0,
+      skipped: findings.length,
+      skippedAutoRecoveryDisabled: findings.length,
+      skippedOutsideLookback,
+      obsoleteRecoveriesRetired: 0,
+      obsoleteRecoveriesActiveSkipped: 0,
+      obsoleteRecoveryBlockerRelationsRemoved: 0,
+      doneRecoveryBlockerRelationsRemoved: 0,
+      issueIds: [] as string[],
+      escalationIssueIds: [] as string[],
+      retiredRecoveryIssueIds: [] as string[],
+      runId: null,
+      activated: 0,
+      cleared: 0,
+      effects: 0,
+      suppressed: 0,
+      applied: 0,
+      failed: 0,
+    };
+  }
   const [run] = await db.insert(livenessReconcileRuns).values({ status: "running", startedAt: cfg.now }).returning();
   if (!run) throw new Error("failed to create liveness reconcile run");
   try {
-    const findings = await livenessObserver.observeIssueGraphLiveness(db, cfg.now);
-    const companyIds = [...new Set(findings.map((f) => f.companyId))];
+    const companyIds = [...new Set(withinLookback.map((f) => f.companyId))];
     const existingCompanies = await db.select({ companyId: livenessIncidents.companyId }).from(livenessIncidents);
     for (const id of existingCompanies.map((r) => r.companyId)) if (!companyIds.includes(id)) companyIds.push(id);
     let activated = 0, cleared = 0, effects = 0, suppressed = 0;
-    for (const companyId of companyIds) { const result = await reconcileCompany(db, companyId, findings, run.id, cfg); activated += result.activated; cleared += result.cleared; effects += result.effects; suppressed += result.suppressed; }
+    for (const companyId of companyIds) { const result = await reconcileCompany(db, companyId, withinLookback, run.id, cfg); activated += result.activated; cleared += result.cleared; effects += result.effects; suppressed += result.suppressed; }
     const worker = livenessEffectWorker(db, deps, cfg);
     const applied = await worker();
     const disposition = effects || applied.applied ? "effects_applied" : "no_change";
-    await db.update(livenessReconcileRuns).set({ status: "succeeded", disposition, completedAt: cfg.now, observedCount: findings.length, activatedCount: activated, clearedCount: cleared, effectCount: effects, errorSummary: suppressed ? `suppressed:${suppressed}` : null }).where(eq(livenessReconcileRuns.id, run.id));
+    await db.update(livenessReconcileRuns).set({ status: "succeeded", disposition, completedAt: cfg.now, observedCount: withinLookback.length, activatedCount: activated, clearedCount: cleared, effectCount: effects, errorSummary: suppressed ? `suppressed:${suppressed}` : null }).where(eq(livenessReconcileRuns.id, run.id));
     return {
       findings: findings.length,
       activated,
@@ -240,11 +292,20 @@ export async function reconcileIssueGraphLivenessV2(db: Db, deps: { enqueueWakeu
       runId: run.id,
       ...applied,
       autoRecoveryEnabled: true,
-      lookbackHours: 0,
+      lookbackHours: cfg.lookbackHours,
+      cutoff: cutoff.toISOString(),
       escalationsCreated: activated,
       existingEscalations: 0,
-      skippedOutsideLookback: 0,
+      skipped: skippedOutsideLookback,
+      skippedAutoRecoveryDisabled: 0,
+      skippedOutsideLookback,
+      issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      obsoleteRecoveriesRetired: 0,
+      obsoleteRecoveriesActiveSkipped: 0,
+      obsoleteRecoveryBlockerRelationsRemoved: 0,
+      doneRecoveryBlockerRelationsRemoved: 0,
+      retiredRecoveryIssueIds: [] as string[],
     };
   } catch (error) {
     await db.update(livenessReconcileRuns).set({ status: "failed", disposition: "failed", completedAt: cfg.now, errorSummary: safeError(error) }).where(eq(livenessReconcileRuns.id, run.id));

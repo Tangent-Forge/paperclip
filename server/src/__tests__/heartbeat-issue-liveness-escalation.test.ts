@@ -743,7 +743,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+  it("reopens the same escalation when the previous matching escalation is terminal", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -772,8 +772,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
 
-    expect(result.escalationsCreated).toBe(1);
-    expect(result.existingEscalations).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.existingEscalations).toBe(1);
 
     const openEscalations = await db
       .select()
@@ -785,20 +785,19 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
           eq(issues.originId, incidentKey),
         ),
       );
-    expect(openEscalations).toHaveLength(2);
-    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
-    expect(freshEscalation).toMatchObject({
-      parentId: blockerIssueId,
+    expect(openEscalations).toHaveLength(1);
+    const reopenedEscalation = openEscalations.find((issue) => issue.id === closedEscalationId);
+    expect(reopenedEscalation).toMatchObject({
+      parentId: blockedIssueId,
       assigneeAgentId: managerId,
-      status: expect.stringMatching(/^(todo|in_progress|done)$/),
+      status: expect.stringMatching(/^(todo|in_progress)$/),
     });
 
     const blockers = await db
       .select({ blockerIssueId: issueRelations.issueId })
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
-    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
-    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(true);
   });
 
   it("removes closed liveness escalations from blocker relations during reconciliation", async () => {

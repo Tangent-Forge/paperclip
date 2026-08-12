@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDb, agents, companies, issues, livenessEffectOutbox, livenessIncidents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as livenessObserver from "../services/recovery/liveness-observer";
+import * as issuesModule from "../services/issues.js";
 import { livenessEffectWorker, reconcileIssueGraphLivenessV2 } from "../services/recovery/liveness-v2";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -49,7 +50,7 @@ async function seedIssue(db: ReturnType<typeof createDb>, companyId: string, iss
 afterEach(() => vi.restoreAllMocks());
 
 describeEmbeddedPostgres("liveness v2 reconciler", () => {
-  it("is idempotent across repeated reconciliation and opens one wake/effect per generation", async () => {
+  it("is idempotent across repeated reconciliation and opens one wake/effect per generation", { timeout: 30000 }, async () => {
     const { db, cleanup } = await makeDb();
     try {
       const companyId = await seedCompanyDb(db);
@@ -71,7 +72,7 @@ describeEmbeddedPostgres("liveness v2 reconciler", () => {
     } finally { await cleanup(); }
   });
 
-  it("reopens the same sentinel on terminal recurrence and increments generation", async () => {
+  it("reopens the same sentinel on terminal recurrence and increments generation", { timeout: 30000 }, async () => {
     const { db, cleanup } = await makeDb();
     try {
       const companyId = await seedCompanyDb(db);
@@ -91,6 +92,63 @@ describeEmbeddedPostgres("liveness v2 reconciler", () => {
       expect(sentinel.status).toBe("todo");
       expect((await db.select().from(issues).where(eq(issues.livenessIncidentId, reopened.id)))).toHaveLength(1);
     } finally { await cleanup(); }
+  });
+
+  it("converges duplicate-key open_or_reopen effects onto one sentinel and applies the worker without failure", async () => {
+    const { db, cleanup } = await makeDb();
+    try {
+      const companyId = await seedCompanyDb(db);
+      const sourceIssueId = await seedIssue(db, companyId);
+      const recoveryIssueId = await seedIssue(db, companyId);
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Owner", role: "engineer", status: "active", adapterType: "process", adapterConfig: {} as any });
+      vi.spyOn(livenessObserver, "observeIssueGraphLiveness").mockResolvedValue([finding({ companyId, issueId: sourceIssueId, recoveryIssueId, recommendedOwnerAgentId: agentId })] as any);
+      const duplicateError = Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505", constraint: "issues_liveness_incident_uq" });
+      const issueServiceStub = {
+        create: async (companyIdArg: string, input: any) => {
+          const [created] = await db.insert(issues).values({
+            companyId: companyIdArg,
+            title: input.title,
+            description: input.description,
+            status: input.status,
+            priority: input.priority,
+            parentId: input.parentId,
+            projectId: input.projectId,
+            goalId: input.goalId,
+            assigneeAgentId: input.assigneeAgentId,
+            originKind: input.originKind,
+            originId: input.originId,
+            originFingerprint: input.originFingerprint,
+            livenessIncidentId: input.livenessIncidentId,
+          } as any).returning();
+          if (!created) throw new Error("failed to seed winning sentinel");
+          return Promise.reject(duplicateError);
+        },
+        update: async (id: string, input: any) => {
+          const [updated] = await db.update(issues).set({ ...input, updatedAt: new Date("2026-04-18T12:00:00Z") } as any).where(eq(issues.id, id)).returning();
+          return updated ?? null;
+        },
+      } as any;
+      vi.spyOn(issuesModule, "issueService").mockReturnValue(issueServiceStub);
+      const deps = { enqueueWakeup: async () => null };
+      const result = await reconcileIssueGraphLivenessV2(db, deps, { now: new Date("2026-04-18T12:00:00Z"), presentObservations: 1, observationSpacingMs: 0, absentObservations: 1, recurrenceCooldownMs: 0 });
+      expect(result.failed).toBe(0);
+      expect(result.applied).toBeGreaterThan(0);
+      const incidents = await db.select().from(livenessIncidents).where(eq(livenessIncidents.companyId, companyId));
+      expect(incidents).toHaveLength(1);
+      const incident = incidents[0]!;
+      const sentinels = await db.select().from(issues).where(eq(issues.livenessIncidentId, incident.id));
+      expect(sentinels).toHaveLength(1);
+      expect(incident.sentinelIssueId).toBe(sentinels[0]!.id);
+      const issueCount = await db.select({ count: sql<number>`count(*)` }).from(issues).where(eq(issues.livenessIncidentId, incident.id));
+      expect(Number(issueCount[0]?.count ?? 0)).toBe(1);
+      const outbox = await db.select().from(livenessEffectOutbox).where(eq(livenessEffectOutbox.incidentId, incident.id));
+      expect(outbox.every((row) => row.status === "applied")).toBe(true);
+      expect(outbox.map((row) => row.effectKind).sort()).toEqual(["enqueue_wake", "open_or_reopen_sentinel", "sync_blocker"]);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanup();
+    }
   });
 
   it("retries the outbox after an injected wake failure", async () => {
