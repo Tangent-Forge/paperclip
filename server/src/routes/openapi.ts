@@ -1331,6 +1331,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/count",
+  tags: ["issues"],
+  summary: "Count issues in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],

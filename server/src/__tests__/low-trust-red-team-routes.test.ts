@@ -800,6 +800,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(boardCount.status, JSON.stringify(boardCount.body)).toBe(200);
     expect(boardCount.body.count).toBe(2);
 
+    const totalCount = await request(createApp(db, boardActor(fixture)))
+      .get(`/api/companies/${fixture.company.id}/issues/count`);
+    expect(totalCount.status, JSON.stringify(totalCount.body)).toBe(200);
+    expect(totalCount.body.count).toBeGreaterThanOrEqual(2);
+
     const lowTrustCount = await request(createApp(db, agentActor(fixture)))
       .get(`/api/companies/${fixture.company.id}/issues/count`)
       .query({ attention: "blocked", q: "blocked vendor wait" });
