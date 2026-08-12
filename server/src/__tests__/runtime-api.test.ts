@@ -28,6 +28,33 @@ describe("runtime API discovery", () => {
     ).toBe("http://127.0.0.1:3100");
   });
 
+  it("prefers an allowed hostname over a specific (non-loopback) LAN bind host", () => {
+    // A raw bind IP like 192.168.1.5 is an implementation detail of which
+    // interface the process happened to bind; an operator-configured allowed
+    // hostname is the intended public-facing identity and should win here.
+    // Loopback is the one exception (see the test above): binding to
+    // 127.0.0.1 is not itself informative, so it's checked before this.
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["paperclip.example.test"],
+        bindHost: "192.168.1.5",
+        port: 3100,
+      }),
+    ).toBe("http://paperclip.example.test:3100");
+  });
+
+  it("still falls back to a specific LAN bind host when no allowed hostname is configured", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: [],
+        bindHost: "192.168.1.5",
+        port: 3100,
+      }),
+    ).toBe("http://192.168.1.5:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

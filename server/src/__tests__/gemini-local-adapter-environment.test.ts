@@ -46,7 +46,10 @@ process.exit(1);
 }
 
 describe("gemini_local environment diagnostics", () => {
-  it("creates a missing working directory when cwd is absolute", async () => {
+  it("rejects a missing absolute working directory", async () => {
+    // A configured Paperclip workspace is an execution boundary, not a hint --
+    // a missing directory must fail the probe rather than get silently
+    // created, which could mask a workspace/configuration error as success.
     const cwd = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -64,10 +67,9 @@ describe("gemini_local environment diagnostics", () => {
       },
     });
 
-    expect(result.checks.some((check) => check.code === "gemini_cwd_valid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(false);
-    const stats = await fs.stat(cwd);
-    expect(stats.isDirectory()).toBe(true);
+    expect(result.checks.some((check) => check.code === "gemini_cwd_invalid")).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(true);
+    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
@@ -80,6 +82,7 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
 
     const result = await testEnvironment({
@@ -114,6 +117,60 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it("strips extraArgs attempting to override adapter-owned flags", async () => {
+    // extraArgs is user/config-supplied. A configured value for a flag the
+    // adapter already resolves itself (model, prompt, session, sandbox mode,
+    // approval/trust flags) must never be able to override what the adapter
+    // computed -- covering both "--flag value" and "--flag=value" forms.
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-gemini-local-arg-injection-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const argsCapturePath = path.join(root, "args.json");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
+    await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        command: "agy",
+        cwd,
+        model: "gemini-2.5-pro",
+        yolo: true,
+        extraArgs: [
+          "--model=evil-model",
+          "--output-format=json",
+          "--prompt", "override",
+          "--conversation=evil-session",
+          "--sandbox",
+          "--custom-flag", "kept",
+        ],
+        env: {
+          GOOGLE_API_KEY: "test-key",
+          PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    });
+
+    expect(result.status).not.toBe("fail");
+    const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
+    expect(args).not.toContain("evil-model");
+    expect(args).not.toContain("--output-format=json");
+    expect(args).not.toContain("override");
+    expect(args).not.toContain("evil-session");
+    // sandbox defaults to false in this config, so a bare --sandbox smuggled
+    // through extraArgs must not survive either.
+    expect(args.filter((arg) => arg === "--sandbox")).toHaveLength(0);
+    expect(args).toContain("--custom-flag");
+    expect(args).toContain("kept");
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
   it("classifies quota exhaustion as a quota warning instead of a generic failure", async () => {
     const root = path.join(
       os.tmpdir(),
@@ -122,6 +179,7 @@ describe("gemini_local environment diagnostics", () => {
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
     await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(cwd, { recursive: true });
     await writeQuotaGeminiCommand(binDir);
 
     const result = await testEnvironment({

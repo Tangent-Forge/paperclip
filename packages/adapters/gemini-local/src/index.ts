@@ -29,6 +29,27 @@ export function resolveGeminiLocalModel(command: string, model: string): string 
   return AGY_MODEL_ALIASES[normalized] ?? normalized;
 }
 
+// Flags the adapter itself resolves and owns -- a config-supplied extraArgs
+// value must never be able to smuggle in a different model, prompt, or
+// session id than what the adapter already computed, or flip a safety flag
+// (sandbox, skip-trust, dangerously-skip-permissions) the adapter didn't ask
+// for. Matched by flag name only (arg.split("=", 1)[0]) so both "--model X"
+// and "--model=X" forms are caught.
+const GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS = new Set([
+  "--approval-mode",
+  "--conversation",
+  "--model",
+  "--output-format",
+  "--prompt",
+  "--resume",
+]);
+const GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS = new Set([
+  "--dangerously-skip-permissions",
+  "--sandbox",
+  "--sandbox=none",
+  "--skip-trust",
+]);
+
 export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): string[] {
   const commandName = command.replace(/\\/g, "/").split("/").pop()?.toLowerCase().replace(/\.(cmd|exe)$/, "");
   if (commandName !== "agy") return args;
@@ -36,18 +57,17 @@ export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): s
   const sanitized: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--approval-mode" || arg === "--resume") {
+    const flag = arg.split("=", 1)[0];
+    if (GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS.has(arg)) {
       const nextArg = args[index + 1];
       if (nextArg && !nextArg.startsWith("-")) index += 1;
       continue;
     }
     if (
-      arg === "--skip-trust" ||
-      arg === "--sandbox=none" ||
-      arg.startsWith("--skip-trust=") ||
-      arg.startsWith("--sandbox=none=")
+      GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS.has(flag)
+      || GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS.has(arg)
+      || GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS.has(flag)
     ) continue;
-    if (arg.startsWith("--approval-mode=") || arg.startsWith("--resume=")) continue;
     sanitized.push(arg);
   }
   return sanitized;
@@ -90,7 +110,7 @@ Don't use when:
 - Gemini CLI is not installed on the machine that runs Paperclip
 
 Core fields:
-- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- cwd (string, optional): default absolute working directory fallback for the agent process; it must already exist
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.

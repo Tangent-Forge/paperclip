@@ -268,6 +268,43 @@ export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 
+export const PAPERCLIP_LOCAL_ISSUE_PREFIX = "PCL";
+export const LINEAR_SYNC_MIRROR_ISSUE_ORIGIN_KIND =
+  "plugin:paperclipai.linear-sync:linear-issue";
+
+const ADDITIONAL_PAPERCLIP_LOCAL_ISSUE_ORIGIN_KINDS = new Set([
+  "issue_graph_liveness_escalation",
+  "agent_health_escalation",
+  "dependency_blocked_escalation",
+]);
+
+/**
+ * Returns true when an issue exists only in Paperclip and therefore must not
+ * consume the company's external issue-tracker prefix.
+ *
+ * Manual issues keep the company prefix for backward compatibility. Linear
+ * mirror rows also keep it because their identifier represents real Linear
+ * work. All Paperclip-generated and plugin-owned work uses PCL.
+ */
+export function isPaperclipLocalIssueOriginKind(
+  originKind: string | null | undefined,
+): boolean {
+  if (!originKind || originKind === "manual") return false;
+  if (originKind === LINEAR_SYNC_MIRROR_ISSUE_ORIGIN_KIND) return false;
+  if (originKind.startsWith("plugin:")) return true;
+  if (ADDITIONAL_PAPERCLIP_LOCAL_ISSUE_ORIGIN_KINDS.has(originKind)) return true;
+  return (ISSUE_ORIGIN_KINDS as readonly string[]).includes(originKind);
+}
+
+export function issueIdentifierPrefixForOrigin(
+  companyPrefix: string,
+  originKind: string | null | undefined,
+): string {
+  return isPaperclipLocalIssueOriginKind(originKind)
+    ? PAPERCLIP_LOCAL_ISSUE_PREFIX
+    : companyPrefix;
+}
+
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
   "stranded_assigned_issue",

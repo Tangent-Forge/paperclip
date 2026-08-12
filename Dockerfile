@@ -63,6 +63,10 @@ COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/adapter-utils build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+# server/src/adapters/registry.ts imports @paperclipai/provider-router-local,
+# whose exports resolve to ./dist/*, so it must be built before the server tsc
+# run or the import fails with TS2307. release.yml does the same.
+RUN pnpm --filter @paperclipai/provider-router-local build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 

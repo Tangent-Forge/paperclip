@@ -71,14 +71,21 @@ jobs:
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
           git push --force origin "$BRANCH"
 
+          # --repo is required on every gh pr call here: this repository is a fork
+          # of paperclipai/paperclip, and gh defaults the base repository to the
+          # fork's parent. Without it these target paperclipai/paperclip, which
+          # this token cannot write to, and creation fails with
+          # "GraphQL: Resource not accessible by integration (createPullRequest)".
           # Only reuse an open PR from this repository owner, not a fork with the same branch name.
           pr_url="$(
-            gh pr list --state open --head "$BRANCH" --json url,headRepositoryOwner \
+            gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$BRANCH" --json url,headRepositoryOwner \
               --jq ".[] | select(.headRepositoryOwner.login == \"$REPO_OWNER\") | .url" |
             head -n 1
           )"
           if [ -z "$pr_url" ]; then
             pr_url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base master \
               --head "$BRANCH" \
               --title "chore(lockfile): refresh pnpm-lock.yaml" \
               --body "Auto-generated lockfile refresh after dependencies changed on master. This PR only updates pnpm-lock.yaml.")"

@@ -54,6 +54,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueIdentifierPrefixForOrigin,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -3281,8 +3282,34 @@ export function issueService(db: Db) {
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 404) {
+        const unavailableRun = run.runId
+          ? await db
+              .update(heartbeatRuns)
+              .set({
+                logStore: null,
+                logRef: null,
+                logBytes: null,
+                logSha256: null,
+                logCompressed: false,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, run.runId),
+                  eq(heartbeatRuns.logStore, "local_file"),
+                  eq(heartbeatRuns.logRef, run.logRef),
+                ),
+              )
+              .returning({ id: heartbeatRuns.id })
+              .then((rows) => rows[0] ?? null)
+          : null;
         logger.warn(
-          { err, runId: run.runId ?? undefined, logRef: run.logRef },
+          {
+            err,
+            runId: run.runId ?? undefined,
+            logRef: run.logRef,
+            markedUnavailable: Boolean(unavailableRun),
+          },
           "missing heartbeat run log while deriving issue comment metadata",
         );
         return content;
@@ -5038,18 +5065,12 @@ export function issueService(db: Db) {
           .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
 
         const issueNumber = company.issueCounter;
-        // Local-only origin kinds get a "PCL" prefix so agents can distinguish
-        // them from real Linear issue identifiers (which use the company prefix,
-        // e.g. "TAN"). Without this, agents escalate on hallucinated TAN-NNN IDs.
-        // See TAN-133.
-        const LOCAL_ORIGIN_KINDS = new Set([
-          "stranded_issue_recovery",
-          "harness_liveness_escalation",
-          "issue_graph_liveness_escalation",
-          "agent_health_escalation",
-          "dependency_blocked_escalation",
-        ]);
-        const issuePrefix = LOCAL_ORIGIN_KINDS.has(issueData.originKind ?? "") ? "PCL" : company.issuePrefix;
+        // Local-only issues use PCL so company prefixes remain reserved for
+        // canonical external work such as real Linear mirrors. See TAN-133.
+        const issuePrefix = issueIdentifierPrefixForOrigin(
+          company.issuePrefix,
+          issueData.originKind,
+        );
         const identifier = `${issuePrefix}-${issueNumber}`;
 
         const values = {

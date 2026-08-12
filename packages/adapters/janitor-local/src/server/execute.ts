@@ -13,6 +13,14 @@ interface JanitorActionRecord {
   description: string;
   risk?: string | null;
   actionId?: string | null;
+  destination?: string | null;
+  sourceSha256?: string | null;
+  decision?: string | null;
+  reviewer?: string | null;
+  score?: number | null;
+  tier2Score?: number | null;
+  reason?: string | null;
+  sensitiveRules?: string[];
 }
 
 interface JanitorApprovalMetadata {
@@ -115,6 +123,16 @@ function parseActionableFindings(results: JanitorModuleResult[]): JanitorActionR
         description: readNonEmptyString(record.description) ?? `${action} ${target}`,
         risk: readNonEmptyString(record.risk),
         actionId: readNonEmptyString(record.actionId) ?? readNonEmptyString(record.id),
+        destination: readNonEmptyString(record.destination),
+        sourceSha256: readNonEmptyString(record.sourceSha256),
+        decision: readNonEmptyString(record.decision),
+        reviewer: readNonEmptyString(record.reviewer),
+        score: typeof record.score === "number" ? record.score : null,
+        tier2Score: typeof record.tier2Score === "number" ? record.tier2Score : null,
+        reason: readNonEmptyString(record.reason),
+        sensitiveRules: Array.isArray(record.sensitiveRules)
+          ? record.sensitiveRules.filter((value): value is string => typeof value === "string")
+          : [],
       });
     }
   }
@@ -190,7 +208,12 @@ async function getApproval(ctx: AdapterExecutionContext, approvalId: string): Pr
   return await paperclipFetch<ApprovalRecord>(ctx, `/api/approvals/${approvalId}`);
 }
 
-async function updateIssueStatus(ctx: AdapterExecutionContext, issueId: string, status: "in_review" | "done", comment: string) {
+async function updateIssueStatus(
+  ctx: AdapterExecutionContext,
+  issueId: string,
+  status: "in_review" | "done" | "blocked",
+  comment: string,
+) {
   await paperclipFetch(ctx, `/api/issues/${issueId}`, {
     method: "PATCH",
     body: JSON.stringify({ status, comment }),
@@ -352,8 +375,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } satisfies AdapterExecutionResult;
     }
     approvedMetadata = approvalMetadata(approval.payload);
+    if (
+      !approvedMetadata
+      || approvedMetadata.agentId !== ctx.agent.id
+      || approvedMetadata.cwd !== cwd
+    ) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "janitor_approval_scope_mismatch",
+        errorMessage: `Janitor approval ${approvalId} does not match this agent and workspace.`,
+        summary: "Janitor failed closed: the approved action manifest belongs to a different execution scope.",
+      } satisfies AdapterExecutionResult;
+    }
     modulesToRun = approvedMetadata?.modules.length ? approvedMetadata.modules : moduleIds;
     extraEnv.JANITOR_DRY_RUN = "0";
+    extraEnv.JANITOR_APPROVED_ACTIONS_JSON = JSON.stringify(approvedMetadata.actions);
   }
 
   const results = await runModules(modulesToRun, cwd, extraEnv, timeoutSec * 1000);
@@ -368,6 +406,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const report = buildReport(results, cwd, effectiveDryRun, footerLines);
   const reportPath = path.join(reportDir, `audit-${Date.now()}.md`);
   await fs.writeFile(reportPath, report, "utf-8");
+
+  const hasFailures = results.some((r) => r.exitCode !== 0);
+  if (hasFailures) {
+    if (issueId) {
+      await updateIssueStatus(
+        ctx,
+        issueId,
+        "blocked",
+        `Janitor module execution failed. No approval was created and no further action will run automatically.\n\n- Report: \`${reportPath}\`\n- Failed modules: ${results.filter((result) => result.exitCode !== 0).map((result) => `\`${result.module}\``).join(", ")}`,
+      );
+    }
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "janitor_module_failed",
+      errorMessage: `${results.filter((result) => result.exitCode !== 0).length} Janitor module(s) failed.`,
+      summary: `Janitor stopped after module failure. Report saved to \`${reportPath}\`.`,
+      resultJson: { reportPath, failedModules: results.filter((result) => result.exitCode !== 0).map((result) => result.module) },
+    } satisfies AdapterExecutionResult;
+  }
 
   if (approvalRequired && !dryRun && effectiveDryRun && actionableFindings.length > 0 && issueId) {
     const affectedModules = Array.from(new Set(actionableFindings.map((action) => action.module)));
@@ -406,7 +465,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } satisfies AdapterExecutionResult;
   }
 
-  const hasFailures = results.some((r) => r.exitCode !== 0);
+  if (approvalRequired && !dryRun && effectiveDryRun && actionableFindings.length === 0 && issueId) {
+    await updateIssueStatus(
+      ctx,
+      issueId,
+      "done",
+      `Janitor dry-run found no structured actionable items. No approval or active run was needed.\n\n- Dry-run report: \`${reportPath}\``,
+    );
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary: `Janitor found no actionable items. Dry-run report saved to \`${reportPath}\`.`,
+      resultJson: { janitorApproval: { required: false, actionCount: 0, reportPath } },
+    } satisfies AdapterExecutionResult;
+  }
+
   if (activeApprovedRun && issueId && !hasFailures) {
     await updateIssueStatus(ctx, issueId, "done", `Janitor approved cleanup completed.\n\n- Approval: \`${approvalId}\`\n- Active report: \`${reportPath}\``);
   }

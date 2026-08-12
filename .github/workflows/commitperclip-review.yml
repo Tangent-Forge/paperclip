@@ -50,6 +50,12 @@ jobs:
           # local-dev instructions use COMMITPERCLIP_KEY. Taking whichever is
           # populated keeps the gate working under both names.
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
+          # Authenticate as the App this org actually owns. Without these the
+          # script signs its JWT as iss=3718661 (upstream's commitperclip),
+          # whose private key is never released to installers -- so no key
+          # uploaded here could ever produce a valid token.
+          REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
+          REVIEW_APP_SLUG: ${{ vars.REVIEW_APP_SLUG }}
 
       - name: Run quality gates
         id: quality

@@ -430,4 +430,40 @@ describe("gemini execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects a missing configured workspace before resolving or spawning the agent command", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-missing-workspace-"));
+    const missingWorkspace = path.join(root, "workspace-that-must-not-be-created");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "command-was-invoked.json");
+    await writeFakeGeminiCommand(commandPath);
+    let spawned = false;
+
+    try {
+      await expect(
+        execute({
+          runId: "run-missing-workspace",
+          agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            command: commandPath,
+            cwd: missingWorkspace,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          },
+          context: {},
+          authToken: "t",
+          onLog: async () => {},
+          onSpawn: async () => {
+            spawned = true;
+          },
+        }),
+      ).rejects.toThrow(/directory does not exist|not a directory/i);
+
+      await expect(fs.access(missingWorkspace)).rejects.toThrow();
+      await expect(fs.access(capturePath)).rejects.toThrow();
+      expect(spawned).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

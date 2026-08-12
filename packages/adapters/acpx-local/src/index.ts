@@ -1,4 +1,6 @@
 import type { AdapterModel } from "@paperclipai/adapter-utils";
+import { models as claudeModels } from "@paperclipai/adapter-claude-local";
+import { models as codexModels } from "@paperclipai/adapter-codex-local";
 
 export const type = "acpx_local";
 export const label = "ACPX (local)";
@@ -16,7 +18,30 @@ export const acpxAgentOptions = [
   { id: "custom", label: "Custom ACP command" },
 ] as const;
 
-export const models: AdapterModel[] = [];
+function prefixModels(models: AdapterModel[], provider: "Claude" | "Codex"): AdapterModel[] {
+  const prefix = `${provider}: `;
+  return models.map((model) => ({
+    ...model,
+    label: model.label.startsWith(prefix) ? model.label : `${prefix}${model.label}`,
+  }));
+}
+
+function dedupeModels(models: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const result: AdapterModel[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ ...model, id });
+  }
+  return result;
+}
+
+export const models: AdapterModel[] = dedupeModels([
+  ...prefixModels(claudeModels, "Claude"),
+  ...prefixModels(codexModels, "Codex"),
+]);
 
 export const agentConfigurationDoc = `# acpx_local agent configuration
 
