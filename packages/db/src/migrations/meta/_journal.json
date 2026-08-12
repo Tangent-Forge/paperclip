@@ -33,43 +33,43 @@
     {
       "idx": 4,
       "version": "7",
-      "when": 1771534160426,
-      "tag": "0008_amused_zzzax",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1771534211029,
-      "tag": "0009_fast_jackal",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
       "when": 1771545600000,
       "tag": "0004_issue_identifiers",
       "breakpoints": true
     },
     {
-      "idx": 7,
+      "idx": 5,
       "version": "7",
       "when": 1771545601000,
       "tag": "0005_chief_luke_cage",
       "breakpoints": true
     },
     {
-      "idx": 8,
+      "idx": 6,
       "version": "7",
       "when": 1771545602000,
       "tag": "0006_overjoyed_mister_sinister",
       "breakpoints": true
     },
     {
-      "idx": 9,
+      "idx": 7,
       "version": "7",
       "when": 1771545603000,
       "tag": "0007_new_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771534160426,
+      "tag": "0008_amused_zzzax",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771534211029,
+      "tag": "0009_fast_jackal",
       "breakpoints": true
     },
     {
@@ -117,22 +117,22 @@
     {
       "idx": 16,
       "version": "7",
-      "when": 1771883888199,
-      "tag": "0017_tiresome_gabe_jones",
+      "when": 1771955900000,
+      "tag": "0016_agent_icon",
       "breakpoints": true
     },
     {
       "idx": 17,
       "version": "7",
-      "when": 1771897769629,
-      "tag": "0018_flat_sleepwalker",
+      "when": 1771883888199,
+      "tag": "0017_tiresome_gabe_jones",
       "breakpoints": true
     },
     {
       "idx": 18,
       "version": "7",
-      "when": 1771955900000,
-      "tag": "0016_agent_icon",
+      "when": 1771897769629,
+      "tag": "0018_flat_sleepwalker",
       "breakpoints": true
     },
     {
@@ -159,15 +159,15 @@
     {
       "idx": 22,
       "version": "7",
-      "when": 1772139727599,
-      "tag": "0023_fair_lethal_legion",
+      "when": 1772186400000,
+      "tag": "0022_company_brand_color",
       "breakpoints": true
     },
     {
       "idx": 23,
       "version": "7",
-      "when": 1772186400000,
-      "tag": "0022_company_brand_color",
+      "when": 1772139727599,
+      "tag": "0023_fair_lethal_legion",
       "breakpoints": true
     },
     {
@@ -201,43 +201,43 @@
     {
       "idx": 28,
       "version": "7",
-      "when": 1773417600000,
-      "tag": "0029_plugin_tables",
-      "breakpoints": true
-    },
-    {
-      "idx": 29,
-      "version": "7",
       "when": 1773432085646,
       "tag": "0028_harsh_goliath",
       "breakpoints": true
     },
     {
+      "idx": 29,
+      "version": "7",
+      "when": 1773417600000,
+      "tag": "0029_plugin_tables",
+      "breakpoints": true
+    },
+    {
       "idx": 30,
+      "version": "7",
+      "when": 1773670925214,
+      "tag": "0030_rich_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
       "version": "7",
       "when": 1773511922713,
       "tag": "0031_zippy_magma",
       "breakpoints": true
     },
     {
-      "idx": 31,
+      "idx": 32,
       "version": "7",
       "when": 1773542934499,
       "tag": "0032_pretty_doctor_octopus",
       "breakpoints": true
     },
     {
-      "idx": 32,
+      "idx": 33,
       "version": "7",
       "when": 1773664961967,
       "tag": "0033_shiny_black_tarantula",
-      "breakpoints": true
-    },
-    {
-      "idx": 33,
-      "version": "7",
-      "when": 1773670925214,
-      "tag": "0030_rich_magneto",
       "breakpoints": true
     },
     {
@@ -271,43 +271,43 @@
     {
       "idx": 38,
       "version": "7",
+      "when": 1773931592563,
+      "tag": "0038_careless_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
       "when": 1773926116580,
       "tag": "0039_fat_magneto",
       "breakpoints": true
     },
     {
-      "idx": 39,
+      "idx": 40,
       "version": "7",
       "when": 1773927102783,
       "tag": "0040_eager_shotgun",
       "breakpoints": true
     },
     {
-      "idx": 40,
-      "version": "7",
-      "when": 1773931592563,
-      "tag": "0038_careless_iron_monger",
-      "breakpoints": true
-    },
-    {
       "idx": 41,
-      "version": "7",
-      "when": 1774008910991,
-      "tag": "0043_reflective_captain_universe",
-      "breakpoints": true
-    },
-    {
-      "idx": 42,
       "version": "7",
       "when": 1774011294562,
       "tag": "0041_curly_maria_hill",
       "breakpoints": true
     },
     {
-      "idx": 43,
+      "idx": 42,
       "version": "7",
       "when": 1774031825634,
       "tag": "0042_spotty_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774008910991,
+      "tag": "0043_reflective_captain_universe",
       "breakpoints": true
     },
     {
@@ -432,71 +432,71 @@
     {
       "idx": 61,
       "version": "7",
+      "when": 1776785165389,
+      "tag": "0061_lively_thor_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
       "when": 1776780000000,
       "tag": "0062_routine_run_dispatch_fingerprint",
       "breakpoints": true
     },
     {
-      "idx": 62,
+      "idx": 63,
       "version": "7",
       "when": 1776780001000,
       "tag": "0063_issue_thread_interactions",
       "breakpoints": true
     },
     {
-      "idx": 63,
+      "idx": 64,
       "version": "7",
       "when": 1776780002000,
       "tag": "0064_issue_thread_interaction_idempotency",
       "breakpoints": true
     },
     {
-      "idx": 64,
-      "version": "7",
-      "when": 1776780003000,
-      "tag": "0069_liveness_recovery_dedupe",
-      "breakpoints": true
-    },
-    {
       "idx": 65,
-      "version": "7",
-      "when": 1776780004000,
-      "tag": "0070_active_run_output_watchdog",
-      "breakpoints": true
-    },
-    {
-      "idx": 66,
-      "version": "7",
-      "when": 1776785165389,
-      "tag": "0061_lively_thor_girl",
-      "breakpoints": true
-    },
-    {
-      "idx": 67,
       "version": "7",
       "when": 1776903900000,
       "tag": "0065_environments",
       "breakpoints": true
     },
     {
-      "idx": 68,
+      "idx": 66,
       "version": "7",
       "when": 1776903901000,
       "tag": "0066_issue_tree_holds",
       "breakpoints": true
     },
     {
-      "idx": 69,
+      "idx": 67,
       "version": "7",
       "when": 1776904200000,
       "tag": "0067_agent_default_environment",
       "breakpoints": true
     },
     {
-      "idx": 70,
+      "idx": 68,
       "version": "7",
       "when": 1776959400000,
       "tag": "0068_environment_local_driver_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776780003000,
+      "tag": "0069_liveness_recovery_dedupe",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1776780004000,
+      "tag": "0070_active_run_output_watchdog",
       "breakpoints": true
     },
     {
@@ -544,29 +544,29 @@
     {
       "idx": 77,
       "version": "7",
-      "when": 1777821410992,
-      "tag": "0079_company_search_document_indexes",
-      "breakpoints": true
-    },
-    {
-      "idx": 78,
-      "version": "7",
-      "when": 1777849000000,
-      "tag": "0080_company_search_fuzzystrmatch",
-      "breakpoints": true
-    },
-    {
-      "idx": 79,
-      "version": "7",
       "when": 1777933347806,
       "tag": "0077_unusual_karnak",
       "breakpoints": true
     },
     {
-      "idx": 80,
+      "idx": 78,
       "version": "7",
       "when": 1778004024976,
       "tag": "0078_white_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1777821410992,
+      "tag": "0079_company_search_document_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1777849000000,
+      "tag": "0080_company_search_fuzzystrmatch",
       "breakpoints": true
     },
     {
@@ -607,43 +607,43 @@
     {
       "idx": 86,
       "version": "7",
-      "when": 1778810394522,
-      "tag": "0091_old_swarm",
-      "breakpoints": true
-    },
-    {
-      "idx": 87,
-      "version": "7",
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
     },
     {
-      "idx": 88,
-      "version": "7",
-      "when": 1779129600000,
-      "tag": "0089_cloud_upstreams",
-      "breakpoints": true
-    },
-    {
-      "idx": 89,
+      "idx": 87,
       "version": "7",
       "when": 1779360000000,
       "tag": "0087_backfill_environment_manage_human_defaults",
       "breakpoints": true
     },
     {
-      "idx": 90,
+      "idx": 88,
       "version": "7",
       "when": 1779446400000,
       "tag": "0088_backfill_principal_access_compatibility",
       "breakpoints": true
     },
     {
-      "idx": 91,
+      "idx": 89,
+      "version": "7",
+      "when": 1779129600000,
+      "tag": "0089_cloud_upstreams",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
       "version": "7",
       "when": 1779573019125,
       "tag": "0090_resource_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1778810394522,
+      "tag": "0091_old_swarm",
       "breakpoints": true
     },
     {
@@ -663,22 +663,22 @@
     {
       "idx": 94,
       "version": "7",
-      "when": 1780507597454,
-      "tag": "0095_issue_comment_tombstones",
+      "when": 1780533900000,
+      "tag": "0094_backfill_archived_company_agent_pauses",
       "breakpoints": true
     },
     {
       "idx": 95,
       "version": "7",
-      "when": 1780507597455,
-      "tag": "0096_document_annotation_issue_comment_links",
+      "when": 1780507597454,
+      "tag": "0095_issue_comment_tombstones",
       "breakpoints": true
     },
     {
       "idx": 96,
       "version": "7",
-      "when": 1780533900000,
-      "tag": "0094_backfill_archived_company_agent_pauses",
+      "when": 1780507597455,
+      "tag": "0096_document_annotation_issue_comment_links",
       "breakpoints": true
     },
     {
@@ -726,36 +726,36 @@
     {
       "idx": 103,
       "version": "7",
-      "when": 1781490100001,
-      "tag": "0103_agent_wakeup_active_idempotency_uq",
-      "breakpoints": true
-    },
-    {
-      "idx": 104,
-      "version": "7",
       "when": 1781490200000,
       "tag": "0103_agent_error_reason",
       "breakpoints": true
     },
     {
-      "idx": 105,
+      "idx": 104,
       "version": "7",
       "when": 1781733000000,
       "tag": "0104_issue_watchdogs",
       "breakpoints": true
     },
     {
-      "idx": 106,
+      "idx": 105,
       "version": "7",
       "when": 1781902000000,
       "tag": "0105_instance_scoped_environments",
       "breakpoints": true
     },
     {
-      "idx": 107,
+      "idx": 106,
       "version": "7",
       "when": 1781902100000,
       "tag": "0106_external_object_references",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1782165200000,
+      "tag": "0107_external_object_display_metadata",
       "breakpoints": true
     },
     {
@@ -873,57 +873,57 @@
     {
       "idx": 124,
       "version": "7",
-      "when": 1782165200000,
-      "tag": "0107_external_object_display_metadata",
-      "breakpoints": true
-    },
-    {
-      "idx": 125,
-      "version": "7",
       "when": 1782440000000,
       "tag": "0124_agent_api_key_scope_config",
       "breakpoints": true
     },
     {
-      "idx": 126,
+      "idx": 125,
       "version": "7",
       "when": 1782440100000,
       "tag": "0125_environment_custom_image_templates",
       "breakpoints": true
     },
     {
-      "idx": 127,
+      "idx": 126,
       "version": "7",
       "when": 1782526500000,
       "tag": "0127_environment_custom_images_instance_scoped",
       "breakpoints": true
     },
     {
-      "idx": 128,
+      "idx": 127,
       "version": "7",
       "when": 1782923938661,
       "tag": "0128_user_specific_secrets",
       "breakpoints": true
     },
     {
-      "idx": 129,
+      "idx": 128,
       "version": "7",
       "when": 1783025124120,
       "tag": "0129_agent_api_key_responsible_user",
       "breakpoints": true
     },
     {
-      "idx": 130,
+      "idx": 129,
       "version": "7",
       "when": 1783025324120,
       "tag": "0131_repair_run_responsible_user_context_refs",
       "breakpoints": true
     },
     {
-      "idx": 131,
+      "idx": 130,
       "version": "7",
       "when": 1783025424120,
       "tag": "0132_issue_comment_derived_attribution_fast",
+      "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1783034521000,
+      "tag": "0133_resource_membership_stars",
       "breakpoints": true
     },
     {
@@ -943,127 +943,127 @@
     {
       "idx": 134,
       "version": "7",
-      "when": 1783034521000,
-      "tag": "0133_resource_membership_stars",
-      "breakpoints": true
-    },
-    {
-      "idx": 135,
-      "version": "7",
-      "when": 1783457051766,
-      "tag": "0143_cases_foundation",
-      "breakpoints": true
-    },
-    {
-      "idx": 136,
-      "version": "7",
-      "when": 1783520000000,
-      "tag": "0144_case_document_annotations",
-      "breakpoints": true
-    },
-    {
-      "idx": 137,
-      "version": "7",
       "when": 1783555200000,
       "tag": "0136_acpx_default_engine_migration",
       "breakpoints": true
     },
     {
-      "idx": 138,
+      "idx": 135,
       "version": "7",
       "when": 1783555201000,
       "tag": "0137_skill_studio_server_foundation",
       "breakpoints": true
     },
     {
-      "idx": 139,
+      "idx": 136,
       "version": "7",
       "when": 1783555202000,
       "tag": "0138_skill_studio_run_retention",
       "breakpoints": true
     },
     {
-      "idx": 140,
+      "idx": 137,
       "version": "7",
       "when": 1783555203000,
       "tag": "0139_skill_studio_run_templates",
       "breakpoints": true
     },
     {
-      "idx": 141,
+      "idx": 138,
       "version": "7",
       "when": 1783555300000,
       "tag": "0140_built_in_managed_resources",
       "breakpoints": true
     },
     {
-      "idx": 142,
+      "idx": 139,
       "version": "7",
       "when": 1783555301000,
       "tag": "0141_heartbeat_runs_company_created_at_index",
       "breakpoints": true
     },
     {
-      "idx": 143,
+      "idx": 140,
       "version": "7",
       "when": 1783555301100,
       "tag": "0142_company_search_sort_indexes",
       "breakpoints": true
     },
     {
-      "idx": 144,
+      "idx": 141,
+      "version": "7",
+      "when": 1783457051766,
+      "tag": "0143_cases_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1783520000000,
+      "tag": "0144_case_document_annotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 143,
       "version": "7",
       "when": 1783641600000,
       "tag": "0145_inbox_dismissal_snooze_kind",
       "breakpoints": true
     },
     {
-      "idx": 145,
+      "idx": 144,
       "version": "7",
       "when": 1783822632557,
       "tag": "0146_routine_activity_gate",
       "breakpoints": true
     },
     {
-      "idx": 146,
+      "idx": 145,
       "version": "7",
       "when": 1783953514660,
       "tag": "0147_cost_event_status",
       "breakpoints": true
     },
     {
-      "idx": 147,
+      "idx": 146,
       "version": "7",
       "when": 1783953515660,
       "tag": "0148_tool_access_mcp_connections",
       "breakpoints": true
     },
     {
-      "idx": 148,
+      "idx": 147,
       "version": "7",
       "when": 1783953516660,
       "tag": "0149_agent_access_phase2_contracts",
       "breakpoints": true
     },
     {
-      "idx": 149,
+      "idx": 148,
       "version": "7",
       "when": 1783953517660,
       "tag": "0150_tool_invocation_catalog_snapshots",
       "breakpoints": true
     },
     {
+      "idx": 149,
+      "version": "7",
+      "when": 1781490100001,
+      "tag": "9001_agent_wakeup_active_idempotency_uq",
+      "breakpoints": true
+    },
+    {
       "idx": 150,
       "version": "7",
       "when": 1785391098075,
-      "tag": "0104_evidence_provenance_registry",
+      "tag": "9002_evidence_provenance_registry",
       "breakpoints": true
     },
     {
       "idx": 151,
       "version": "7",
       "when": 1785391098075,
-      "tag": "9001_tf_restore_company_scoped_environments",
+      "tag": "9003_restore_company_scoped_environments",
       "breakpoints": true
     }
   ]
