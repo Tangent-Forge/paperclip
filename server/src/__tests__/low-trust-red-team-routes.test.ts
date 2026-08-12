@@ -613,7 +613,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(res.body.error).toBe("Low-trust boundary root issue scopes do not overlap.");
   });
 
-  it("restricts low-trust self inspection without changing standard-agent visibility", async () => {
+  it("restricts low-trust self inspection while suppressing standard-agent detail configs", async () => {
     const fixture = await seedLowTrustFixture(db);
 
     const lowTrustRes = await request(createApp(db, agentActor(fixture))).get("/api/agents/me");
@@ -646,7 +646,9 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const standardActor = agentActor(fixture, fixture.agents.standard.id);
     const standardRes = await request(createApp(db, { ...standardActor, runId: null })).get("/api/agents/me");
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-    expect(JSON.stringify(standardRes.body)).toContain(fixture.canaries.agentConfig);
+    expect(standardRes.body.adapterConfig).toBe("***REDACTED***");
+    expect(standardRes.body.runtimeConfig).toBe("***REDACTED***");
+    expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
 
     const issueScopedLowTrustRes = await request(createApp(db, standardActor)).get("/api/agents/me");
     expect(issueScopedLowTrustRes.status, JSON.stringify(issueScopedLowTrustRes.body)).toBe(200);

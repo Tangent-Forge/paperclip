@@ -297,7 +297,6 @@ function resolveHermesConfigWithLocalDefaults(config: Record<string, unknown>): 
     cfgNonEmptyString(config.hermesProfile) ??
     cfgNonEmptyString(config.profile) ??
     cfgNonEmptyString(env.HERMES_PROFILE) ??
-    cfgNonEmptyString(process.env.HERMES_PROFILE) ??
     "paperclip-worker";
   const hermesHome = cfgNonEmptyString(env.HERMES_HOME) ?? cfgNonEmptyString(process.env.HERMES_HOME) ?? path.join(os.homedir(), ".hermes");
   const candidateConfigPaths = [
@@ -338,6 +337,12 @@ function prefixAdapterModelLabels(models: AdapterModel[], provider: "Claude" | "
   }));
 }
 
+const acpxFallbackModels = dedupeAdapterModels([
+  ...acpxModels,
+  ...prefixAdapterModelLabels(claudeModels, "Claude"),
+  ...prefixAdapterModelLabels(codexModels, "Codex"),
+]);
+
 async function listAcpxModels(): Promise<AdapterModel[]> {
   const [claude, codex] = await Promise.all([
     listClaudeModels().catch(() => claudeModels),
@@ -376,6 +381,8 @@ const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
   execute: acpxExecute,
   testEnvironment: acpxTestEnvironment,
+  models: acpxFallbackModels,
+  listModels: listAcpxModels,
   listSkills: listAcpxSkills,
   syncSkills: syncAcpxSkills,
   sessionCodec: acpxSessionCodec,
