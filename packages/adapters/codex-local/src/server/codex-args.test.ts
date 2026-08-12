@@ -143,4 +143,65 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  // Restored 2026-08-12. These three executionConstraints tests were dropped when this
+  // file was rewritten for the default-model change, which left the sandbox/bypass
+  // guards in codex-args.ts with no coverage at all. That enforcement logic was never
+  // touched by this PR -- only its tests went missing -- so they come back unchanged.
+  // The extraArgs case matters most: it is the guard against re-widening the sandbox
+  // through user-supplied flags.
+
+  it("applies workspace-write sandbox and blocks bypass under network deny", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      search: true,
+      dangerouslyBypassApprovalsAndSandbox: false,
+      executionConstraints: {
+        network: "deny",
+        sandboxMode: "workspace-write",
+      },
+    });
+    expect(result.args).toContain("--sandbox");
+    expect(result.args).toContain("workspace-write");
+    expect(result.args).not.toContain("--search");
+    expect(result.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
+
+  it("throws when bypass is requested under denied network", () => {
+    expect(() =>
+      buildCodexExecArgs({
+        model: "gpt-5.4",
+        dangerouslyBypassApprovalsAndSandbox: true,
+        executionConstraints: { network: "deny" },
+      }),
+    ).toThrow(/forbid Codex bypass/);
+  });
+
+  it("strips extraArgs that would reintroduce search or widen sandbox under constraints", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      executionConstraints: {
+        network: "deny",
+        sandboxMode: "workspace-write",
+      },
+      extraArgs: [
+        "--search",
+        "--search=true",
+        "--sandbox",
+        "danger-full-access",
+        "--sandbox=danger-full-access",
+        "-c",
+        "sandbox_workspace_write.network_access=true",
+        "--skip-git-repo-check",
+      ],
+    });
+    expect(result.args).not.toContain("--search");
+    expect(result.args).not.toContain("--search=true");
+    expect(result.args).toContain("--sandbox");
+    expect(result.args).toContain("workspace-write");
+    expect(result.args).not.toContain("danger-full-access");
+    expect(result.args).not.toContain("--sandbox=danger-full-access");
+    expect(result.args.join(" ")).not.toContain("network_access=true");
+    expect(result.args).toContain("--skip-git-repo-check");
+  });
 });
