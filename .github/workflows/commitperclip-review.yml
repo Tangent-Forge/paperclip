@@ -45,11 +45,20 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          # Accept either secret name: the app key has been stored as
+          # Accept either secret name: the app key is stored as
           # REVIEW_APP_PRIVATE_KEY in this repo, while the scripts and the
-          # local-dev instructions use COMMITPERCLIP_KEY. Taking whichever is
-          # populated keeps the gate working under both names.
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
+          # local-dev instructions use COMMITPERCLIP_KEY.
+          #
+          # ORDER IS LOAD-BEARING. This previously read
+          #   secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY
+          # on the assumption that only one would ever be populated. Both are:
+          # COMMITPERCLIP_KEY is inherited from the org and still holds the old
+          # 40-byte *token* (not a PEM), so `||` short-circuited to it and the
+          # correct PEM uploaded to this repo on 2026-08-09 was never reached.
+          # Every review run since has died with ERR_OSSL_UNSUPPORTED / "no
+          # -----BEGIN line". The repo-level secret is the specific, authoritative
+          # one here, so it must win.
+          COMMITPERCLIP_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY || secrets.COMMITPERCLIP_KEY }}
           # Authenticate as the App this org actually owns. Without these the
           # script signs its JWT as iss=3718661 (upstream's commitperclip),
           # whose private key is never released to installers -- so no key
