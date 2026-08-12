@@ -70,6 +70,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 import { execute } from "./execute.js";
 
 describe("codex remote execution", () => {
@@ -262,6 +263,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-",
     ]);
   });
@@ -333,6 +336,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "resume",
       "session-123",
       "-",
@@ -412,6 +417,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "resume",
       "session-123",
       "-",

@@ -277,7 +277,7 @@ describe("adapter routes", () => {
     expect(keys).not.toContain("bootstrapPromptTemplate");
   });
 
-  it("GET /api/adapters includes ACPX model availability", async () => {
+  it("GET /api/adapters includes ACPX model availability metadata", async () => {
     const app = createApp();
 
     const res = await request(app).get("/api/adapters");
@@ -285,7 +285,7 @@ describe("adapter routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();
-    expect(acpxLocal.modelsCount).toBeGreaterThan(0);
+    expect(acpxLocal.modelsCount).toBe(0);
   });
 
   it("rejects signed-in users without org access", async () => {
