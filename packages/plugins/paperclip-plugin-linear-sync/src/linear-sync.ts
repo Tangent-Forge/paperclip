@@ -11,6 +11,9 @@ export type LinearSyncConfig = {
   candidateStatusNames: string[];
   maxIssuesPerRun: number;
   projectId: string | null;
+  linearProjectIdToPaperclipProjectId: Record<string, string>;
+  linearInitiativeIdToPaperclipGoalId: Record<string, string>;
+  linearLabelIdToPaperclipLabelId: Record<string, string>;
   triageAgentId: string | null;
   defaultPriority: "low" | "medium" | "high" | "critical";
   postImportComment: boolean;
@@ -31,6 +34,14 @@ export type LinearIssue = {
   updatedAt: string | null;
   state: { id?: string | null; name?: string | null } | null;
   team: { id?: string | null; key?: string | null; name?: string | null } | null;
+  project: {
+    id?: string | null;
+    name?: string | null;
+    url?: string | null;
+    initiatives?: { nodes?: Array<{ id?: string | null; name?: string | null; url?: string | null }> | null } | null;
+  } | null;
+  labels: { nodes?: Array<{ id?: string | null; name?: string | null; color?: string | null }> | null } | null;
+  parent: { id?: string | null; identifier?: string | null; title?: string | null; url?: string | null } | null;
 };
 
 export type SyncSummary = {
@@ -88,6 +99,8 @@ export type SyncHost = {
     create(input: {
       companyId: string;
       projectId?: string;
+      goalId?: string;
+      parentId?: string;
       title: string;
       description?: string;
       status?: Issue["status"];
@@ -95,9 +108,10 @@ export type SyncHost = {
       assigneeAgentId?: string;
       originKind?: string;
       originId?: string | null;
+      labelIds?: string[];
       actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null };
     }): Promise<Issue>;
-    update(issueId: string, patch: Partial<Pick<Issue, "title" | "description" | "status" | "priority" | "assigneeAgentId" | "originKind" | "originId">>, companyId: string, actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null }): Promise<Issue>;
+    update(issueId: string, patch: Partial<Pick<Issue, "title" | "description" | "status" | "priority" | "assigneeAgentId" | "originKind" | "originId" | "projectId" | "goalId" | "parentId">> & { labelIds?: string[] }, companyId: string, actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null }): Promise<Issue>;
     requestWakeup(issueId: string, companyId: string, options?: { reason?: string; contextSource?: string; idempotencyKey?: string | null; actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null }): Promise<{ queued: boolean }>;
   };
   state: {
@@ -113,6 +127,14 @@ export type SyncHost = {
 export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
   const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
   const str = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  const stringMap = (value: unknown): Record<string, string> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).flatMap(([key, mapped]) => {
+      const sourceId = key.trim();
+      const targetId = str(mapped);
+      return sourceId && targetId ? [[sourceId, targetId]] : [];
+    }));
+  };
   const int = (value: unknown, fallback: number, min: number, max: number): number => {
     const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
     if (!Number.isFinite(parsed)) return fallback;
@@ -128,6 +150,9 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
     candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : ["Backlog", "Todo"],
     maxIssuesPerRun: int(raw.maxIssuesPerRun, 25, 1, 100),
     projectId: str(raw.projectId),
+    linearProjectIdToPaperclipProjectId: stringMap(raw.linearProjectIdToPaperclipProjectId),
+    linearInitiativeIdToPaperclipGoalId: stringMap(raw.linearInitiativeIdToPaperclipGoalId),
+    linearLabelIdToPaperclipLabelId: stringMap(raw.linearLabelIdToPaperclipLabelId),
     triageAgentId: str(raw.triageAgentId),
     defaultPriority: priority === "low" || priority === "medium" || priority === "high" || priority === "critical" ? priority : "medium",
     postImportComment: raw.postImportComment !== false,
@@ -196,6 +221,89 @@ function paperclipDescription(issue: LinearIssue): string {
   return lines.join("\n");
 }
 
+function paperclipPriority(linearPriority: number | null, fallback: LinearSyncConfig["defaultPriority"]): Issue["priority"] {
+  switch (linearPriority) {
+    case 1: return "critical";
+    case 2: return "high";
+    case 3: return "medium";
+    case 4: return "low";
+    default: return fallback;
+  }
+}
+
+type NativeStructure = {
+  projectId: string | null;
+  goalId: string | null;
+  parentId: string | null;
+  labelIds: string[];
+  priority: Issue["priority"];
+};
+
+function sourceId(value: { id?: string | null } | null | undefined): string | null {
+  return typeof value?.id === "string" && value.id.trim() ? value.id.trim() : null;
+}
+
+async function resolveNativeStructure(host: SyncHost, companyId: string, config: LinearSyncConfig, issue: LinearIssue): Promise<NativeStructure> {
+  const projectId = sourceId(issue.project);
+  const initiativeIds = [...new Set((issue.project?.initiatives?.nodes ?? []).map((initiative) => sourceId(initiative)).filter((initiativeId): initiativeId is string => Boolean(initiativeId)))].sort();
+  const parentSourceId = sourceId(issue.parent);
+  const linkedParent = parentSourceId
+    ? (await host.issues.list({ companyId, originKind: ORIGIN_KIND_LINEAR_ISSUE, originId: parentSourceId, includePluginOperations: true, limit: 1 }))[0] ?? null
+    : null;
+  const labelIds = [...new Set(
+    (issue.labels?.nodes ?? [])
+      .map((label) => sourceId(label))
+      .flatMap((labelId) => labelId && config.linearLabelIdToPaperclipLabelId[labelId] ? [config.linearLabelIdToPaperclipLabelId[labelId]] : []),
+  )];
+  return {
+    // Explicit source-ID maps are the only automatic cross-system identity mapping.
+    // The pre-existing projectId remains a deliberate fallback for all imports.
+    projectId: projectId ? config.linearProjectIdToPaperclipProjectId[projectId] ?? config.projectId : config.projectId,
+    // A Linear project can have multiple initiatives. Choose the first mapped source ID
+    // in lexical order so the Paperclip single-goal field remains deterministic.
+    goalId: initiativeIds.map((initiativeId) => config.linearInitiativeIdToPaperclipGoalId[initiativeId]).find((goalId): goalId is string => Boolean(goalId)) ?? null,
+    parentId: linkedParent?.id ?? null,
+    labelIds,
+    priority: paperclipPriority(issue.priority, config.defaultPriority),
+  };
+}
+
+function structureMetadata(issue: LinearIssue, native: NativeStructure, config: LinearSyncConfig): Record<string, unknown> {
+  const sourceProjectId = sourceId(issue.project);
+  const sourceInitiativeIds = [...new Set((issue.project?.initiatives?.nodes ?? []).map((initiative) => sourceId(initiative)).filter((initiativeId): initiativeId is string => Boolean(initiativeId)))].sort();
+  const sourceParentId = sourceId(issue.parent);
+  return {
+    schemaVersion: 1,
+    linear: {
+      priority: issue.priority,
+      project: issue.project ? { id: sourceProjectId, name: issue.project.name ?? null, url: issue.project.url ?? null } : null,
+      initiatives: (issue.project?.initiatives?.nodes ?? []).map((initiative) => ({ id: sourceId(initiative), name: initiative.name ?? null, url: initiative.url ?? null })),
+      labels: (issue.labels?.nodes ?? []).map((label) => ({
+        id: sourceId(label),
+        name: label.name ?? null,
+        color: label.color ?? null,
+        paperclipLabelId: sourceId(label) ? config.linearLabelIdToPaperclipLabelId[sourceId(label)!] ?? null : null,
+      })),
+      parent: issue.parent ? { id: sourceParentId, identifier: issue.parent.identifier ?? null, title: issue.parent.title ?? null, url: issue.parent.url ?? null } : null,
+    },
+    paperclip: {
+      projectId: native.projectId,
+      goalId: native.goalId,
+      parentId: native.parentId,
+      labelIds: native.labelIds,
+      priority: native.priority,
+    },
+    unmapped: {
+      projectId: sourceProjectId && !native.projectId ? sourceProjectId : null,
+      initiativeIds: sourceInitiativeIds.filter((initiativeId) => !config.linearInitiativeIdToPaperclipGoalId[initiativeId]),
+      labelIds: (issue.labels?.nodes ?? [])
+        .map((label) => sourceId(label))
+        .filter((labelId): labelId is string => Boolean(labelId && !config.linearLabelIdToPaperclipLabelId[labelId])),
+      parentId: sourceParentId && !native.parentId ? sourceParentId : null,
+    },
+  };
+}
+
 function shouldUpdateLinkedIssue(link: LinkRow, issue: LinearIssue): boolean {
   const linkedUpdatedAt = link.last_linear_updated_at ? new Date(link.last_linear_updated_at).getTime() : 0;
   const issueUpdatedAt = issue.updatedAt ? new Date(issue.updatedAt).getTime() : 0;
@@ -224,13 +332,24 @@ async function reserveLink(host: SyncHost, companyId: string, issue: LinearIssue
   return row;
 }
 
-async function setLinkedIssue(host: SyncHost, companyId: string, linkId: string, paperclipIssueId: string, issue: LinearIssue): Promise<void> {
+async function setLinkedIssue(host: SyncHost, companyId: string, linkId: string, paperclipIssueId: string, issue: LinearIssue, metadata: Record<string, unknown>): Promise<void> {
   await host.db.execute(
     `UPDATE ${table(host, "linear_issue_links")}
-     SET paperclip_issue_id = $1, linear_identifier = $2, last_linear_updated_at = $3::timestamptz, last_imported_at = now(), status = 'linked', updated_at = now()
-     WHERE id = $4 AND company_id = $5`,
-    [paperclipIssueId, issue.identifier, linearTimestamp(issue.updatedAt), linkId, companyId],
+     SET paperclip_issue_id = $1, linear_identifier = $2, last_linear_updated_at = $3::timestamptz, last_imported_at = now(), status = 'linked', metadata = metadata || $4::jsonb, updated_at = now()
+     WHERE id = $5 AND company_id = $6`,
+    [paperclipIssueId, issue.identifier, linearTimestamp(issue.updatedAt), JSON.stringify(metadata), linkId, companyId],
   );
+}
+
+function nativeStructureChanged(existing: Issue, native: NativeStructure): boolean {
+  const currentLabelIds = [...new Set(existing.labelIds ?? [])].sort();
+  const nextLabelIds = [...new Set(native.labelIds)].sort();
+  return existing.projectId !== native.projectId
+    || existing.goalId !== native.goalId
+    || existing.parentId !== native.parentId
+    || existing.priority !== native.priority
+    || currentLabelIds.length !== nextLabelIds.length
+    || currentLabelIds.some((labelId, index) => labelId !== nextLabelIds[index]);
 }
 
 async function markLinearWrite(host: SyncHost, companyId: string, linkId: string): Promise<void> {
@@ -254,6 +373,8 @@ export async function importLinearIssue(input: {
   if (!isCandidateLinearIssue(issue, config)) return "not_candidate";
 
   const link = await reserveLink(host, companyId, issue);
+  const native = await resolveNativeStructure(host, companyId, config, issue);
+  const metadata = structureMetadata(issue, native, config);
   const existingByOrigin = await host.issues.list({
     companyId,
     originKind: ORIGIN_KIND_LINEAR_ISSUE,
@@ -266,33 +387,41 @@ export async function importLinearIssue(input: {
     : existingByOrigin[0] ?? null;
 
   if (existing) {
-    if (link.paperclip_issue_id !== existing.id) {
-      await setLinkedIssue(host, companyId, link.id, existing.id, issue);
+    if (!shouldUpdateLinkedIssue(link, issue) && !nativeStructureChanged(existing, native)) {
+      await setLinkedIssue(host, companyId, link.id, existing.id, issue, metadata);
+      return "duplicate_skipped";
     }
-    if (!shouldUpdateLinkedIssue(link, issue)) return "duplicate_skipped";
     await host.issues.update(existing.id, {
       title: `[${issue.identifier ?? "Linear"}] ${issue.title}`,
       description: paperclipDescription(issue),
+      projectId: native.projectId,
+      goalId: native.goalId,
+      parentId: native.parentId,
+      labelIds: native.labelIds,
+      priority: native.priority,
       originKind: ORIGIN_KIND_LINEAR_ISSUE,
       originId: issue.id,
     }, companyId, actor);
-    await setLinkedIssue(host, companyId, link.id, existing.id, issue);
+    await setLinkedIssue(host, companyId, link.id, existing.id, issue, metadata);
     return "updated";
   }
 
   const created = await host.issues.create({
     companyId,
-    projectId: config.projectId ?? undefined,
+    projectId: native.projectId ?? undefined,
+    goalId: native.goalId ?? undefined,
+    parentId: native.parentId ?? undefined,
     title: `[${issue.identifier ?? "Linear"}] ${issue.title}`,
     description: paperclipDescription(issue),
     status: config.triageAgentId ? "todo" : "backlog",
-    priority: config.defaultPriority,
+    priority: native.priority,
     assigneeAgentId: config.triageAgentId ?? undefined,
     originKind: ORIGIN_KIND_LINEAR_ISSUE,
     originId: issue.id,
+    labelIds: native.labelIds,
     actor,
   });
-  await setLinkedIssue(host, companyId, link.id, created.id, issue);
+  await setLinkedIssue(host, companyId, link.id, created.id, issue, metadata);
 
   if (config.triageAgentId) {
     await host.issues.requestWakeup(created.id, companyId, {

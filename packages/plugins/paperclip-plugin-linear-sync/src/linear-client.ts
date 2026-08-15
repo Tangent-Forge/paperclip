@@ -41,6 +41,14 @@ const ISSUE_FIELDS = `
   updatedAt
   state { id name }
   team { id key name }
+  project {
+    id
+    name
+    url
+    initiatives { nodes { id name url } }
+  }
+  labels { nodes { id name color } }
+  parent { id identifier title url }
 `;
 
 export function createLinearClient(input: { http: PluginHttpClient; url: string; token: string }): LinearClient {

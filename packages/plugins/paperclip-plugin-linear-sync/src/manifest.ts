@@ -44,6 +44,21 @@ const manifest: PaperclipPluginManifestV1 = {
       candidateStatusNames: { type: "array", items: { type: "string" }, default: ["Backlog", "Todo"] },
       maxIssuesPerRun: { type: "integer", minimum: 1, maximum: 100, default: 25 },
       projectId: { type: "string", description: "Optional Paperclip project id for imported intake items." },
+      linearProjectIdToPaperclipProjectId: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Explicit map of Linear project UUIDs to Paperclip project UUIDs. It takes precedence over projectId for matching source projects."
+      },
+      linearInitiativeIdToPaperclipGoalId: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Explicit map of Linear initiative UUIDs to Paperclip goal UUIDs. When a Linear project has multiple mapped initiatives, the lowest Linear UUID wins deterministically."
+      },
+      linearLabelIdToPaperclipLabelId: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Explicit map of Linear issue-label UUIDs to Paperclip issue-label UUIDs."
+      },
       triageAgentId: { type: "string", description: "Optional Paperclip agent woken exactly once for each new imported issue." },
       defaultPriority: { type: "string", enum: ["low", "medium", "high", "critical"], default: "medium" },
       postImportComment: { type: "boolean", default: true },
