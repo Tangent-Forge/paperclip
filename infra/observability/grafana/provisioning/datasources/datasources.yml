@@ -9,23 +9,8 @@ datasources:
     isDefault: true
     editable: true
 
+deleteDatasources:
   - name: Loki
-    type: loki
-    access: proxy
-    url: http://loki:3100
-    uid: paperclip-loki
-    editable: true
-
+    orgId: 1
   - name: Tempo
-    type: tempo
-    access: proxy
-    url: http://tempo:3200
-    uid: paperclip-tempo
-    editable: true
-    jsonData:
-      tracesToLogsV2:
-        datasourceUid: paperclip-loki
-      tracesToMetrics:
-        datasourceUid: paperclip-prometheus
-      serviceMap:
-        datasourceUid: paperclip-prometheus
+    orgId: 1

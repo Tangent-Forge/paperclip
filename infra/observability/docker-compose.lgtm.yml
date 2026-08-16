@@ -1,4 +1,4 @@
-# Loopback-only Grafana LGTM stack for local Paperclip observability.
+# Loopback-only Grafana and Prometheus stack for local Paperclip observability.
 #
 # Start from the repo root:
 #   docker compose -f infra/observability/docker-compose.lgtm.yml up -d
@@ -22,8 +22,6 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
-      - loki
-      - tempo
 
   prometheus:
     image: prom/prometheus:v3.7.3
@@ -44,30 +42,6 @@ services:
     depends_on:
       - blackbox
 
-  loki:
-    image: grafana/loki:3.5.8
-    restart: unless-stopped
-    command:
-      - "-config.file=/etc/loki/local-config.yml"
-    ports:
-      - "127.0.0.1:${PAPERCLIP_OBS_LOKI_PORT:-3101}:3100"
-    volumes:
-      - loki-data:/loki
-      - ./loki/local-config.yml:/etc/loki/local-config.yml:ro
-
-  tempo:
-    image: grafana/tempo:2.9.0
-    restart: unless-stopped
-    command:
-      - "-config.file=/etc/tempo/tempo.yml"
-    ports:
-      - "127.0.0.1:${PAPERCLIP_OBS_TEMPO_PORT:-3200}:3200"
-      - "127.0.0.1:${PAPERCLIP_OBS_OTLP_GRPC_PORT:-4317}:4317"
-      - "127.0.0.1:${PAPERCLIP_OBS_OTLP_HTTP_PORT:-4318}:4318"
-    volumes:
-      - tempo-data:/var/tempo
-      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
-
   blackbox:
     image: prom/blackbox-exporter:v0.27.0
     restart: unless-stopped
@@ -84,5 +58,6 @@ services:
 volumes:
   grafana-data:
   prometheus-data:
+  # Retained without mounts so historical logs and traces are preserved.
   loki-data:
   tempo-data:
