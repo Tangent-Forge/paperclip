@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Issue } from "@paperclipai/plugin-sdk";
-import { ORIGIN_KIND_INCIDENT, ORIGIN_KIND_LINEAR_ISSUE, PLUGIN_ID } from "./constants.js";
+import { ADMISSION_LINEAR_STATE_NAME, ORIGIN_KIND_INCIDENT, ORIGIN_KIND_LINEAR_ISSUE, PLUGIN_ID } from "./constants.js";
 import type { LinearPaginationResult, PortfolioInventoryIssue, PortfolioInventoryProject } from "./portfolio-types.js";
 import { evaluateAdmission, stableLinearAdmissionReceipt, stableLinearWorkId, type WorkContract } from "./work-contract.js";
 
@@ -130,7 +130,7 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
     linearApiKeySecretRef: str(raw.linearApiKeySecretRef),
     linearWebhookSigningSecretRef: str(raw.linearWebhookSigningSecretRef),
     linearGraphqlUrl: str(raw.linearGraphqlUrl) ?? "https://api.linear.app/graphql",
-    candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : ["Triage"],
+    candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : [ADMISSION_LINEAR_STATE_NAME],
     maxIssuesPerRun: int(raw.maxIssuesPerRun, 25, 1, 100),
     projectId: str(raw.projectId),
     triageAgentId: str(raw.triageAgentId),
@@ -143,12 +143,16 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
   };
 }
 
+export function isAdmissionLinearStateName(name: string | null | undefined): boolean {
+  return name?.trim().toLowerCase() === ADMISSION_LINEAR_STATE_NAME.toLowerCase();
+}
+
 export function isCandidateLinearIssue(issue: LinearIssue, config: LinearSyncConfig): boolean {
-  const stateName = issue.state?.name?.trim().toLowerCase();
-  return Boolean(
-    stateName === "triage"
-    && config.candidateStatusNames.some((name) => name.trim().toLowerCase() === "triage"),
-  );
+  // Fail closed: only the dedicated admission state is executable intake.
+  // Config may list it, but cannot widen admission to Triage/Backlog/Todo/etc.
+  const stateName = issue.state?.name?.trim() ?? "";
+  if (!isAdmissionLinearStateName(stateName)) return false;
+  return config.candidateStatusNames.some((name) => isAdmissionLinearStateName(name));
 }
 
 export function verifyLinearSignature(input: { rawBody: string; headers: Record<string, string | string[]>; secret: string }): boolean {

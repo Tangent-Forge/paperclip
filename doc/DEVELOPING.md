@@ -784,3 +784,15 @@ node scripts/check-enabled-plugins-health.mjs --base-url http://127.0.0.1:3100
 The gate fails if any non-disabled plugin remains in `error` / unhealthy state.
 A deployment is not healthy until this gate passes.
 
+## Linear Sync admission state
+
+Paperclip execution admission is **not** Linear `Triage`.
+
+- Human/ops parking stays in `Triage` (and other non-admission states).
+- Only Linear state **`Ready for Paperclip`** is a Paperclip admission candidate.
+- State membership alone is never enough: a valid `tf-work-contract` (`tf-work/v1`) is still required.
+- Linear Sync config must set `candidateStatusNames` to exactly `["Ready for Paperclip"]` when enabled.
+- Code fail-closes: even if config drifts to include `Triage`/`Backlog`/`Todo`, those states cannot be admitted.
+
+Do not mass-move the Triage backlog into `Ready for Paperclip`. Move an issue there only when it is intentionally agent-executable and the contract is complete.
+

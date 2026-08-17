@@ -394,11 +394,13 @@ export {
 } from "@paperclipai/shared";
 
 export {
+  ADMISSION_LINEAR_STATE_NAME,
   DELIVERY_STATES,
   WORK_CONTRACT_FENCE,
   WORK_CONTRACT_VERSION,
   evaluateAdmission,
   evaluateCompletion,
+  isAdmissionLinearStateName,
   parseWorkContract,
   reconcileWorkState,
   stableLinearAdmissionReceipt,

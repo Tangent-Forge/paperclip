@@ -1,5 +1,7 @@
 export const WORK_CONTRACT_VERSION = "tf-work/v1" as const;
 export const WORK_CONTRACT_FENCE = "tf-work-contract" as const;
+/** Sole Linear workflow state eligible for Paperclip execution admission. */
+export const ADMISSION_LINEAR_STATE_NAME = "Ready for Paperclip" as const;
 
 export const DELIVERY_STATES = [
   "defined",
@@ -50,7 +52,8 @@ export type ContractParseResult =
 
 export type AdmissionResult = {
   admitted: boolean;
-  reason: "admitted" | "not_triage" | "missing_contract" | "invalid_contract";
+  /** `not_triage` retained as a legacy alias of `not_admission_state`. */
+  reason: "admitted" | "not_admission_state" | "not_triage" | "missing_contract" | "invalid_contract";
   contract: WorkContract | null;
   errors: string[];
 };
@@ -103,11 +106,16 @@ function isDeliveryState(value: unknown): value is DeliveryState {
   return typeof value === "string" && (DELIVERY_STATES as readonly string[]).includes(value);
 }
 
+export function isAdmissionLinearStateName(name: string | null | undefined): boolean {
+  return name?.trim().toLowerCase() === ADMISSION_LINEAR_STATE_NAME.toLowerCase();
+}
+
 export function stableLinearWorkId(linearIssueId: string): string {
   return `linear:${linearIssueId}`;
 }
 
 export function stableLinearAdmissionReceipt(linearIssueId: string): string {
+  // Stable historical prefix — do not rename; used as wakeup idempotency key.
   return `linear-triage:${linearIssueId}`;
 }
 
@@ -171,8 +179,13 @@ export function evaluateAdmission(input: {
   linearIssueId: string;
   description: string | null | undefined;
 }): AdmissionResult {
-  if (input.linearState?.trim().toLowerCase() !== "triage") {
-    return { admitted: false, reason: "not_triage", contract: null, errors: ["only Linear Triage is an execution admission state"] };
+  if (!isAdmissionLinearStateName(input.linearState)) {
+    return {
+      admitted: false,
+      reason: "not_admission_state",
+      contract: null,
+      errors: [`only Linear "${ADMISSION_LINEAR_STATE_NAME}" is an execution admission state`],
+    };
   }
   const parsed = parseWorkContract(input.description);
   if (!parsed.valid) {
@@ -222,9 +235,9 @@ export function reconcileWorkState(input: {
   evidence: CompletionEvidence;
 }): ReconciledWorkState {
   const admissionReceipt = nonEmptyString(input.admissionReceipt) ? input.admissionReceipt : null;
-  const currentTriageContract = input.linearState.trim().toLowerCase() === "triage"
+  const currentAdmissionContract = isAdmissionLinearStateName(input.linearState)
     && input.contract?.workId === input.workId;
-  const admitted = Boolean(admissionReceipt) || currentTriageContract;
+  const admitted = Boolean(admissionReceipt) || currentAdmissionContract;
   const conflicts: string[] = [];
   const paperclipState = input.paperclipState ?? null;
   const claimed = input.claimedDeliveryState ?? null;
@@ -235,8 +248,8 @@ export function reconcileWorkState(input: {
   if (input.contract && input.contract.workId !== input.workId) {
     conflicts.push(`contract workId ${input.contract.workId} does not match ${input.workId}`);
   }
-  if (!admitted && paperclipState) conflicts.push("Paperclip work exists without explicit Linear Triage admission");
-  if (["backlog", "todo"].includes(input.linearState.trim().toLowerCase()) && paperclipState) {
+  if (!admitted && paperclipState) conflicts.push(`Paperclip work exists without explicit Linear "${ADMISSION_LINEAR_STATE_NAME}" admission`);
+  if (["backlog", "todo", "triage"].includes(input.linearState.trim().toLowerCase()) && paperclipState) {
     conflicts.push(`Linear ${input.linearState} is not an admission state but Paperclip work exists`);
   }
   if ((linearTerminal || paperclipTerminal) && completion && !completion.complete) {
@@ -261,7 +274,7 @@ export function reconcileWorkState(input: {
   const nextAction = truthfulState === "state_conflict"
     ? "Correct tracker states to match evidence, then re-evaluate."
     : truthfulState === "not_admitted"
-      ? "Move the Linear item to Triage with a valid work contract."
+      ? `Move the Linear item to ${ADMISSION_LINEAR_STATE_NAME} with a valid work contract.`
       : truthfulState === "delivered"
         ? "No execution action remains; preserve the receipts."
         : "Continue through the named execution queue until acceptance evidence is complete.";

@@ -11,5 +11,7 @@ export const API_ROUTE_KEYS = {
   portfolioInventory: "portfolio-inventory",
   reconcileWorkState: "reconcile-work-state",
 } as const;
+/** Sole Linear workflow state eligible for Paperclip execution admission. */
+export const ADMISSION_LINEAR_STATE_NAME = "Ready for Paperclip";
 export const ORIGIN_KIND_LINEAR_ISSUE = `plugin:${PLUGIN_ID}:linear-issue`;
 export const ORIGIN_KIND_INCIDENT = `plugin:${PLUGIN_ID}:incident`;
