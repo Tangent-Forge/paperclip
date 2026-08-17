@@ -764,3 +764,23 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## Plugin install durability and cutover health gate
+
+Local-path plugin installs **default to durable materialization** into
+`~/.paperclip/plugins/materialized/<package>/<version>/` when the source path
+is outside the managed plugin directory. That keeps `packagePath` off disposable
+deploy worktrees. Pass `durableMaterialize: false` only for intentional in-place
+dev link installs.
+
+After every production pin cutover / restart, run:
+
+```sh
+./scripts/paperclip-post-cutover-verify.sh
+# or
+node scripts/check-enabled-plugins-health.mjs --base-url http://127.0.0.1:3100
+```
+
+The gate fails if any non-disabled plugin remains in `error` / unhealthy state.
+A deployment is not healthy until this gate passes.
+

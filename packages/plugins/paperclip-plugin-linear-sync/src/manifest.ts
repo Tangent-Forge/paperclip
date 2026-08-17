@@ -80,7 +80,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/sync-now",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "body", key: "companyId" }
+      companyResolution: { from: "path", param: "companyId" }
     },
     {
       routeKey: API_ROUTE_KEYS.status,
@@ -88,7 +88,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/status",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "query", key: "companyId" }
+      companyResolution: { from: "path", param: "companyId" }
     },
     {
       routeKey: API_ROUTE_KEYS.portfolioInventory,

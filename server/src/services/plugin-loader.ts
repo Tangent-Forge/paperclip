@@ -25,7 +25,7 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -81,6 +81,67 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   ".paperclip",
   "plugins",
 );
+
+/** Managed materialization root under the configured local plugin dir. */
+export function resolveManagedMaterializedPluginDir(
+  localPluginDir: string,
+  packageName: string,
+  version: string,
+): string {
+  const safeName = packageName.replace(/^@/, "").replace(/[\/]/g, "__");
+  const safeVersion = version.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return path.join(localPluginDir, "materialized", safeName, safeVersion);
+}
+
+export function shouldMaterializeLocalPlugin(input: {
+  sourcePath: string;
+  localPluginDir: string;
+  durableMaterialize?: boolean;
+}): boolean {
+  if (input.durableMaterialize === false) return false;
+  if (input.durableMaterialize === true) return true;
+  // Default ON for production/local-path installs outside the managed dir.
+  const resolvedCandidate = path.resolve(input.sourcePath);
+  const resolvedParent = path.resolve(input.localPluginDir);
+  const relative = path.relative(resolvedParent, resolvedCandidate);
+  const inside = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return !inside;
+}
+
+async function materializeLocalPluginPackage(input: {
+  sourcePath: string;
+  targetPath: string;
+  packageName: string;
+}): Promise<void> {
+  await mkdir(path.dirname(input.targetPath), { recursive: true });
+  await rm(input.targetPath, { recursive: true, force: true });
+  await cp(input.sourcePath, input.targetPath, {
+    recursive: true,
+    filter: (src) => {
+      const base = path.basename(src);
+      if (base === "node_modules" || base === ".git" || base === "coverage") return false;
+      return true;
+    },
+  });
+  // Install runtime deps into the durable copy so it does not depend on the
+  // source worktree's node_modules.
+  try {
+    await execFileAsync(
+      "npm",
+      ["install", "--omit=dev", "--ignore-scripts", "--prefix", input.targetPath],
+      { timeout: 180_000 },
+    );
+  } catch (err) {
+    // Some first-party workspace plugins resolve deps via the monorepo.
+    // Keep the materialized tree even if npm install is incomplete; activation
+    // still validates the worker entrypoint exists.
+    logger.warn(
+      { packageName: input.packageName, targetPath: input.targetPath, err: String(err) },
+      "plugin-loader: durable materialize npm install had warnings",
+    );
+  }
+}
+
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -278,6 +339,16 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * When installing from localPath, copy the package into the managed plugin
+   * directory so packagePath is pin/worktree-invariant.
+   *
+   * Defaults to true for localPath installs whose source is outside
+   * localPluginDir (production path). Set false only for intentional
+   * in-place/dev link installs.
+   */
+  durableMaterialize?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,20 +1271,21 @@ export function pluginLoader(
 
     // Step 3: Read and validate plugin manifest
     // Note: this.loadManifest (used via current context)
-    const pkgJson = await readPackageJson(resolvedPackagePath);
+    let pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
     if (localPath) {
       await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
     }
 
+    const sourcePackagePathForErrors = resolvedPackagePath;
     const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
       const manualBuildHint = localPath
-        ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
+        ? formatLocalPluginManualBuildHint(sourcePackagePathForErrors, pkgJson)
         : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
+        `Package ${resolvedPackageName} at ${sourcePackagePathForErrors} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -1251,6 +1323,35 @@ export function pluginLoader(
 
     // Use the version declared in the manifest (required field per the spec)
     const resolvedVersion = manifest.version;
+
+    // Durable materialize AFTER source validation succeeds so failed local
+    // installs still report source-path build hints (not a half-copied tree).
+    if (
+      localPath &&
+      shouldMaterializeLocalPlugin({
+        sourcePath: resolvedPackagePath,
+        localPluginDir: targetInstallDir,
+        durableMaterialize: installOptions.durableMaterialize,
+      })
+    ) {
+      const sourcePath = resolvedPackagePath;
+      const versionForDir = resolvedVersion || "0.0.0";
+      const targetPath = resolveManagedMaterializedPluginDir(
+        targetInstallDir,
+        resolvedPackageName,
+        versionForDir,
+      );
+      log.info(
+        { sourcePath, targetPath, packageName: resolvedPackageName },
+        "plugin-loader: materializing local plugin into managed directory",
+      );
+      await materializeLocalPluginPackage({
+        sourcePath,
+        targetPath,
+        packageName: resolvedPackageName,
+      });
+      resolvedPackagePath = targetPath;
+    }
 
     return {
       packagePath: resolvedPackagePath,
@@ -1770,10 +1871,11 @@ export function pluginLoader(
         );
       }
 
-      // 4. Update the existing record
+      // 4. Update the existing record (including durable packagePath)
       await registry.update(pluginId, {
         packageName: discovered.packageName,
         version: discovered.version,
+        packagePath: discovered.packagePath,
         manifest: newManifest,
       });
 

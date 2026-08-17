@@ -1403,9 +1403,14 @@ export function createPluginWorkerManager(
 
       const existing = workers.get(pluginId);
       if (existing && existing.status !== "stopped") {
-        throw new Error(
-          `Worker already registered for plugin "${pluginId}" (status: ${existing.status})`,
+        // Re-activation / enable paths can race with an already-running worker.
+        // Stop the existing worker cleanly instead of sticky-erroring the plugin.
+        log.warn(
+          { pluginId, status: existing.status },
+          "startWorker: stopping existing worker before restart",
         );
+        await existing.stop();
+        workers.delete(pluginId);
       }
 
       const handle = createPluginWorkerHandle(pluginId, options);
