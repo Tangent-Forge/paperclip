@@ -22,17 +22,17 @@ interface ActorMiddlewareOptions {
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
-    req.actor =
-      opts.deploymentMode === "local_trusted"
-        ? {
-            type: "board",
-            userId: "local-board",
-            userName: "Local Board",
-            userEmail: null,
-            isInstanceAdmin: true,
-            source: "local_implicit",
-          }
-        : { type: "none", source: "none" };
+    // PAP-1975: `local_trusted` mode previously granted every request with no
+    // Authorization header full board+instance-admin identity as `local-board`,
+    // on the theory that anything reaching this loopback-only listener was the
+    // trusted operator. In practice, any shell-capable agent can reach the same
+    // loopback port, so this was an unconditional privilege escalation, not a
+    // convenience. Every deployment mode now defaults to `type: "none"` here;
+    // real identity comes only from an actual credential (board key, agent API
+    // key, or agent JWT) resolved below, unconditionally on the value of
+    // deploymentMode. Routes that should stay reachable without a credential
+    // (e.g. GET /health) do not gate on req.actor and are unaffected.
+    req.actor = { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
 
