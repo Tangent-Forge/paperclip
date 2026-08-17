@@ -246,6 +246,63 @@ describe("BlockedInboxView", () => {
     act(() => root.unmount());
   });
 
+  // Regression test for a bug found in live browser verification of the merged fix (PR #90):
+  // opening the Human Decisions tab (lane="human") populates react-query's cache for the
+  // `listUnlinked` query key; switching to the Agent Operations tab (lane="agent_operations")
+  // on the SAME component instance/QueryClient re-renders with `enabled: false`, but
+  // `enabled: false` only stops a refetch — it does NOT clear already-cached data for that
+  // key. Without an explicit lane re-gate on the derived value, the 39 orphan approval rows
+  // from the Human Decisions visit leaked straight into Agent Operations. Every other test in
+  // this file uses a fresh QueryClient per render, so this cross-lane cache persistence was
+  // invisible to them — this test deliberately keeps one QueryClient across a lane switch to
+  // reproduce the real Inbox.tsx usage (same page, same QueryClientProvider, tab click swaps
+  // the `lane` prop on the same mounted BlockedInboxView).
+  it("does not leak cached orphan approval rows into Agent Operations after visiting Human Decisions", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    mockApprovalsApi.listUnlinked.mockResolvedValue([
+      makeApproval({
+        id: "41fd10de-01ba-43d9-af59-a13f71dbcb4c",
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Decide: something routed with no destination" },
+      }),
+    ]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Visit Human Decisions first — this populates the listUnlinked cache entry.
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <BlockedInboxView {...blockedViewProps} lane="human" />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(
+      () => container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]') !== null,
+    );
+
+    // Switch to Agent Operations on the SAME root/QueryClient, exactly like clicking the tab
+    // in Inbox.tsx — no unmount, just a prop change on the same component instance.
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <BlockedInboxView {...blockedViewProps} lane="agent_operations" />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
+
+    expect(container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="blocked-inbox-orphan-approvals"]')).toBeNull();
+    expect(container.textContent).not.toContain("something routed with no destination");
+
+    act(() => root.unmount());
+  });
+
   it("defaults to no grouping and orders rows by most recent stopped item first", async () => {
     const issues: Issue[] = [
       makeIssue(
