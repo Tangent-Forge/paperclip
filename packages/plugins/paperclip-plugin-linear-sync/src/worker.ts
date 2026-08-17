@@ -1,5 +1,5 @@
 import { definePlugin, runWorker, type PluginApiRequestInput, type PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { API_ROUTE_KEYS, JOB_KEYS, WEBHOOK_KEYS } from "./constants.js";
+import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, JOB_KEYS, WEBHOOK_KEYS } from "./constants.js";
 import { createLinearClient } from "./linear-client.js";
 import { collectPortfolioInventory } from "./portfolio-inventory.js";
 import { handleWebhookIssue, readConfig, readSyncStatus, runLinearSync, verifyLinearSignature } from "./linear-sync.js";
@@ -55,9 +55,9 @@ const plugin = definePlugin({
     if (typed.enabled && !typed.triageAgentId) errors.push("triageAgentId is required when Linear sync is enabled.");
     if (typed.enabled && (
       typed.candidateStatusNames.length !== 1
-      || typed.candidateStatusNames[0]?.toLowerCase() !== "triage"
+      || typed.candidateStatusNames[0]?.trim().toLowerCase() !== ADMISSION_LINEAR_STATE_NAME.toLowerCase()
     )) {
-      errors.push("candidateStatusNames must contain only Triage when Linear sync is enabled.");
+      errors.push(`candidateStatusNames must contain only "${ADMISSION_LINEAR_STATE_NAME}" when Linear sync is enabled.`);
     }
     if (!typed.enabled) warnings.push("Linear sync is disabled; scheduled runs will be recorded as skipped and will not import issues.");
     return { ok: errors.length === 0, errors, warnings };

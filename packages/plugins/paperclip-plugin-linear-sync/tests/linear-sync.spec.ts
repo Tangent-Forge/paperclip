@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { API_ROUTE_KEYS, ORIGIN_KIND_LINEAR_ISSUE } from "../src/constants.js";
+import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, ORIGIN_KIND_LINEAR_ISSUE } from "../src/constants.js";
 import { createLinearClient } from "../src/linear-client.js";
 import { collectPortfolioInventory, combinePortfolioInventory, normalizePortfolioIssue, normalizePortfolioProject } from "../src/portfolio-inventory.js";
 import {
@@ -67,7 +67,7 @@ function linearIssue(overrides: Partial<LinearIssue> = {}): LinearIssue {
     priority: 2,
     createdAt: "2026-05-01T00:00:00.000Z",
     updatedAt: "2026-05-02T00:00:00.000Z",
-    state: { id: "state-triage", name: "Triage" },
+    state: { id: "state-ready-for-paperclip", name: ADMISSION_LINEAR_STATE_NAME },
     team: { id: "team-1", key: "TAN", name: "Tangent" },
     ...overrides,
   };
@@ -195,11 +195,11 @@ describe("linear sync", () => {
   });
 
   it("normalizes config defaults", () => {
-    expect(readConfig({}).candidateStatusNames).toEqual(["Triage"]);
+    expect(readConfig({}).candidateStatusNames).toEqual([ADMISSION_LINEAR_STATE_NAME]);
     expect(readConfig({ maxIssuesPerRun: 1000 }).maxIssuesPerRun).toBe(100);
   });
 
-  it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
+  it("fails config validation unless enabled intake is Ready-for-Paperclip-only and has a triage agent", async () => {
     const rejected = await plugin.definition.onValidateConfig?.({
       enabled: true,
       companyId: "company-1",
@@ -210,7 +210,7 @@ describe("linear sync", () => {
       ok: false,
       errors: expect.arrayContaining([
         expect.stringMatching(/triageAgentId is required/),
-        expect.stringMatching(/must contain only Triage/),
+        expect.stringMatching(/must contain only "Ready for Paperclip"/),
       ]),
     });
 
@@ -219,16 +219,34 @@ describe("linear sync", () => {
       companyId: "company-1",
       linearApiKeySecretRef: "secret-ref",
       triageAgentId: "chief-of-staff",
-      candidateStatusNames: ["Triage"],
+      candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME],
     })).resolves.toMatchObject({ ok: true, errors: [] });
+
+    await expect(plugin.definition.onValidateConfig?.({
+      enabled: true,
+      companyId: "company-1",
+      linearApiKeySecretRef: "secret-ref",
+      triageAgentId: "chief-of-staff",
+      candidateStatusNames: ["Triage"],
+    })).resolves.toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringMatching(/must contain only "Ready for Paperclip"/),
+      ]),
+    });
   });
 
-  it("admits Triage only and rejects Backlog/Todo even when configuration drifts", () => {
-    const config = readConfig({ candidateStatusNames: ["Triage", "Backlog", "Todo"] });
-    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), config)).toBe(true);
+  it("admits Ready for Paperclip only and rejects Triage/Backlog/Todo even when configuration drifts", () => {
+    const config = readConfig({ candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Triage", "Backlog", "Todo"] });
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: ADMISSION_LINEAR_STATE_NAME } }), config)).toBe(true);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Backlog" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Todo" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Done" } }), config)).toBe(false);
+    // Config listing only Triage cannot reopen Triage admission.
+    const triageOnly = readConfig({ candidateStatusNames: ["Triage"] });
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), triageOnly)).toBe(false);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: ADMISSION_LINEAR_STATE_NAME } }), triageOnly)).toBe(false);
   });
 
   it("runs positive and negative intake canaries without creating rejected work", async () => {
@@ -237,13 +255,14 @@ describe("linear sync", () => {
       linearIssue(),
       linearIssue({ id: "lin-backlog", identifier: "TAN-N1", state: { name: "Backlog" }, description: contractDescription("lin-backlog") }),
       linearIssue({ id: "lin-todo", identifier: "TAN-N2", state: { name: "Todo" }, description: contractDescription("lin-todo") }),
-      linearIssue({ id: "lin-invalid", identifier: "TAN-N3", state: { name: "Triage" }, description: "No contract" }),
+      linearIssue({ id: "lin-triage", identifier: "TAN-N4", state: { name: "Triage" }, description: contractDescription("lin-triage") }),
+      linearIssue({ id: "lin-invalid", identifier: "TAN-N3", state: { name: ADMISSION_LINEAR_STATE_NAME }, description: "No contract" }),
     ]);
     const summary = await runLinearSync({
       host,
       linear,
       companyId: "company-1",
-      config: readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", triageAgentId: "chief-of-staff", candidateStatusNames: ["Triage", "Backlog", "Todo"] }),
+      config: readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", triageAgentId: "chief-of-staff", candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Triage", "Backlog", "Todo"] }),
       triggerKind: "manual",
     });
 

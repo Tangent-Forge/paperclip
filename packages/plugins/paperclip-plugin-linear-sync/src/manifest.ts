@@ -41,7 +41,7 @@ const manifest: PaperclipPluginManifestV1 = {
       linearApiKeySecretRef: { type: "string", format: "secret-ref", description: "Secret reference for the Linear API key." },
       linearWebhookSigningSecretRef: { type: "string", format: "secret-ref", description: "Optional secret reference used to verify Linear webhook signatures." },
       linearGraphqlUrl: { type: "string", default: "https://api.linear.app/graphql" },
-      candidateStatusNames: { type: "array", items: { type: "string" }, default: ["Triage"] },
+      candidateStatusNames: { type: "array", items: { type: "string" }, default: ["Ready for Paperclip"] },
       maxIssuesPerRun: { type: "integer", minimum: 1, maximum: 100, default: 25 },
       projectId: { type: "string", description: "Optional Paperclip project id for imported intake items." },
       triageAgentId: { type: "string", description: "Optional Paperclip agent woken exactly once for each new imported issue." },
@@ -57,7 +57,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOB_KEYS.poll,
       displayName: "Poll Linear intake",
-      description: "Imports bounded, contract-valid Linear Triage issues into Paperclip with explicit sync state.",
+      description: "Imports bounded, contract-valid Linear issues in Ready for Paperclip into Paperclip with explicit sync state.",
       schedule: "*/30 * * * *"
     }
   ],
