@@ -25,7 +25,7 @@
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -81,6 +81,55 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   ".paperclip",
   "plugins",
 );
+
+
+async function materializeLocalPluginPackage(input: {
+  sourcePath: string;
+  packageName: string;
+  installDir: string;
+}): Promise<string> {
+  const { sourcePath, packageName, installDir } = input;
+  const safeName = packageName
+    .replace(/^@/, "")
+    .replace(/\//g, "__")
+    .replace(/[^A-Za-z0-9._-]+/g, "-");
+  const targetRoot = path.join(installDir, "managed", safeName);
+  await mkdir(targetRoot, { recursive: true });
+
+  // Replace prior materialization atomically enough for single-host ops.
+  await rm(targetRoot, { recursive: true, force: true });
+  await mkdir(targetRoot, { recursive: true });
+
+  const copyIfExists = async (rel: string) => {
+    const from = path.join(sourcePath, rel);
+    if (!existsSync(from)) return;
+    const to = path.join(targetRoot, rel);
+    await mkdir(path.dirname(to), { recursive: true });
+    await cp(from, to, { recursive: true, force: true });
+  };
+
+  await copyIfExists("package.json");
+  await copyIfExists("dist");
+  await copyIfExists("migrations");
+  await copyIfExists("README.md");
+
+  const meta = {
+    sourcePath: path.resolve(sourcePath),
+    packageName,
+    materializedAt: new Date().toISOString(),
+  };
+  await writeFile(
+    path.join(targetRoot, ".paperclip-materialized.json"),
+    `${JSON.stringify(meta, null, 2)}\n`,
+    "utf8",
+  );
+
+  if (!existsSync(path.join(targetRoot, "package.json"))) {
+    throw new Error(`Failed to materialize local plugin package: missing package.json in ${sourcePath}`);
+  }
+  return targetRoot;
+}
+
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -278,6 +327,14 @@ export interface PluginInstallOptions {
    * Defaults to the localPluginDir configured on the service.
    */
   installDir?: string;
+
+  /**
+   * When true (default for production durability), local-path installs are
+   * materialized under the managed plugin directory so packagePath does not
+   * point at ephemeral deploy worktrees. Set false to keep a live filesystem
+   * link for local plugin development/watch mode.
+   */
+  durable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1264,30 @@ export function pluginLoader(
       await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
     }
 
+    // Production durability: copy local-path plugins into the managed plugin
+    // directory so packagePath does not depend on ephemeral deploy worktrees.
+    // Dev/watch installs can opt out with durable: false.
+    // Opt-in durability: production install/cutover passes durable:true (or
+    // PAPERCLIP_PLUGIN_DURABLE_LOCAL=1). Local plugin watch mode stays linked.
+    const durableRequested =
+      installOptions.durable === true ||
+      process.env.PAPERCLIP_PLUGIN_DURABLE_LOCAL === "1";
+    const shouldMaterialize =
+      Boolean(localPath) &&
+      durableRequested &&
+      !isPathInsideDir(resolvedPackagePath, targetInstallDir);
+    if (shouldMaterialize) {
+      resolvedPackagePath = await materializeLocalPluginPackage({
+        sourcePath: resolvedPackagePath,
+        packageName: resolvedPackageName,
+        installDir: targetInstallDir,
+      });
+      log.info(
+        { packageName: resolvedPackageName, packagePath: resolvedPackagePath },
+        "plugin-loader: materialized local plugin into managed plugin directory",
+      );
+    }
+
     const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
       const manualBuildHint = localPath
@@ -1656,7 +1737,7 @@ export function pluginLoader(
         const installed = await txRegistry.install(
           {
             packageName: discovered.packageName,
-            packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+            packagePath: discovered.packagePath,
           },
           manifest,
         );
@@ -1742,6 +1823,7 @@ export function pluginLoader(
         localPath,
         version,
         installDir: localPluginDir,
+        durable: upgradeOptions.durable,
       });
 
       const newManifest = discovered.manifest!;
@@ -1775,6 +1857,7 @@ export function pluginLoader(
         packageName: discovered.packageName,
         version: discovered.version,
         manifest: newManifest,
+        packagePath: discovered.packagePath,
       });
 
       return {

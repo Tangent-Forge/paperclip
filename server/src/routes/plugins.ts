@@ -119,6 +119,11 @@ interface PluginInstallRequest {
   version?: string;
   /** True if packageName is a local filesystem path */
   isLocalPath?: boolean;
+  /**
+   * When installing from a local path, materialize into the managed plugin
+   * directory (default true). Set false only for live local plugin development.
+   */
+  durable?: boolean;
 }
 
 interface AvailableBundledPlugin {
@@ -1040,7 +1045,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/install", async (req, res) => {
     assertInstanceAdmin(req);
-    const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
+    const { packageName, version, isLocalPath, durable } = req.body as PluginInstallRequest;
 
     // Input validation
     if (!packageName || typeof packageName !== "string") {
@@ -1073,7 +1078,7 @@ export function pluginRoutes(
 
     try {
       const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+        ? { localPath: trimmedPackage, durable: durable !== false }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -2090,8 +2095,10 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; localPath?: string; durable?: boolean } | undefined;
     const version = body?.version;
+    const localPath = body?.localPath;
+    const durable = body?.durable;
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {

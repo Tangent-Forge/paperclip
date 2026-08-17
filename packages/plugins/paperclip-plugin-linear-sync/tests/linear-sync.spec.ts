@@ -248,6 +248,13 @@ describe("linear sync", () => {
     });
 
     expect(summary).toMatchObject({ importedCount: 1, contractRejectedCount: 1, failedCount: 0 });
+    expect(summary.contractRejections).toEqual([
+      expect.objectContaining({
+        linearIssueId: "lin-invalid",
+        linearIdentifier: "TAN-N3",
+        reason: expect.stringMatching(/missing|contract/i),
+      }),
+    ]);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ originId: "lin-1", status: "todo" });
     expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
@@ -394,6 +401,14 @@ describe("linear sync", () => {
     expect(snapshot.externalMutations).toBe(0);
     expect(linear.postImportComment).not.toHaveBeenCalled();
     expect(linear.moveIssueToState).not.toHaveBeenCalled();
+  });
+
+  it("exposes company-scoped routes with path companyResolution only", () => {
+    const companyRoutes = (manifest.apiRoutes ?? []).filter((route) => String(route.path).includes(":companyId"));
+    expect(companyRoutes.length).toBeGreaterThanOrEqual(4);
+    for (const route of companyRoutes) {
+      expect(route.companyResolution).toEqual({ from: "path", param: "companyId" });
+    }
   });
 
   it("exposes a read-only portfolio inventory route with no mutation surfaces", async () => {
