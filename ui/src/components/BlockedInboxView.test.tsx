@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
+import type { Approval, Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -11,8 +11,16 @@ const mockIssuesApi = vi.hoisted(() => ({
   count: vi.fn(),
 }));
 
+const mockApprovalsApi = vi.hoisted(() => ({
+  listUnlinked: vi.fn(),
+}));
+
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
+}));
+
+vi.mock("../api/approvals", () => ({
+  approvalsApi: mockApprovalsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -100,6 +108,23 @@ function makeIssue(
   } as Issue;
 }
 
+function makeApproval(overrides: Partial<Approval> & { id: string }): Approval {
+  return {
+    companyId: "company-1",
+    type: "request_board_approval",
+    requestedByAgentId: null,
+    requestedByUserId: "local-board",
+    status: "pending",
+    payload: {},
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+    createdAt: new Date("2026-08-17T15:11:37.692Z"),
+    updatedAt: new Date("2026-08-17T15:11:37.692Z"),
+    ...overrides,
+  } as Approval;
+}
+
 function renderWithClient(node: React.ReactNode, container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
@@ -145,6 +170,8 @@ describe("BlockedInboxView", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockIssuesApi.list.mockReset();
+    mockApprovalsApi.listUnlinked.mockReset();
+    mockApprovalsApi.listUnlinked.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -161,6 +188,61 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
     expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).not.toBeNull();
+    act(() => root.unmount());
+  });
+
+  // Regression test: the Dashboard "Pending Approvals" tile and /approvals/pending can
+  // show dozens of BOARD APPROVAL cards while this tab used to render
+  // data-testid="blocked-inbox-empty" ("No human decisions are waiting"), because pending
+  // approvals routed from a stale ledger ask / blocked-with-no-blocker issue are never
+  // linked to a live issue and so never appeared in issuesApi.list's blocked-attention
+  // response. This asserts the tab surfaces them instead of reporting empty.
+  it("shows a pending BOARD APPROVAL that has no linked issue, instead of the empty state", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    mockApprovalsApi.listUnlinked.mockResolvedValue([
+      makeApproval({
+        id: "41fd10de-01ba-43d9-af59-a13f71dbcb4c",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {
+          title: "Decide: Run a post-Option-B apply round and report same-session metrics",
+          summary: "Routed from board item PAP-2725 (severity high, waiting 0d).",
+          source_id: "PAP-2725",
+        },
+      }),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} lane="human" />,
+      container,
+    );
+    await waitFor(
+      () => container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]') !== null,
+    );
+
+    expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).toBeNull();
+    const row = container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]');
+    expect(row?.getAttribute("to")).toBe("/approvals/41fd10de-01ba-43d9-af59-a13f71dbcb4c");
+    expect(row?.textContent).toContain("Board Approval");
+    expect(row?.textContent).toContain("Decide: Run a post-Option-B apply round");
+    expect(container.querySelector('[data-testid="blocked-inbox-lane-counts"]')?.textContent).toContain(
+      "Human Decisions 1",
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("does not fetch unlinked approvals for the Agent Operations lane", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} lane="agent_operations" />,
+      container,
+    );
+    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
+
+    expect(mockApprovalsApi.listUnlinked).not.toHaveBeenCalled();
+
     act(() => root.unmount());
   });
 
