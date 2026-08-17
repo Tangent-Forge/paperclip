@@ -1,11 +1,23 @@
 import type { Approval, ApprovalComment, Issue } from "@paperclipai/shared";
 import { api } from "./client";
 
+function approvalsQueryString(params: { status?: string; unlinked?: boolean }): string {
+  const search = new URLSearchParams();
+  if (params.status) search.set("status", params.status);
+  if (params.unlinked) search.set("unlinked", "true");
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 export const approvalsApi = {
   list: (companyId: string, status?: string) =>
-    api.get<Approval[]>(
-      `/companies/${companyId}/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`,
-    ),
+    api.get<Approval[]>(`/companies/${companyId}/approvals${approvalsQueryString({ status })}`),
+  // Approvals with no linked issue — e.g. board-decision approvals routed from a stale
+  // ledger ask or a blocked issue with no recorded blocker. These never appear in the
+  // Issue-driven Human Decisions filter, so callers that need the full set of pending
+  // human decisions (not just the ones tied to a live issue) should use this instead.
+  listUnlinked: (companyId: string, status?: string) =>
+    api.get<Approval[]>(`/companies/${companyId}/approvals${approvalsQueryString({ status, unlinked: true })}`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
