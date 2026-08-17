@@ -570,7 +570,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : suppressAgentDetailConfigFields(agent)),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
     };
