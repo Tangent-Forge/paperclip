@@ -232,7 +232,7 @@ describe("linear sync", () => {
   });
 
   it("runs positive and negative intake canaries without creating rejected work", async () => {
-    const { host, issues } = fakeHost();
+    const { host, issues, runs } = fakeHost();
     const linear = fakeLinear([
       linearIssue(),
       linearIssue({ id: "lin-backlog", identifier: "TAN-N1", state: { name: "Backlog" }, description: contractDescription("lin-backlog") }),
@@ -251,6 +251,15 @@ describe("linear sync", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ originId: "lin-1", status: "todo" });
     expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
+    const detailsJson = runs.at(-1)?.params?.at(-1);
+    const details = typeof detailsJson === "string" ? JSON.parse(detailsJson) : detailsJson;
+    expect(details.contractRejections).toEqual([
+      expect.objectContaining({
+        linearIssueId: "lin-invalid",
+        linearIdentifier: "TAN-N3",
+        reason: expect.any(String),
+      }),
+    ]);
   });
 
   it("evaluates delivery evidence and reconciles misleading done states", () => {

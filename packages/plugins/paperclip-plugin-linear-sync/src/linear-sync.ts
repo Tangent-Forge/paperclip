@@ -255,6 +255,19 @@ async function markLinearWrite(host: SyncHost, companyId: string, linkId: string
   );
 }
 
+export type ImportLinearIssueResult =
+  | "imported"
+  | "updated"
+  | "duplicate_skipped"
+  | "not_candidate"
+  | {
+      kind: "contract_rejected";
+      linearIssueId: string;
+      linearIdentifier: string;
+      reason: string;
+      errors: string[];
+    };
+
 export async function importLinearIssue(input: {
   host: SyncHost;
   linear: LinearClient;
@@ -262,7 +275,7 @@ export async function importLinearIssue(input: {
   config: LinearSyncConfig;
   issue: LinearIssue;
   actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null };
-}): Promise<"imported" | "updated" | "duplicate_skipped" | "not_candidate" | "contract_rejected"> {
+}): Promise<ImportLinearIssueResult> {
   const { host, linear, companyId, config, issue, actor } = input;
   if (!isCandidateLinearIssue(issue, config)) return "not_candidate";
 
@@ -278,7 +291,13 @@ export async function importLinearIssue(input: {
       reason: admission.reason,
       errors: admission.errors,
     });
-    return "contract_rejected";
+    return {
+      kind: "contract_rejected",
+      linearIssueId: issue.id,
+      linearIdentifier: issue.identifier ?? "unknown",
+      reason: admission.reason ?? "contract_rejected",
+      errors: admission.errors ?? [],
+    };
   }
 
   const link = await reserveLink(host, companyId, issue);
@@ -437,13 +456,27 @@ export async function runLinearSync(input: {
       ? new Date(Math.max(0, new Date(state.lastSuccessAt).getTime() - config.successLookbackMinutes * 60_000)).toISOString()
       : null;
     const issues = await linear.listCandidateIssues({ stateNames: config.candidateStatusNames, first: config.maxIssuesPerRun, updatedAfter });
+    const contractRejections: Array<{
+      linearIssueId: string;
+      linearIdentifier: string;
+      reason: string;
+      errors: string[];
+    }> = [];
     for (const issue of issues.slice(0, config.maxIssuesPerRun)) {
       try {
         const result = await importLinearIssue({ host, linear, companyId, config, issue, actor });
         if (result === "imported") summary.importedCount += 1;
         else if (result === "updated") summary.updatedCount += 1;
         else if (result === "duplicate_skipped") summary.skippedDuplicateCount += 1;
-        else if (result === "contract_rejected") summary.contractRejectedCount += 1;
+        else if (typeof result === "object" && result.kind === "contract_rejected") {
+          summary.contractRejectedCount += 1;
+          contractRejections.push({
+            linearIssueId: result.linearIssueId,
+            linearIdentifier: result.linearIdentifier,
+            reason: result.reason,
+            errors: result.errors,
+          });
+        }
       } catch (err) {
         summary.failedCount += 1;
         summary.failures.push(`${issue.identifier ?? issue.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -451,7 +484,12 @@ export async function runLinearSync(input: {
     }
     if (summary.failedCount > 0) throw new Error(summary.failures.join("; "));
     summary.finishedAt = new Date().toISOString();
-    await recordRun(host, companyId, summary, { updatedAfter, candidateStatusNames: config.candidateStatusNames, contractRejectedCount: summary.contractRejectedCount });
+    await recordRun(host, companyId, summary, {
+      updatedAfter,
+      candidateStatusNames: config.candidateStatusNames,
+      contractRejectedCount: summary.contractRejectedCount,
+      contractRejections,
+    });
     await setState(host, companyId, { ...state, lastStartedAt: startedAt, lastFinishedAt: summary.finishedAt, lastSuccessAt: summary.finishedAt, lastSummary: summary, consecutiveFailures: 0, cooldownUntil: null });
     await host.activity.log({ companyId, message: `Linear sync completed: ${summary.importedCount} imported, ${summary.updatedCount} updated, ${summary.skippedDuplicateCount} duplicates skipped, ${summary.contractRejectedCount} rejected by contract.`, metadata: summary });
     await host.metrics?.write("linear_sync.imported", summary.importedCount, { triggerKind });
@@ -486,17 +524,26 @@ export async function handleWebhookIssue(input: {
   const result = await importLinearIssue({ ...input, issue: linearIssue });
   const summary: SyncSummary = {
     triggerKind: "webhook",
-    status: result === "not_candidate" || result === "contract_rejected" ? "skipped" : "success",
+    status: result === "not_candidate" || (typeof result === "object" && result.kind === "contract_rejected") ? "skipped" : "success",
     startedAt,
     finishedAt: new Date().toISOString(),
     importedCount: result === "imported" ? 1 : 0,
     updatedCount: result === "updated" ? 1 : 0,
     skippedDuplicateCount: result === "duplicate_skipped" ? 1 : 0,
-    contractRejectedCount: result === "contract_rejected" ? 1 : 0,
+    contractRejectedCount: typeof result === "object" && result.kind === "contract_rejected" ? 1 : 0,
     failedCount: 0,
     failures: [],
   };
-  await recordRun(input.host, input.companyId, summary, { linearIssueId: issueId, result });
+  const details: Record<string, unknown> = { linearIssueId: issueId, result };
+  if (typeof result === "object" && result.kind === "contract_rejected") {
+    details.contractRejections = [{
+      linearIssueId: result.linearIssueId,
+      linearIdentifier: result.linearIdentifier,
+      reason: result.reason,
+      errors: result.errors,
+    }];
+  }
+  await recordRun(input.host, input.companyId, summary, details);
   const state = await getState(input.host, input.companyId);
   await setState(input.host, input.companyId, { ...state, lastStartedAt: startedAt, lastFinishedAt: summary.finishedAt, lastSuccessAt: summary.finishedAt, lastSummary: summary, consecutiveFailures: 0, cooldownUntil: null });
   return summary;
@@ -515,7 +562,7 @@ function extractLinearIssueId(payload: unknown): string | null {
 export async function readSyncStatus(host: SyncHost, companyId: string): Promise<Record<string, unknown>> {
   const [state, recentRuns, linkCounts] = await Promise.all([
     getState(host, companyId),
-    host.db.query(`SELECT id, trigger_kind, started_at, finished_at, status, imported_count, updated_count, skipped_duplicate_count, failed_count, failure_summary FROM ${table(host, "sync_runs")} WHERE company_id = $1 ORDER BY started_at DESC LIMIT 10`, [companyId]),
+    host.db.query(`SELECT id, trigger_kind, started_at, finished_at, status, imported_count, updated_count, skipped_duplicate_count, failed_count, failure_summary, details FROM ${table(host, "sync_runs")} WHERE company_id = $1 ORDER BY started_at DESC LIMIT 10`, [companyId]),
     host.db.query<{ status: string; count: string }>(`SELECT status, count(*)::text AS count FROM ${table(host, "linear_issue_links")} WHERE company_id = $1 GROUP BY status`, [companyId]),
   ]);
   return { state, recentRuns, linkCounts };
