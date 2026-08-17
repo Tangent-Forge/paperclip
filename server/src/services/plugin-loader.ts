@@ -1278,49 +1278,14 @@ export function pluginLoader(
       await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
     }
 
-    // Durable materialize: local-path installs default to copying into the
-    // managed plugin directory so packagePath is not pinned to a disposable
-    // deploy worktree.
-    if (
-      localPath &&
-      shouldMaterializeLocalPlugin({
-        sourcePath: resolvedPackagePath,
-        localPluginDir: targetInstallDir,
-        durableMaterialize: installOptions.durableMaterialize,
-      })
-    ) {
-      const sourcePath = resolvedPackagePath;
-      const versionForDir =
-        typeof pkgJson?.["version"] === "string" && pkgJson["version"].trim()
-          ? pkgJson["version"].trim()
-          : "0.0.0";
-      const targetPath = resolveManagedMaterializedPluginDir(
-        targetInstallDir,
-        resolvedPackageName,
-        versionForDir,
-      );
-      log.info(
-        { sourcePath, targetPath, packageName: resolvedPackageName },
-        "plugin-loader: materializing local plugin into managed directory",
-      );
-      await materializeLocalPluginPackage({
-        sourcePath,
-        targetPath,
-        packageName: resolvedPackageName,
-      });
-      resolvedPackagePath = targetPath;
-      // Re-read package metadata from durable location.
-      pkgJson = await readPackageJson(resolvedPackagePath);
-      if (!pkgJson) throw new Error(`Missing package.json at materialized path ${resolvedPackagePath}`);
-    }
-
+    const sourcePackagePathForErrors = resolvedPackagePath;
     const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
       const manualBuildHint = localPath
-        ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
+        ? formatLocalPluginManualBuildHint(sourcePackagePathForErrors, pkgJson)
         : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
+        `Package ${resolvedPackageName} at ${sourcePackagePathForErrors} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -1358,6 +1323,35 @@ export function pluginLoader(
 
     // Use the version declared in the manifest (required field per the spec)
     const resolvedVersion = manifest.version;
+
+    // Durable materialize AFTER source validation succeeds so failed local
+    // installs still report source-path build hints (not a half-copied tree).
+    if (
+      localPath &&
+      shouldMaterializeLocalPlugin({
+        sourcePath: resolvedPackagePath,
+        localPluginDir: targetInstallDir,
+        durableMaterialize: installOptions.durableMaterialize,
+      })
+    ) {
+      const sourcePath = resolvedPackagePath;
+      const versionForDir = resolvedVersion || "0.0.0";
+      const targetPath = resolveManagedMaterializedPluginDir(
+        targetInstallDir,
+        resolvedPackageName,
+        versionForDir,
+      );
+      log.info(
+        { sourcePath, targetPath, packageName: resolvedPackageName },
+        "plugin-loader: materializing local plugin into managed directory",
+      );
+      await materializeLocalPluginPackage({
+        sourcePath,
+        targetPath,
+        packageName: resolvedPackageName,
+      });
+      resolvedPackagePath = targetPath;
+    }
 
     return {
       packagePath: resolvedPackagePath,
