@@ -9,7 +9,15 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
-export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+// Default OFF. `--dangerously-bypass-approvals-and-sandbox` disables the sandbox
+// *and* every approval prompt; Codex documents it as "intended solely for running
+// in environments that are externally sandboxed". A default of `true` also made
+// this the one place the three layers disagreed on an absent key: the runtime
+// (server/codex-args.ts) resolves absent -> false, while the server route
+// (routes/agents.ts, applyCreateDefaultsByAdapterType) resolved absent -> true,
+// so the effective sandbox posture depended on which code path last wrote the
+// config. `false` makes all three agree.
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = false;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
