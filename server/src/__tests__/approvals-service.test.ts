@@ -105,3 +105,57 @@ describe("approvalService resolution idempotency", () => {
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("approvalService requestRevision/resubmit race safety", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("treats repeated request-revision retries as no-ops after another worker already requested revision", async () => {
+    const dbStub = createDbStub(
+      [[createApproval("pending")], [createApproval("revision_requested")]],
+      [],
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.requestRevision("approval-1", "board", "please fix X");
+
+    expect(result.applied).toBe(false);
+    expect(result.approval.status).toBe("revision_requested");
+  });
+
+  it("applies request-revision when the conditional update is newly applied", async () => {
+    const revisionRequested = createApproval("revision_requested");
+    const dbStub = createDbStub([[createApproval("pending")]], [revisionRequested]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.requestRevision("approval-1", "board", "please fix X");
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("revision_requested");
+  });
+
+  it("treats repeated resubmit retries as no-ops after another worker already resubmitted", async () => {
+    const dbStub = createDbStub(
+      [[createApproval("revision_requested")], [createApproval("pending")]],
+      [],
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.resubmit("approval-1", { foo: "bar" });
+
+    expect(result.applied).toBe(false);
+    expect(result.approval.status).toBe("pending");
+  });
+
+  it("applies resubmit when the conditional update is newly applied", async () => {
+    const pending = createApproval("pending");
+    const dbStub = createDbStub([[createApproval("revision_requested")]], [pending]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.resubmit("approval-1", { foo: "bar" });
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("pending");
+  });
+});

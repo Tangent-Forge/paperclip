@@ -200,14 +200,21 @@ export function approvalService(db: Db) {
       return { approval: updated, applied };
     },
 
-    requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    requestRevision: async (
+      id: string,
+      decidedByUserId: string,
+      decisionNote?: string | null,
+    ): Promise<ResolutionResult> => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "pending") {
+        if (existing.status === "revision_requested") {
+          return { approval: existing, applied: false };
+        }
         throw unprocessable("Only pending approvals can request revision");
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -216,19 +223,33 @@ export function approvalService(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        return { approval: updated, applied: true };
+      }
+
+      const latest = await getExistingApproval(id);
+      if (latest.status === "revision_requested") {
+        return { approval: latest, applied: false };
+      }
+
+      throw unprocessable("Only pending approvals can request revision");
     },
 
-    resubmit: async (id: string, payload?: Record<string, unknown>) => {
+    resubmit: async (id: string, payload?: Record<string, unknown>): Promise<ResolutionResult> => {
       const existing = await getExistingApproval(id);
       if (existing.status !== "revision_requested") {
+        if (existing.status === "pending") {
+          return { approval: existing, applied: false };
+        }
         throw unprocessable("Only revision requested approvals can be resubmitted");
       }
 
       const now = new Date();
-      return db
+      const updated = await db
         .update(approvals)
         .set({
           status: "pending",
@@ -238,9 +259,20 @@ export function approvalService(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "revision_requested")))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        return { approval: updated, applied: true };
+      }
+
+      const latest = await getExistingApproval(id);
+      if (latest.status === "pending") {
+        return { approval: latest, applied: false };
+      }
+
+      throw unprocessable("Only revision requested approvals can be resubmitted");
     },
 
     listComments: async (approvalId: string) => {
