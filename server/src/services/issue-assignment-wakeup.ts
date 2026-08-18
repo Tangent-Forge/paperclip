@@ -11,6 +11,7 @@ export interface IssueAssignmentWakeupDeps {
       triggerDetail?: WakeupTriggerDetail;
       reason?: string | null;
       payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
@@ -23,6 +24,7 @@ export function queueIssueAssignmentWakeup(input: {
   issue: { id: string; assigneeAgentId: string | null; status: string };
   reason: string;
   mutation: string;
+  idempotencyKey?: string | null;
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
@@ -41,6 +43,7 @@ export function queueIssueAssignmentWakeup(input: {
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
       },
+      idempotencyKey: input.idempotencyKey ?? null,
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: {
