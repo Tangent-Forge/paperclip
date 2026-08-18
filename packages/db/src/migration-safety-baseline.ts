@@ -154,4 +154,11 @@ export const MIGRATION_SAFETY_BASELINE = [
     table: "issue_comments",
     reason: "Batched DO-loop backfill with keyset pagination (LIMIT 5000 per batch); reviewed and approved as part of PAP-1505 fix. Already merged to master before this guard landed.",
   },
+  {
+    id: "78b6f0b37ee57b8d",
+    rule: "large-create-index-not-concurrently",
+    migration: "9001_agent_wakeup_active_idempotency_uq.sql",
+    table: "agent_wakeup_requests",
+    reason: "Reviewed retained TF migration: live 9001 index already exists with zero duplicate active groups; current runner wraps migrations in a transaction, so CONCURRENTLY is not executable on the fresh-database path without a separate runner contract. No production DDL is authorized by this baseline.",
+  },
 ] as const satisfies readonly MigrationSafetyBaselineEntry[];

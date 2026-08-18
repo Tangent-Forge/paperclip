@@ -26,9 +26,21 @@ Read-only inspection of `tf-postgres` found `186` rows in `drizzle.__drizzle_mig
 
 `9001` is retained as a bounded core correctness/security patch. The integration branch includes the exact SQL and appends its journal entry at `idx=224`, retaining the original `when=1781490100001`; the upstream review-path idempotency index and payload index remain in the schema and the active wakeup index is added alongside them. This is a semantic merge, not an ours/theirs replacement.
 
-`9002` creates 13 evidence-registry tables and is exported only from the TF schema index; no application consumer was found in the TF tree. It is not added to the upstream core baseline. Disposition: move behavior/schema to a plugin or defer pending an owner-approved consumer and plugin migration contract. Its historical live hash remains documented and is not deleted.
+`9002` creates 13 evidence-registry tables and is exported only from the TF schema index; no application consumer was found in the TF tree. It is not added to the upstream core baseline. Disposition: move behavior/schema to a plugin or defer pending an owner-approved consumer and plugin migration contract. Its historical live hash remains documented and is recognized by the integration branch's compatibility registry, but its SQL is not in the fresh-database migration set.
 
-`9003` restores company-scoped environments after upstream `0105_instance_scoped_environments`. The live table currently contains both `company_id` and `env_vars`, while upstream models instance-scoped environments. This cannot be resolved safely by copying either schema. Disposition: owner decision required / semantic merge. No reversal is applied.
+`9003` restores company-scoped environments after upstream `0105_instance_scoped_environments`. The live table currently contains both `company_id` and `env_vars`, while upstream models instance-scoped environments. This cannot be resolved safely by copying either schema. Disposition: owner decision required / semantic merge. Its historical hash is recognized by the compatibility registry, but no reversal is applied and its SQL is not in the fresh-database migration set.
+
+## Sustainable TF migration overlay
+
+The current repository has one Drizzle migration directory and one journal. A separate directory for TF migrations would require a new migration-runner contract, separate history ordering, and fresh/existing-database bootstrap logic. It is not supported by the current runner.
+
+The recommended strategy is a reserved post-upstream TF overlay in the existing directory: TF-owned core migrations use the `9000+` filename band, and a deterministic merge places all upstream entries first and the TF overlay entries last. The `migration-overlay.ts` helper and tests enforce that rule. `idx=224` is acceptable for this temporary integration baseline, but future upstream syncs must regenerate the single journal from the upstream entries plus the reserved overlay rather than treating `224` as a permanent slot. This avoids collisions when upstream adds `0224` or later entries.
+
+Compared with manually re-appending files after every sync, the reserved overlay makes ownership and ordering explicit and mechanically testable. Compared with a distinct post-upstream directory, it works with the existing runner and preserves one hash-based history. The cost is that future sync tooling must deterministically rebuild the journal and keep overlay entries after all upstream entries.
+
+Fresh-database behavior is tested by applying the current sequence and verifying the `9001` index. Existing-TF-database behavior is tested by recognizing the applied `9002`/`9003` hashes without making their SQL executable, preserving pending detection, and rejecting unknown history hashes visibly.
+
+The migration safety checker reports the retained 9001 `CREATE UNIQUE INDEX` as a known-large-table warning (local sample 52,791 rows; estimated 13,197,750 rows). The exact SQL is preserved so its live hash remains unchanged; the reviewed finding is recorded in the repository safety baseline. The current runner executes migrations inside a transaction, so `CREATE UNIQUE INDEX CONCURRENTLY` is PostgreSQL-valid only outside the current runner transaction and is not substituted here. The baseline records review status, not production execution authorization.
 
 ## Shared-contract implications
 

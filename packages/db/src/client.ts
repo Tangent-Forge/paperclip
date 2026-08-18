@@ -4,6 +4,11 @@ import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import {
+  assertKnownMigrationHistory,
+  pendingMigrationFiles,
+  resolveMigrationHistoryHashes,
+} from "./migration-history-compat.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -501,15 +506,14 @@ async function loadAppliedMigrations(
   if (columnNames.has("hash")) {
     const rows = await sql.unsafe<{ hash: string }[]>(`SELECT hash FROM ${qualifiedTable} ORDER BY id`);
     const hashesToMigrationFiles = await mapHashesToMigrationFiles(availableMigrations);
-    const appliedFromHashes = rows
-      .map((row) => hashesToMigrationFiles.get(row.hash))
-      .filter((name): name is string => Boolean(name));
+    const resolution = resolveMigrationHistoryHashes(
+      rows.map((row) => row.hash),
+      hashesToMigrationFiles,
+    );
+    assertKnownMigrationHistory(resolution);
+    const appliedFromHashes = resolution.appliedMigrations;
 
     if (appliedFromHashes.length > 0) {
-      // Best-effort: when all hashes resolve, this is authoritative.
-      if (appliedFromHashes.length === rows.length) return appliedFromHashes;
-
-      // Partial hash resolution can happen when files have changed; return what we can trust.
       return appliedFromHashes;
     }
 
@@ -698,7 +702,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
     }
 
     const appliedMigrations = await loadAppliedMigrations(sql, migrationTableSchema, availableMigrations);
-    const pendingMigrations = availableMigrations.filter((name) => !appliedMigrations.includes(name));
+    const pendingMigrations = pendingMigrationFiles(availableMigrations, appliedMigrations);
     if (pendingMigrations.length === 0) {
       return {
         status: "upToDate",
