@@ -6,7 +6,15 @@ export const label = "Codex (local)";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
-export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+// Default OFF. `--dangerously-bypass-approvals-and-sandbox` disables the sandbox
+// *and* every approval prompt; Codex documents it as "intended solely for running
+// in environments that are externally sandboxed". A default of `true` also made
+// this the one place the three layers disagreed on an absent key: the runtime
+// (server/codex-args.ts) resolves absent -> false, while the server route
+// (routes/agents.ts, applyCreateDefaultsByAdapterType) resolved absent -> true,
+// so the effective sandbox posture depended on which code path last wrote the
+// config. `false` makes all three agree.
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = false;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
 
 function normalizeModelId(model: string | null | undefined): string {
