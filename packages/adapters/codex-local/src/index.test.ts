@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
   models,
@@ -33,5 +34,11 @@ describe("codex local adapter metadata", () => {
     expect(normalizeCodexModel("future-model")).toBe("future-model");
     expect(normalizeCodexModel("")).toBe("");
     expect(normalizeCodexModel(null)).toBe("");
+  });
+});
+
+describe("Codex local defaults", () => {
+  it("keeps approval and sandbox bypass disabled by default", () => {
+    expect(DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX).toBe(false);
   });
 });
