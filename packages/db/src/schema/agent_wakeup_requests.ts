@@ -44,5 +44,10 @@ export const agentWakeupRequests = pgTable(
       table.companyId,
       sql`(${table.payload} ->> 'issueId')`,
     ),
+    activeIdempotencyUq: uniqueIndex("agent_wakeup_requests_active_idempotency_uq")
+      .on(table.companyId, table.agentId, table.idempotencyKey)
+      .where(
+        sql`${table.idempotencyKey} is not null and ${table.status} in ('queued', 'deferred_issue_execution', 'claimed')`,
+      ),
   }),
 );
