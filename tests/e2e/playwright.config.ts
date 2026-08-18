@@ -7,7 +7,25 @@ import { defineConfig } from "@playwright/test";
 // even when the dev server is running on :3100 in authenticated mode.
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+// Playwright re-evaluates this config file in more than one process context
+// (the main runner that runs globalSetup, and separately each test worker) —
+// so PAPERCLIP_HOME must NOT be freshly randomized on every evaluation, or
+// globalSetup and the test workers end up pointed at different temp dirs.
+// Whichever process evaluates this module first generates it and sets it on
+// process.env immediately below; every later evaluation (inherited via
+// normal child-process env propagation) reuses that same value instead of
+// minting a new one.
+const PAPERCLIP_HOME = process.env.PAPERCLIP_HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+// Pinned to a known path (rather than left to the CLI's default ancestor-search
+// resolution) so global-setup.ts/global-teardown.ts — which run in this same
+// process, see PAP-1975's board-key-bootstrap.ts — can read back the exact
+// config file `onboard` writes, to find the embedded-Postgres port. Exported
+// via process.env below so those two files (and board-key-bootstrap.ts) see it
+// without every one of them needing to re-derive PAPERCLIP_HOME/PAPERCLIP_CONFIG.
+const PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG ?? path.join(PAPERCLIP_HOME, "config.json");
+process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
+process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+process.env.PAPERCLIP_INSTANCE_ID = "playwright-e2e";
 const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 export default defineConfig({
@@ -18,6 +36,8 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  globalSetup: "./global-setup.ts",
+  globalTeardown: "./global-teardown.ts",
   // All specs share one throwaway server, and several toggle instance-level
   // state (the `enableConferenceRoomChat` experimental flag) that changes
   // which UI variant renders. Run files serially so a flag flip in one spec
@@ -53,6 +73,7 @@ export default defineConfig({
       ...process.env,
       PORT: String(PORT),
       PAPERCLIP_HOME,
+      PAPERCLIP_CONFIG,
       PAPERCLIP_INSTANCE_ID: "playwright-e2e",
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",

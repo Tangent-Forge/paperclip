@@ -1,4 +1,11 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant — this spec
+// creates a company via a standalone request context during setup (needs an
+// explicit board credential below) and navigates the browser `page` to
+// company-settings routes (handled by the fixture's context override). See
+// board-key-bootstrap.ts.
+import { request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import { readE2eBoardCredential } from "./board-key-bootstrap.js";
 
 /**
  * E2E: Sidebar takeover model (PAP-10695).
@@ -57,7 +64,16 @@ test.describe("Sidebar takeover (collapse + secondary pane)", () => {
   let prefix: string;
 
   test.beforeAll(async () => {
-    board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const credential = readE2eBoardCredential();
+    if (!credential) {
+      throw new Error(
+        "sidebar-takeover.spec.ts: no e2e board credential found — global-setup.ts should have provisioned one.",
+      );
+    }
+    board = await pwRequest.newContext({
+      baseURL: BASE_URL,
+      extraHTTPHeaders: { Authorization: `Bearer ${credential.token}` },
+    });
     const company = await createCompany(board);
     companyId = company.id;
     prefix = company.prefix;
