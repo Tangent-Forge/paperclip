@@ -1,10 +1,12 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   getEmbeddedPostgresTestSupport,
@@ -14,6 +16,9 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
+type TestBoardCredential = { userId: string; token: string };
+
+let testBoardCredential: TestBoardCredential | null = null;
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -124,11 +129,55 @@ function createBasePaperclipEnv(options: TestPaperclipEnv) {
   env.PAPERCLIP_INSTANCE_ID = options.instanceId;
   env.PAPERCLIP_CONTEXT = path.join(options.paperclipHome, "context.json");
   env.PAPERCLIP_AUTH_STORE = path.join(options.paperclipHome, "auth.json");
+  if (testBoardCredential) {
+    env.PAPERCLIP_API_KEY = testBoardCredential.token;
+  }
   if (options.shellHome) {
     env.HOME = options.shellHome;
   }
 
   return env;
+}
+
+async function provisionTestBoardCredential(connectionString: string): Promise<TestBoardCredential> {
+  const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+  const userId = `cli-company-e2e-board-${randomBytes(6).toString("hex")}`;
+  const token = `pcp_board_${randomBytes(24).toString("hex")}`;
+  const now = new Date();
+  try {
+    await sql`
+      insert into "user" (id, name, email, email_verified, created_at, updated_at)
+      values (${userId}, ${"CLI company import/export (test-only)"}, ${`${userId}@e2e.invalid`}, true, ${now}, ${now})
+    `;
+    await sql`
+      insert into instance_user_roles (user_id, role)
+      values (${userId}, ${"instance_admin"})
+    `;
+    await sql`
+      insert into board_api_keys (user_id, name, key_hash, expires_at)
+      values (
+        ${userId},
+        ${"cli-company-e2e (auto-provisioned, auto-revoked)"},
+        ${createHash("sha256").update(token).digest("hex")},
+        ${new Date(Date.now() + 60 * 60 * 1000)}
+      )
+    `;
+    return { userId, token };
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
+
+async function revokeTestBoardCredential(connectionString: string, credential: TestBoardCredential | null) {
+  if (!credential) return;
+  const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+  try {
+    await sql`delete from board_api_keys where user_id = ${credential.userId}`;
+    await sql`delete from instance_user_roles where user_id = ${credential.userId}`;
+    await sql`delete from "user" where id = ${credential.userId}`;
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
 }
 
 function createServerEnv(
@@ -200,7 +249,11 @@ async function stopServerProcess(child: ServerProcess | null) {
 }
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${baseUrl}${pathname}`, init);
+  const headers = new Headers(init?.headers);
+  if (testBoardCredential) {
+    headers.set("authorization", `Bearer ${testBoardCredential.token}`);
+  }
+  const res = await fetch(`${baseUrl}${pathname}`, { ...init, headers });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Request failed ${res.status} ${pathname}: ${text}`);
@@ -317,13 +370,19 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
+    testBoardCredential = await provisionTestBoardCredential(tempDb.connectionString);
   }, 60_000);
 
   afterAll(async () => {
-    await stopServerProcess(serverProcess);
-    await tempDb?.cleanup();
-    if (tempRoot) {
-      rmSync(tempRoot, { recursive: true, force: true });
+    try {
+      await stopServerProcess(serverProcess);
+      await revokeTestBoardCredential(tempDb?.connectionString ?? "", testBoardCredential);
+    } finally {
+      testBoardCredential = null;
+      await tempDb?.cleanup();
+      if (tempRoot) {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
     }
   });
 

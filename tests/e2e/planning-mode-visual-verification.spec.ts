@@ -1,4 +1,7 @@
-import { expect, test } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant — this spec
+// flips the enableConferenceRoomChat experimental flag during setup, which
+// now requires real board authority. See board-key-bootstrap.ts.
+import { expect, test } from "./fixtures/board-auth.js";
 
 const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
 
