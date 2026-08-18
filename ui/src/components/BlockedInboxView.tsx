@@ -91,18 +91,25 @@ export function BlockedInboxView({
   // above — it only ever surfaces attention rows for real Issue records. Fetch them
   // separately and merge into the human lane so "Human Decisions" actually reflects every
   // pending item that needs a person's Approve/Reject, not just the issue-linked subset.
+  const showOrphanApprovals = lane === "human" || lane === "all";
   const {
     data: unlinkedApprovals = [] as Approval[],
     isLoading: isLoadingUnlinkedApprovals,
   } = useQuery({
     queryKey: queryKeys.approvals.listUnlinked(companyId),
     queryFn: () => approvalsApi.listUnlinked(companyId),
-    enabled: lane === "human" || lane === "all",
+    enabled: showOrphanApprovals,
   });
 
+  // `enabled: false` above only stops react-query from *refetching* — it still returns
+  // whatever this queryKey already has cached (e.g. from an earlier render where this same
+  // component instance had lane="human"). Without this explicit re-gate, switching to the
+  // Agent Operations tab after visiting Human Decisions leaked all 39 orphan approval rows
+  // into Agent Operations, because `unlinkedApprovals` kept the stale cached value from the
+  // previous lane. Force it empty here so rendering/counting never depends on cache timing.
   const orphanApprovals = useMemo(
-    () => selectPendingHumanApprovals(unlinkedApprovals),
-    [unlinkedApprovals],
+    () => (showOrphanApprovals ? selectPendingHumanApprovals(unlinkedApprovals) : []),
+    [showOrphanApprovals, unlinkedApprovals],
   );
   const filteredOrphanApprovals = useMemo(
     () =>
@@ -156,7 +163,7 @@ export function BlockedInboxView({
     });
   };
 
-  const isLoadingHumanLane = isLoading || ((lane === "human" || lane === "all") && isLoadingUnlinkedApprovals);
+  const isLoadingHumanLane = isLoading || (showOrphanApprovals && isLoadingUnlinkedApprovals);
 
   if (isLoadingHumanLane) {
     return (
