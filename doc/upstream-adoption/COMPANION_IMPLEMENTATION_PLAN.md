@@ -3,8 +3,22 @@
 Status: planning only. No Companion UI, plugin, worker, route, migration, or
 live installation is implemented by this document.
 
-Baseline: candidate `cc662d756ec23713710823bf7cff01b64c2f960e` on upstream
-`d1cd9c37f49e21e0f248918bce24cff137e3802d`.
+Source baseline: ancestry bridge
+`76e37dfd0ee9f729d00e2175d35c30d2f3c75a4f`, preserving candidate tree
+`1fd6399a65bfc83f87e3e469605ca7ec6a04c5a2`, on upstream
+`d1cd9c37f49e21e0f248918bce24cff137e3802d`. The bridge also makes old TF
+master an ancestor without importing its obsolete tree.
+
+## Identity and terminology
+
+- The system-level assistant is **Paperclip Companion**.
+- Its first-class surfaces may be named **Board Console** or **Company
+  Console**.
+- Companion is not an organizational CEO and must not impersonate or create an
+  organizational agent.
+- **Talk to CEO**, **Talk to CoS**, and equivalent actions are direct
+  conversations with the selected organizational agent, not names for the
+  Companion system thread.
 
 ## Upstream capabilities to reuse
 
@@ -22,8 +36,8 @@ Define a Companion capability contract in the plugin SDK/host:
 
 - company-scoped read context for issues, decisions, agents, runs, budgets,
   costs, sessions, and live events;
-- explicit CEO/board-operator capabilities for context assembly, proposal,
-  approval, and direct agent invocation;
+- explicit board-operator capabilities for context assembly, proposal, and
+  direct agent invocation;
 - human actor attribution and audit records on every Companion action;
 - fail-closed company and instance scope checks;
 - no secret values in context assembly or UI payloads.
@@ -33,9 +47,10 @@ and negative cross-company tests.
 
 ### 2. First-class unified surface
 
-Add a Companion plugin UI route/slot that provides a unified Company Console /
-CEO Chat entry point. It should link into, not replace, upstream task chat,
-Decisions, inbox, agent sessions, costs, and live runs.
+Add a Companion plugin UI route/slot that provides a unified Paperclip
+Companion / Board Console / Company Console entry point. It should link into,
+not replace, upstream task chat, Decisions, inbox, agent sessions, costs, and
+live runs.
 
 Deliverable: UI information architecture, loading/error/empty states, and
 accessibility tests. No duplicate task-chat data model.
@@ -50,20 +65,35 @@ company scope, and freshness/provenance markers.
 Deliverable: context schema, size/recency limits, redaction rules, and fixture
 tests for missing/stale/conflicting evidence.
 
-### 4. CEO session lifecycle
+### 4. Companion and organizational-agent session lifecycle
 
-Use upstream `agents.sessions` for direct agent communication. Add only the
-Companion-level thread identity, context snapshot references, handoff/resume
-policy, and human/agent attribution needed for CEO Chat.
+Companion system threads are plugin-owned, company-scoped records. They carry
+the authenticated human principal, message actor type, source/provenance IDs,
+context-snapshot references, timestamps, and audit correlation without
+creating an `agents` row.
 
-Deliverable: session lifecycle contract and tests for create, resume, send,
-stream, close, interruption, and authorization changes.
+Use upstream `agents.sessions` only for direct organizational-agent
+communication and delegation. Its create/list protocol requires an `agentId`,
+`agent_task_sessions.agent_id` is non-null, and the host wakes that named
+agent. A **Talk to CEO/CoS** thread therefore maps to the selected real agent
+and is labeled as that agent's conversation.
+
+Deliverable: separate Companion-thread and direct-agent-session contracts plus
+tests for create, resume, send, stream, close, interruption, attribution, and
+authorization changes.
 
 ### 5. Decision orchestration
 
-Map CEO intent to upstream proposal, interaction, approval, task, or agent
-session actions. Require explicit confirmation for mutations and preserve
-upstream resolver/addressee/continuation semantics.
+Map authenticated human intent to upstream proposal, interaction, approval,
+task, or agent-session actions. Require explicit confirmation for mutations
+and preserve upstream resolver/addressee/continuation semantics.
+
+Companion may surface an approval or interaction and submit an authenticated
+human response, but it may not approve as the plugin, Companion, `system`, or
+an organizational agent. Use the existing authenticated board UI/API route,
+which derives the actor from the request session, for initial approval
+submission. Do not add a user-session-bound host contract unless this route is
+proven insufficient and a separate design is approved.
 
 Deliverable: decision routing table, confirmation UX, idempotency contract,
 and audit/readback tests.
@@ -87,6 +117,8 @@ separate approval.
 
 - no generic Paperclip task-chat replacement;
 - no replacement auth/session/interaction protocol;
+- no organizational-agent identity for the Companion system thread;
+- no plugin/system-identity approval decisions;
 - no new core accounting or live-event system;
 - no automatic resolution of 9003 beyond the approved retirement design;
 - no implementation in the current synchronization PR unless separately

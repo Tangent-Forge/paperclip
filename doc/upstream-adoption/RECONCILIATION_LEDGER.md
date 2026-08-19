@@ -1,6 +1,6 @@
 # Upstream-adoption reconciliation ledger
 
-This ledger is the control record for the preparation branch. Every meaningful TF customization must end with exactly one disposition from the approved set. A row marked `owner decision required`, `semantic merge required`, or `defer` blocks any merge to TF master.
+This ledger is the control record for the preparation branch. Every meaningful TF customization must end with exactly one disposition from the approved set. Disposition and delivery lane are separate: an item may be intentionally deferred from synchronized core and tracked after source merge, while production-dependent work remains a cutover blocker. The explicit source-merge and cutover gates below are authoritative.
 
 Approved dispositions:
 
@@ -19,20 +19,20 @@ Approved dispositions:
 | Migration history and hash identity | semantic merge required | Live ledger has 186 rows, three TF hashes, and a duplicate upstream hash; preserve by hash and never renumber |
 | Historical 9002/9003 hash recognition | move TF behavior to configuration/operations | Compatibility registry accounts for applied legacy hashes without replaying unresolved SQL |
 | Active wakeup idempotency | retain TF core patch | Safe independent index; integrated as migration 9001 after upstream baseline |
-| Evidence registry | move TF behavior to plugin | No core consumers; require plugin-owned migration/schema contract before migration |
+| Evidence registry | move TF behavior to plugin | 9002 has no core consumer; historical-hash compatibility remains, absent SQL is not executable, and a plugin-owned schema is a tracked post-merge follow-up only when a real consumer exists |
 | Environment tenancy / 9003 retirement | upstream replaces TF implementation | Owner approved upstream instance scope; preserve historical 9003 hash, exclude 9003 SQL from fresh core, and execute only the separately approved retirement plan |
 | Shared sidebar badge | upstream replaces TF implementation | Upstream exposes equivalent capability; verify `agentOperations` semantics |
 | Canary execution constraints | retain TF core patch | Upstream sandbox contract does not enforce TF's exact env/path/network/task restrictions |
-| Agent identity proof acceptance | defer | TF-only corrective-acceptance protocol depends on TF-specific Hermes/heartbeat/routes and is not present in upstream; retain the source checkout for a separately owned acceptance-control decision rather than partially porting it |
-| Run-log credential scanner/quarantine | move TF behavior to configuration/operations | TF-only bounded scanner is an operational retention/quarantine control invoked by a script, not a Paperclip runtime contract; keep it outside synchronized product core until deployment ownership and alert routing are declared |
-| Host/container/system metrics | move TF behavior to configuration/operations | TF-only Prometheus/system-health surface is deployment telemetry; upstream plugin metrics/tool-runtime health are the product-owned equivalents |
+| Agent identity proof acceptance | defer | Tracked post-merge follow-up, not a source-merge blocker. Do not partially port the TF-only Hermes/heartbeat/routes protocol; perform a read-only live-dependency check before cutover and block cutover only if a required live flow depends on it |
+| Run-log credential scanner/quarantine | move TF behavior to configuration/operations | Tracked post-merge outside product core. Production cutover requires a named owner, invocation schedule, retention/quarantine behavior, and alert route or an explicit retirement decision |
+| Host/container/system metrics | move TF behavior to configuration/operations | Tracked post-merge outside product core. Production cutover requires minimum health/metrics ownership and the readbacks needed for acceptance and rollback |
 | Work contract/admission | move TF behavior to plugin | Linear Sync is the current consumer; remove core export only after plugin contract tests |
 | Plugin host/session APIs | upstream replaces TF implementation | Upstream now provides agent sessions, streaming, orchestration, SDK clients, and UI slots; verify TF plugins against it |
 | Authorization and authenticated session actor resolution | upstream replaces TF implementation | Clean upstream retains the richer Better Auth/session/membership/grant boundary that TF's reduced middleware and authorization service removed; focused baseline tests pass |
 | Interaction resolver governance and addressee semantics | upstream replaces TF implementation | Upstream schema/service/routes retain resolver policy provenance, addressee, and continuation safeguards removed by TF; do not port the reduced TF version |
 | Adapter session compaction registrations | move TF behavior to plugin | TF-only `acpx_local`, `kimi_local`, and `qwen_local` registrations are adapter-specific and should follow their plugin/adapter contracts |
 | TF Brain, Linear Sync, Council intake | move TF behavior to plugin | Existing plugin boundaries are the intended ownership model |
-| Additional adapters | move TF behavior to plugin | Prefer upstream adapter/plugin contracts; retain only demonstrated provider requirements |
+| Additional adapters | move TF behavior to plugin | Tracked post-merge; prefer upstream adapter/plugin contracts and retain only demonstrated provider requirements. Any adapter type assigned to a live required agent must be ready before cutover |
 | Gemini/Antigravity adapter compatibility | retain TF core patch | Upstream ACP/CLI remains authoritative; the bounded Antigravity lane adds only `agy` model/session/owned-flag compatibility and config-aware model discovery, with focused tests and identical upstream fixture evidence |
 | UI Decisions/task chat/inbox | upstream replaces TF implementation | Upstream has current task chat, interaction ordering, Decisions, resolver/queue, inbox policy, archive, and dismissal behavior; no TF duplicate is retained |
 | Runtime/observability | move TF behavior to configuration/operations | Operational controls should not become product core without deployment ownership |
@@ -41,9 +41,51 @@ Approved dispositions:
 ## Hard stops
 
 - No live restart, deployment, cutover, migration, or process-unit change is authorized by this ledger.
-- No blanket `ours`/`theirs` conflict resolution is permitted.
+- No blanket `ours`/`theirs` conflict resolution is permitted. The separately approved `-s ours` ancestry-only bridge is a history operation whose zero-file tree identity was proven; it is not permission to resolve source conflicts with ours/theirs.
 - No TF implementation is retained solely because it exists; retention requires a demonstrated upstream gap.
 - Before merge, attach the exact resulting baseline SHA, retained core-delta manifest, replaced/removed patches, plugin/config migrations, unresolved semantic conflicts, security fixes, database reconciliation, complete tests, Companion delta, and cutover plan.
+
+## Ancestry bridge
+
+The approved history-only bridge is
+`76e37dfd0ee9f729d00e2175d35c30d2f3c75a4f` with first parent
+`551158d8c3ac548be15d7039bc21f63b8154e279`, second parent
+`61bd44a07b53245c88d7158c073481e33b0bdede`, and tree
+`1fd6399a65bfc83f87e3e469605ca7ec6a04c5a2`. It adds, deletes, or modifies no
+files. The upstream base `d1cd9c37f49e21e0f248918bce24cff137e3802d`
+and old TF master are both ancestors. This bridge does not authorize a PR
+merge, deployment, migration, or cutover.
+
+## Delivery-gate classification
+
+### PR source-merge blockers
+
+- complete the PR template, public issue/inline issue description, and
+  dedup-search evidence;
+- obtain an approved lockfile synchronization strategy or exception without
+  restoring the obsolete TF lockfile merely to satisfy CI;
+- rerun or diagnose the failed `commitperclip PR Review` on the exact head;
+- obtain exact-head review and preserve the qualified, not-green, test status;
+- keep the PR draft until those gates and the final source-work inventory are
+  accepted.
+
+9002 evidence-registry ownership, identity-proof acceptance, scanner/metrics
+product ownership, and additional adapters are tracked post-merge follow-ups;
+they are not source-merge blockers.
+
+### Production-cutover blockers
+
+- execute no 9003 DDL/remapping until the transformed-clone dry run, complete
+  reference inventory, lease/attribution proof, provider/secret isolation,
+  metadata handling, index transition, rollback rehearsal, and separate
+  production-write approval are complete;
+- verify whether live flows require identity-proof acceptance or any omitted
+  adapter and provide every live-required capability before deployment;
+- preserve scanner/quarantine and minimum observability continuity through
+  named operational ownership or an explicitly approved retirement;
+- produce the exact deployment artifact/SHA, backup, concurrency/maintenance
+  plan, health/acceptance checks, rollback triggers, and separate cutover
+  approval.
 
 ## Owner decision: 9003 retirement
 
