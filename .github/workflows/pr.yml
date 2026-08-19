@@ -25,7 +25,11 @@ jobs:
       - name: Block manual lockfile edits
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
-          github.event.pull_request.user.login != 'dependabot[bot]'
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          (
+            github.event.pull_request.head.repo.full_name != github.repository ||
+            !startsWith(github.head_ref, 'sync/upstream-adoption-')
+          )
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
@@ -83,6 +87,13 @@ jobs:
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+              if ! git diff --quiet -- pnpm-lock.yaml; then
+                echo "Committed pnpm-lock.yaml does not match deterministic regeneration."
+                git diff --stat -- pnpm-lock.yaml
+                exit 1
+              fi
+            fi
             echo "regenerated=1" >> "$GITHUB_OUTPUT"
           else
             echo "regenerated=0" >> "$GITHUB_OUTPUT"

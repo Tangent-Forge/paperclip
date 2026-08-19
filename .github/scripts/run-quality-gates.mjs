@@ -108,6 +108,7 @@ async function main() {
   const prBody = pr.body ?? '';
   const author = PR_AUTHOR ?? pr.user.login;
   const branch = PR_BRANCH ?? pr.head.ref;
+  const headRepo = pr.head?.repo?.full_name ?? '';
 
   // Run all quality gates (pure functions run sync, deps check is async)
   const prTitle = pr.title ?? '';
@@ -117,7 +118,7 @@ async function main() {
       Promise.resolve(checkLinkedIssue(prBody, prTitle)),
       Promise.resolve(checkDedupSearch(prBody, prTitle)),
       Promise.resolve(checkTestCoverage(files, prTitle)),
-      Promise.resolve(checkLockfile(files, author, branch)),
+      Promise.resolve(checkLockfile(files, author, branch, headRepo, GH_REPO)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
     ]);
 
