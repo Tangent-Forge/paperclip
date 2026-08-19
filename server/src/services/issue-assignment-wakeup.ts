@@ -43,7 +43,7 @@ export function queueIssueAssignmentWakeup(input: {
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
       },
-      idempotencyKey: input.idempotencyKey ?? null,
+      ...(input.idempotencyKey == null ? {} : { idempotencyKey: input.idempotencyKey }),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: {
