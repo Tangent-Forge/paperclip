@@ -8,12 +8,19 @@ import {
   resetGeminiModelsCacheForTests,
   resetGeminiModelsRunnerForTests,
   setGeminiModelsRunnerForTests,
+  setGeminiModelsClockForTests,
 } from "../adapters/gemini-models.js";
 
 const agy = "/home/user/.local/bin/agy";
 const output = "Fetching available models...\n" +
   "gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n" +
   "claude-opus-4-6-thinking\tClaude Opus 4.6 Thinking\n";
+
+const scope = (companyId: string, fingerprint = "credential-a") => ({
+  companyId,
+  principalId: "agent-1",
+  providerAccountFingerprint: fingerprint,
+});
 
 describe("Antigravity Gemini model discovery", () => {
   beforeEach(() => { resetGeminiModelsCacheForTests(); resetGeminiModelsRunnerForTests(); });
@@ -31,7 +38,7 @@ describe("Antigravity Gemini model discovery", () => {
     let called = false;
     let seen: NodeJS.ProcessEnv | null = null;
     setGeminiModelsRunnerForTests(async (_command, env) => { called = true; seen = env; return output; });
-    const discovered = await listGeminiModelsForContext({ command: agy, env: {} });
+    const discovered = await listGeminiModelsForContext({ command: agy, env: {}, cacheScope: scope("company-a") });
     expect(called).toBe(true);
     expect(seen?.HOME).toBe(process.env.HOME);
     expect(discovered[0].id).toBe("gemini-3.6-flash-high");
@@ -43,13 +50,54 @@ describe("Antigravity Gemini model discovery", () => {
   it("falls back and refreshes without making discovery mandatory", async () => {
     let calls = 0;
     setGeminiModelsRunnerForTests(async () => { calls += 1; return output; });
-    await listGeminiModelsForContext({ command: agy });
-    await listGeminiModelsForContext({ command: agy });
+    await listGeminiModelsForContext({ command: agy, cacheScope: scope("company-a") });
+    await listGeminiModelsForContext({ command: agy, cacheScope: scope("company-a") });
     expect(calls).toBe(1);
-    await refreshGeminiModelsForContext({ command: agy });
+    await refreshGeminiModelsForContext({ command: agy, cacheScope: scope("company-a") });
     expect(calls).toBe(2);
     setGeminiModelsRunnerForTests(async () => { throw new Error("unauthenticated"); });
     resetGeminiModelsCacheForTests();
-    await expect(listGeminiModelsForContext({ command: agy })).resolves.toEqual(fallback);
+    await expect(listGeminiModelsForContext({ command: agy, cacheScope: scope("company-a") })).resolves.toEqual(fallback);
+  });
+
+  it("isolates same-command discovery by company and principal scope", async () => {
+    let calls = 0;
+    setGeminiModelsRunnerForTests(async (_command, env) => {
+      calls += 1;
+      return env.GEMINI_TEST_COMPANY === "company-b" ? "gemini-company-b-model" : "gemini-company-a-model";
+    });
+    const common = { command: agy, env: { HOME: "/same/home" } };
+    const companyA = await listGeminiModelsForContext({ ...common, env: { ...common.env, GEMINI_TEST_COMPANY: "company-a" }, cacheScope: scope("company-a") });
+    const companyB = await listGeminiModelsForContext({ ...common, env: { ...common.env, GEMINI_TEST_COMPANY: "company-b" }, cacheScope: scope("company-b") });
+    const companyAAgain = await listGeminiModelsForContext({ ...common, env: { ...common.env, GEMINI_TEST_COMPANY: "company-a" }, cacheScope: scope("company-a") });
+
+    expect(companyA[0]?.id).toBe("gemini-company-a-model");
+    expect(companyB[0]?.id).toBe("gemini-company-b-model");
+    expect(companyAAgain[0]?.id).toBe("gemini-company-a-model");
+    expect(calls).toBe(2);
+  });
+
+  it("partitions credential changes and expires entries", async () => {
+    let calls = 0;
+    let clock = 1_000;
+    setGeminiModelsClockForTests(() => clock);
+    setGeminiModelsRunnerForTests(async () => {
+      calls += 1;
+      return `gemini-model-${calls}`;
+    });
+    const base = { command: agy, env: { HOME: "/same/home" } };
+    await expect(listGeminiModelsForContext({ ...base, cacheScope: scope("company-a", "credential-a") })).resolves.toMatchObject([{ id: "gemini-model-1" }]);
+    await expect(listGeminiModelsForContext({ ...base, cacheScope: scope("company-a", "credential-b") })).resolves.toMatchObject([{ id: "gemini-model-2" }]);
+    clock += 60_001;
+    await expect(listGeminiModelsForContext({ ...base, cacheScope: scope("company-a", "credential-a") })).resolves.toMatchObject([{ id: "gemini-model-3" }]);
+    expect(calls).toBe(3);
+  });
+
+  it("does not cache an unscoped or explicitly non-cacheable discovery", async () => {
+    let calls = 0;
+    setGeminiModelsRunnerForTests(async () => { calls += 1; return output; });
+    await listGeminiModelsForContext({ command: agy, cacheScope: { ...scope("company-a"), cacheable: false } });
+    await listGeminiModelsForContext({ command: agy, cacheScope: { ...scope("company-a"), cacheable: false } });
+    expect(calls).toBe(2);
   });
 });

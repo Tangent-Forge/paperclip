@@ -10,12 +10,33 @@ const DEFAULT_COMMAND = "agy";
 export type GeminiModelDiscoveryContext = {
   command?: string | null;
   env?: NodeJS.ProcessEnv;
+  cacheScope?: GeminiModelCacheScope;
+};
+
+export type GeminiModelCacheScope = {
+  companyId: string;
+  principalId: string;
+  providerAccountFingerprint: string;
+  cacheable?: boolean;
 };
 
 type ModelsRunner = (command: string, env: NodeJS.ProcessEnv) => Promise<string>;
 
-let cache: { key: string; expiresAt: number; models: AdapterModel[] } | null = null;
+type GeminiModelCacheKey = {
+  version: 1;
+  companyId: string;
+  principalId: string;
+  providerAccountFingerprint: string;
+  command: string;
+  home: string;
+};
+
+type GeminiModelCacheEntry = { key: GeminiModelCacheKey; expiresAt: number; models: AdapterModel[] };
+
+const MAX_CACHE_ENTRIES = 128;
+let cache = new Map<string, GeminiModelCacheEntry>();
 let runner: ModelsRunner = runModelList;
+let now = () => Date.now();
 
 function isAgy(command: string): boolean {
   return path.basename(command).toLowerCase().replace(/\.(cmd|exe)$/, "") === "agy";
@@ -86,24 +107,50 @@ async function loadModels({ forceRefresh = false, context }: { forceRefresh?: bo
   const fallback = dedupe(geminiFallbackModels);
   if (!isAgy(command)) return fallback;
   const env = { ...process.env, ...(context?.env ?? {}) };
-  const key = `${command}\u0000${env.HOME ?? ""}`;
-  const now = Date.now();
-  if (!forceRefresh && cache?.key === key && cache.expiresAt > now) return cache.models;
+  const scope = context?.cacheScope;
+  const keyObject: GeminiModelCacheKey | null = scope && scope.cacheable !== false
+    && scope.companyId.trim().length > 0
+    && scope.principalId.trim().length > 0
+    && scope.providerAccountFingerprint.trim().length > 0
+    ? {
+        version: 1,
+        companyId: scope.companyId,
+        principalId: scope.principalId,
+        providerAccountFingerprint: scope.providerAccountFingerprint,
+        command,
+        home: env.HOME ?? "",
+      }
+    : null;
+  const key = keyObject ? JSON.stringify(keyObject) : null;
+  const currentTime = now();
+  const cached = key ? cache.get(key) : undefined;
+  if (!forceRefresh && cached && cached.expiresAt > currentTime) return cached.models;
   try {
     const discovered = parseAgyModelList(await runner(command, env));
     if (discovered.length > 0) {
-      cache = { key, expiresAt: now + CACHE_TTL_MS, models: discovered };
+      if (key && keyObject) {
+        cache.set(key, { key: keyObject, expiresAt: currentTime + CACHE_TTL_MS, models: discovered });
+        for (const [entryKey, entry] of cache) {
+          if (entry.expiresAt <= currentTime) cache.delete(entryKey);
+        }
+        while (cache.size > MAX_CACHE_ENTRIES) {
+          const oldestKey = cache.keys().next().value as string | undefined;
+          if (!oldestKey) break;
+          cache.delete(oldestKey);
+        }
+      }
       return discovered;
     }
   } catch {
     // Discovery is optional; keep the static upstream catalog on auth/offline errors.
   }
-  return cache?.key === key && cache.models.length > 0 ? cache.models : fallback;
+  return cached && cached.expiresAt > currentTime && cached.models.length > 0 ? cached.models : fallback;
 }
 
 export const listGeminiModelsForContext = (context: GeminiModelDiscoveryContext) => loadModels({ context });
 export const refreshGeminiModelsForContext = (context: GeminiModelDiscoveryContext) => loadModels({ forceRefresh: true, context });
 
-export function resetGeminiModelsCacheForTests(): void { cache = null; }
+export function resetGeminiModelsCacheForTests(): void { cache.clear(); now = () => Date.now(); }
 export function setGeminiModelsRunnerForTests(next: ModelsRunner): void { runner = next; }
 export function resetGeminiModelsRunnerForTests(): void { runner = runModelList; }
+export function setGeminiModelsClockForTests(next: () => number): void { now = next; }

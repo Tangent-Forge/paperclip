@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Issue } from "@paperclipai/plugin-sdk";
+import type { EnvSecretRefBinding, Issue } from "@paperclipai/plugin-sdk";
 import { ADMISSION_LINEAR_STATE_NAME, ORIGIN_KIND_INCIDENT, ORIGIN_KIND_LINEAR_ISSUE, PLUGIN_ID } from "./constants.js";
 import type { LinearPaginationResult, PortfolioInventoryIssue, PortfolioInventoryProject } from "./portfolio-types.js";
 import { evaluateAdmission, stableLinearAdmissionReceipt, stableLinearWorkId, type WorkContract } from "./work-contract.js";
@@ -7,8 +7,8 @@ import { evaluateAdmission, stableLinearAdmissionReceipt, stableLinearWorkId, ty
 export type LinearSyncConfig = {
   enabled: boolean;
   companyId: string | null;
-  linearApiKeySecretRef: string | null;
-  linearWebhookSigningSecretRef: string | null;
+  linearApiKeySecretRef: EnvSecretRefBinding | null;
+  linearWebhookSigningSecretRef: EnvSecretRefBinding | null;
   linearGraphqlUrl: string;
   candidateStatusNames: string[];
   maxIssuesPerRun: number;
@@ -118,6 +118,16 @@ export type SyncHost = {
 export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
   const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
   const str = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  const secretRef = (value: unknown): EnvSecretRefBinding | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const binding = value as Record<string, unknown>;
+    const secretId = str(binding.secretId);
+    const version = binding.version === "latest" || (typeof binding.version === "number" && Number.isInteger(binding.version) && binding.version > 0)
+      ? binding.version
+      : undefined;
+    if (binding.type !== "secret_ref" || !secretId) return null;
+    return { type: "secret_ref", secretId, ...(version !== undefined ? { version } : {}) };
+  };
   const int = (value: unknown, fallback: number, min: number, max: number): number => {
     const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
     if (!Number.isFinite(parsed)) return fallback;
@@ -127,8 +137,8 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
   return {
     enabled: raw.enabled === true,
     companyId: str(raw.companyId),
-    linearApiKeySecretRef: str(raw.linearApiKeySecretRef),
-    linearWebhookSigningSecretRef: str(raw.linearWebhookSigningSecretRef),
+    linearApiKeySecretRef: secretRef(raw.linearApiKeySecretRef),
+    linearWebhookSigningSecretRef: secretRef(raw.linearWebhookSigningSecretRef),
     linearGraphqlUrl: str(raw.linearGraphqlUrl) ?? "https://api.linear.app/graphql",
     candidateStatusNames: strings(raw.candidateStatusNames).length > 0 ? strings(raw.candidateStatusNames) : [ADMISSION_LINEAR_STATE_NAME],
     maxIssuesPerRun: int(raw.maxIssuesPerRun, 25, 1, 100),
@@ -434,7 +444,7 @@ async function handleSyncFailure(host: SyncHost, companyId: string, config: Line
 
 export async function runLinearSync(input: {
   host: SyncHost;
-  linear: LinearClient;
+  linear: LinearClient | null;
   companyId: string;
   config: LinearSyncConfig;
   triggerKind: "poll" | "manual";
@@ -454,6 +464,7 @@ export async function runLinearSync(input: {
     await recordRun(host, companyId, summary, { reason: "cooldown" });
     return summary;
   }
+  if (!linear) throw new Error("Linear client is required when Linear sync is enabled");
 
   const summary: SyncSummary = { triggerKind, status: "success", startedAt, finishedAt: startedAt, importedCount: 0, updatedCount: 0, skippedDuplicateCount: 0, contractRejectedCount: 0, failedCount: 0, failures: [] };
   try {

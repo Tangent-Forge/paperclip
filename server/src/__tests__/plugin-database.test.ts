@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -39,6 +40,26 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describe("plugin database SQL validation", () => {
+  it("validates the Council migration against its deterministic plugin namespace", async () => {
+    const pluginKey = "paperclipai.council-email-intake";
+    const namespace = derivePluginDatabaseNamespace(pluginKey, "council_email_intake");
+    const migrationPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/plugins/paperclip-plugin-council-email-intake/migrations/001_council_email_intake.sql",
+    );
+    const migration = await readFile(migrationPath, "utf8");
+    const statements = migration.split(";").map((statement) => statement.trim()).filter(Boolean);
+
+    expect(namespace).toBe("plugin_council_email_intake_f6365ccdd0");
+    expect(statements).toHaveLength(2);
+    for (const statement of statements) {
+      expect(() => validatePluginMigrationStatement(statement, namespace)).not.toThrow();
+    }
+    expect(migration).toContain(`${namespace}.email_links`);
+    expect(migration).toContain(`${namespace}.intake_runs`);
+    expect(migration).not.toMatch(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:email_links|intake_runs)\b/i);
+  });
+
   it("allows namespace migrations with whitelisted public foreign keys", () => {
     expect(() =>
       validatePluginMigrationStatement(

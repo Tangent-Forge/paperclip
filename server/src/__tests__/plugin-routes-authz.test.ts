@@ -381,6 +381,56 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("patches non-secret config while preserving an existing credential reference", async () => {
+    readyPlugin();
+    const existingConfig = {
+      apiKeyRef: "77777777-7777-4777-8777-777777777777",
+      candidateStatusNames: ["Backlog", "Todo"],
+    };
+    mockRegistry.getConfig.mockResolvedValue({ configJson: existingConfig });
+    mockRegistry.patchConfig.mockResolvedValue({
+      pluginId,
+      configJson: {
+        ...existingConfig,
+        candidateStatusNames: ["Triage"],
+        triageAgentId: "88888888-8888-4888-8888-888888888888",
+      },
+    });
+
+    const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
+    const res = await request(app)
+      .patch(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: {
+          candidateStatusNames: ["Triage"],
+          triageAgentId: "88888888-8888-4888-8888-888888888888",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.patchConfig).toHaveBeenCalledWith(pluginId, {
+      configJson: {
+        candidateStatusNames: ["Triage"],
+        triageAgentId: "88888888-8888-4888-8888-888888888888",
+      },
+    });
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects a plugin config patch that introduces a credential reference", async () => {
+    readyPlugin();
+    mockRegistry.getConfig.mockResolvedValue({ configJson: {} });
+
+    const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
+    const res = await request(app)
+      .patch(`/api/plugins/${pluginId}/config`)
+      .send({ configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" } });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(mockRegistry.patchConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("allows instance admins to upgrade plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     mockRegistry.getById.mockResolvedValue({

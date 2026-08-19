@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, ORIGIN_KIND_LINEAR_ISSUE } from "../src/constants.js";
+import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, JOB_KEYS, ORIGIN_KIND_LINEAR_ISSUE, WEBHOOK_KEYS } from "../src/constants.js";
 import { createLinearClient } from "../src/linear-client.js";
 import { collectPortfolioInventory, combinePortfolioInventory, normalizePortfolioIssue, normalizePortfolioProject } from "../src/portfolio-inventory.js";
 import {
@@ -23,6 +23,7 @@ import {
   type WorkContract,
 } from "../src/work-contract.js";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 type IssueRecord = {
   id: string;
@@ -34,6 +35,8 @@ type IssueRecord = {
   originKind: string | null;
   originId: string | null;
 };
+
+const secretRef = (secretId: string) => ({ type: "secret_ref" as const, secretId, version: "latest" as const });
 
 function workContract(linearIssueId = "lin-1", overrides: Partial<WorkContract> = {}): WorkContract {
   return {
@@ -178,6 +181,19 @@ function fakeLinear(issues: LinearIssue[]): LinearClient {
 }
 
 describe("linear sync", () => {
+  it("keeps the installable package version and Triage manifest defaults canonical", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    const schema = manifest.instanceConfigSchema as {
+      properties?: { candidateStatusNames?: { default?: string[] } };
+    };
+
+    expect(manifest.version).toBe(packageJson.version);
+    expect(manifest.version).toBe("0.1.1");
+    expect(schema.properties?.candidateStatusNames?.default).toEqual([ADMISSION_LINEAR_STATE_NAME]);
+  });
+
   it("declares updatedAfter as DateTimeOrDuration for Linear updatedAt filters", async () => {
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
@@ -199,25 +215,25 @@ describe("linear sync", () => {
     expect(readConfig({ maxIssuesPerRun: 1000 }).maxIssuesPerRun).toBe(100);
   });
 
-  it("fails config validation unless enabled intake is Ready-for-Paperclip-only and has a triage agent", async () => {
+  it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
     const rejected = await plugin.definition.onValidateConfig?.({
       enabled: true,
       companyId: "company-1",
-      linearApiKeySecretRef: "secret-ref",
+      linearApiKeySecretRef: secretRef("linear-api"),
       candidateStatusNames: ["Backlog", "Todo"],
     });
     expect(rejected).toMatchObject({
       ok: false,
       errors: expect.arrayContaining([
         expect.stringMatching(/triageAgentId is required/),
-        expect.stringMatching(/must contain only "Ready for Paperclip"/),
+        expect.stringMatching(/must contain only "Triage"/),
       ]),
     });
 
     await expect(plugin.definition.onValidateConfig?.({
       enabled: true,
       companyId: "company-1",
-      linearApiKeySecretRef: "secret-ref",
+      linearApiKeySecretRef: secretRef("linear-api"),
       triageAgentId: "chief-of-staff",
       candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME],
     })).resolves.toMatchObject({ ok: true, errors: [] });
@@ -225,28 +241,28 @@ describe("linear sync", () => {
     await expect(plugin.definition.onValidateConfig?.({
       enabled: true,
       companyId: "company-1",
-      linearApiKeySecretRef: "secret-ref",
+      linearApiKeySecretRef: secretRef("linear-api"),
       triageAgentId: "chief-of-staff",
-      candidateStatusNames: ["Triage"],
+      candidateStatusNames: ["Ready for Paperclip"],
     })).resolves.toMatchObject({
       ok: false,
       errors: expect.arrayContaining([
-        expect.stringMatching(/must contain only "Ready for Paperclip"/),
+        expect.stringMatching(/must contain only "Triage"/),
       ]),
     });
   });
 
-  it("admits Ready for Paperclip only and rejects Triage/Backlog/Todo even when configuration drifts", () => {
-    const config = readConfig({ candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Triage", "Backlog", "Todo"] });
+  it("admits Triage only and rejects Ready for Paperclip/Backlog/Todo even when configuration drifts", () => {
+    const config = readConfig({ candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Ready for Paperclip", "Backlog", "Todo"] });
     expect(isCandidateLinearIssue(linearIssue({ state: { name: ADMISSION_LINEAR_STATE_NAME } }), config)).toBe(true);
-    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), config)).toBe(false);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Ready for Paperclip" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Backlog" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Todo" } }), config)).toBe(false);
     expect(isCandidateLinearIssue(linearIssue({ state: { name: "Done" } }), config)).toBe(false);
-    // Config listing only Triage cannot reopen Triage admission.
+    // Config listing only Triage preserves the sole admission state.
     const triageOnly = readConfig({ candidateStatusNames: ["Triage"] });
-    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), triageOnly)).toBe(false);
-    expect(isCandidateLinearIssue(linearIssue({ state: { name: ADMISSION_LINEAR_STATE_NAME } }), triageOnly)).toBe(false);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Triage" } }), triageOnly)).toBe(true);
+    expect(isCandidateLinearIssue(linearIssue({ state: { name: "Ready for Paperclip" } }), triageOnly)).toBe(false);
   });
 
   it("runs positive and negative intake canaries without creating rejected work", async () => {
@@ -255,14 +271,14 @@ describe("linear sync", () => {
       linearIssue(),
       linearIssue({ id: "lin-backlog", identifier: "TAN-N1", state: { name: "Backlog" }, description: contractDescription("lin-backlog") }),
       linearIssue({ id: "lin-todo", identifier: "TAN-N2", state: { name: "Todo" }, description: contractDescription("lin-todo") }),
-      linearIssue({ id: "lin-triage", identifier: "TAN-N4", state: { name: "Triage" }, description: contractDescription("lin-triage") }),
+      linearIssue({ id: "lin-ready", identifier: "TAN-N4", state: { name: "Ready for Paperclip" }, description: contractDescription("lin-ready") }),
       linearIssue({ id: "lin-invalid", identifier: "TAN-N3", state: { name: ADMISSION_LINEAR_STATE_NAME }, description: "No contract" }),
     ]);
     const summary = await runLinearSync({
       host,
       linear,
       companyId: "company-1",
-      config: readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", triageAgentId: "chief-of-staff", candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Triage", "Backlog", "Todo"] }),
+      config: readConfig({ enabled: true, linearApiKeySecretRef: secretRef("linear-api"), triageAgentId: "chief-of-staff", candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME, "Ready for Paperclip", "Backlog", "Todo"] }),
       triggerKind: "manual",
     });
 
@@ -327,7 +343,7 @@ describe("linear sync", () => {
   it("imports a Linear issue once and dedupes by origin id on repeated runs", async () => {
     const { host, issues } = fakeHost();
     const linear = fakeLinear([linearIssue()]);
-    const config = readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", triageAgentId: "agent-1" });
+    const config = readConfig({ enabled: true, linearApiKeySecretRef: secretRef("linear-api"), triageAgentId: "agent-1" });
 
     await runLinearSync({ host, linear, companyId: "company-1", config, triggerKind: "manual" });
     await runLinearSync({ host, linear, companyId: "company-1", config, triggerKind: "manual" });
@@ -341,7 +357,7 @@ describe("linear sync", () => {
   it("updates an existing imported issue when Linear updatedAt advances", async () => {
     const { host, issues } = fakeHost();
     const linear = fakeLinear([linearIssue()]);
-    const config = readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", postImportComment: false });
+    const config = readConfig({ enabled: true, linearApiKeySecretRef: secretRef("linear-api"), postImportComment: false });
 
     await importLinearIssue({ host, linear, companyId: "company-1", config, issue: linearIssue() });
     const result = await importLinearIssue({ host, linear, companyId: "company-1", config, issue: linearIssue({ title: "Updated", updatedAt: "2026-05-03T00:00:00.000Z" }) });
@@ -366,7 +382,7 @@ describe("linear sync", () => {
       lastSuccessAt: "2026-06-10T15:30:04.547Z",
     });
     const linear = fakeLinear([linearIssue()]);
-    const config = readConfig({ enabled: true, linearApiKeySecretRef: "LINEAR", postImportComment: false });
+    const config = readConfig({ enabled: true, linearApiKeySecretRef: secretRef("linear-api"), postImportComment: false });
 
     const summary = await runLinearSync({ host, linear, companyId: "company-1", config, triggerKind: "manual" });
 
@@ -433,7 +449,7 @@ describe("linear sync", () => {
       }),
     ]);
     expect(manifest.jobs?.map((job) => job.jobKey)).toEqual(["poll-linear-intake"]);
-    const harness = createTestHarness({ manifest, config: { enabled: true, companyId: "company-1", linearApiKeySecretRef: "LINEAR" } });
+    const harness = createTestHarness({ manifest, config: { enabled: true, companyId: "company-1", linearApiKeySecretRef: secretRef("linear-api") } });
     harness.ctx.secrets.resolve = vi.fn(async () => "token");
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
@@ -541,5 +557,63 @@ describe("linear sync", () => {
     ], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 }));
     const duplicateClient = createLinearClient({ http: { fetch: duplicateFetch } as any, url: "https://api.linear.app/graphql", token: "token" });
     await expect(duplicateClient.listAllProjects()).rejects.toThrow(/duplicate source id p1/i);
+  });
+
+  it("scopes scheduled config and secret reads independently for every configured company", async () => {
+    await plugin.definition.onShutdown?.();
+    const configs = new Map([
+      ["company-a", { enabled: true, companyId: "company-a", linearApiKeySecretRef: secretRef("linear-a"), triageAgentId: "triage-a", candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME] }],
+      ["company-b", { enabled: true, companyId: "company-b", linearApiKeySecretRef: secretRef("linear-b"), triageAgentId: "triage-b", candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME] }],
+    ]);
+    const harness = createTestHarness({ manifest });
+    const configGet = vi.fn(async (companyId?: string) => ({ ...configs.get(String(companyId))! }));
+    const secretResolve = vi.fn(async (_ref: unknown, options?: { companyId?: string }) => `token-${options?.companyId}`);
+    harness.ctx.config.get = configGet;
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+    harness.ctx.http.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { issues: { nodes: [] } } }), { status: 200 }));
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await plugin.definition.onConfigChanged?.(configs.get("company-a")!, { companyId: "company-a" });
+      await plugin.definition.onConfigChanged?.(configs.get("company-b")!, { companyId: "company-b" });
+      await harness.runJob(JOB_KEYS.poll);
+
+      expect(configGet.mock.calls.map(([companyId]) => companyId)).toEqual([
+        "company-a", "company-a", "company-b", "company-b",
+      ]);
+      expect(secretResolve.mock.calls.map(([, options]) => options)).toEqual([
+        { companyId: "company-a", configPath: "linearApiKeySecretRef" },
+        { companyId: "company-b", configPath: "linearApiKeySecretRef" },
+      ]);
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("fails Linear webhooks closed when company scope is missing or unconfigured", async () => {
+    await plugin.definition.onShutdown?.();
+    const config = { enabled: false, companyId: "company-a" };
+    const harness = createTestHarness({ manifest, config });
+    const configGet = vi.spyOn(harness.ctx.config, "get");
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await plugin.definition.onConfigChanged?.(config, { companyId: "company-a" });
+      await expect(plugin.definition.onWebhook?.({
+        endpointKey: WEBHOOK_KEYS.linear,
+        rawBody: "{}",
+        parsedBody: {},
+        headers: {},
+      } as any)).rejects.toThrow(/explicit companyId/);
+      await expect(plugin.definition.onWebhook?.({
+        endpointKey: WEBHOOK_KEYS.linear,
+        rawBody: JSON.stringify({ companyId: "company-b" }),
+        parsedBody: { companyId: "company-b" },
+        headers: {},
+      } as any)).rejects.toThrow(/not configured/);
+      expect(configGet).not.toHaveBeenCalled();
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
   });
 });

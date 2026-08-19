@@ -999,4 +999,35 @@ Networking behavior for this smoke script:
 
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
-- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## Plugin install durability and cutover health gate
+
+Local-path plugin installs **default to durable materialization** into
+`~/.paperclip/plugins/materialized/<package>/<version>/` when the source path
+is outside the managed plugin directory. That keeps `packagePath` off disposable
+deploy worktrees. Pass `durableMaterialize: false` only for intentional in-place
+dev link installs.
+
+After every production pin cutover / restart, run:
+
+```sh
+./scripts/paperclip-post-cutover-verify.sh
+# or
+node scripts/check-enabled-plugins-health.mjs --base-url http://127.0.0.1:3100
+```
+
+The gate fails if any non-disabled plugin remains in `error` / unhealthy state.
+A deployment is not healthy until this gate passes.
+
+## Linear Sync admission state
+
+Paperclip execution admission is explicit Linear `Triage`.
+
+- Only Linear state **`Triage`** is a Paperclip admission candidate.
+- State membership alone is never enough: a valid `tf-work-contract` (`tf-work/v1`) is still required.
+- Linear Sync config must set `candidateStatusNames` to exactly `["Triage"]` when enabled.
+- Code fail-closes: even if config drifts to include `Ready for Paperclip`/`Backlog`/`Todo`, those states cannot be admitted.
+- Triage admission creates one stable Paperclip origin and one idempotent Chief of Staff wakeup only after the contract passes.
+
+Do not treat Backlog or Todo as execution queues. Move an issue into Triage only when it is intentionally agent-executable and the contract is complete.

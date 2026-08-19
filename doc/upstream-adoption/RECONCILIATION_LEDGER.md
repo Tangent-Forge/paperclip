@@ -38,6 +38,61 @@ Approved dispositions:
 | Runtime/observability | move TF behavior to configuration/operations | Operational controls should not become product core without deployment ownership |
 | Guardian/cutover controls | move TF behavior to configuration/operations | Delivery governance remains outside Paperclip product synchronization |
 
+## Advanced-master reconciliation and PR #94 remediation
+
+The branch was first reconciled against `origin/master` at
+`6c3c8328f5dcd2a00cd1d35412e9483a17fc757e` using a normal semantic merge
+preparation, then re-reconciled against the advanced `origin/master` at
+`31aea4f4f5281073d68a1684cacadf75d1c817c8` after upstream #98 and #97 landed.
+The overlapping surfaces were classified as follows:
+
+- Triage admission and its recovery documentation: current master wins.
+- Linear admission constants and tests: semantic merge; `Triage` is now the
+  single admission state used by both the plugin worker and work-contract
+  evaluator.
+- The obsolete shared `packages/shared/src/work-contract.ts` copy: PR-local
+  plugin implementation wins; the shared copy remains deleted.
+- Obsolete TF plugin-route authorization tests: PR-local upstream-compatible
+  route behavior wins; the removed patch-route assertions were not restored.
+- `doc/DEVELOPING.md`: semantic merge retaining the synchronized upstream
+  guidance and the advanced-master plugin/Triage admission guidance.
+- Advanced-master plugin materialization, Linear Sync `0.1.1`/Triage admission,
+  and TF Brain route/manifest updates are retained as upstream changes. The
+  upstream shared `packages/shared/src/work-contract.ts` copy remains excluded
+  because the synchronized runtime imports the plugin-owned contract; retaining
+  both would reintroduce an unused duplicate with different ownership. The
+  plugin-owned contract is reconciled to the single Triage constant.
+
+The reviewed PR findings are remediated in the remediation candidate represented
+by the subsequent PR head; the validation and delivery status below are kept
+separate from the earlier reviewed head:
+
+- Linear Sync and Council Email Intake opt into `multiCompanyConfig`, retain
+  configured company scopes, call `ctx.config.get(companyId)`, and resolve
+  secrets with `{ companyId, configPath }`. Scheduled, webhook, data, and API
+  paths fail closed on missing, mismatched, or unconfigured company scope.
+- Council's migration objects are qualified into the deterministic namespace
+  `plugin_council_email_intake_f6365ccdd0`; the plugin README documents fresh
+  install, upgrade checksum, disable/uninstall, and purge semantics.
+- Gemini/Antigravity discovery cache entries are typed and partitioned by
+  company, agent principal, provider-account/config fingerprint, command, and
+  HOME. Unversioned secret bindings are non-cacheable; expiration and
+  credential-scope partition tests are included. No raw secret is placed in a
+  cache key or log.
+- Real host-boundary tests cover valid scoped config/secret reads, missing and
+  wrong-company denial, proactive configured-company scopes, and per-company
+  lookup behavior. The worker-manager subprocess suite remains an environment
+  exception on this host because its fixture workers exit with code 0 before
+  initialization; direct host-handler and plugin-boundary suites remain
+  separately recorded.
+- General aggregate validation completed with 279 passed, 38 failed, 100
+  skipped test files and 2,828 passed, 287 failed, 1,768 skipped tests out of
+  4,883, plus 144 errors. The failures are dominated by this host's denied TCP
+  `listen` operations and related child-worker startup behavior. The serialized
+  lane stopped on the first affected suite with 1 failed file / 10 failed tests
+  and the same `listen EPERM` signature. This is qualified environmental
+  evidence, not a green full-suite result.
+
 ## Hard stops
 
 - No live restart, deployment, cutover, migration, or process-unit change is authorized by this ledger.
@@ -129,8 +184,8 @@ The upstream plugin SDK and host were retained wholesale. The TF fork's SDK/host
 
 The three meaningful TF plugin packages were added as plugin-owned code and validated against that SDK:
 
-- `paperclip-plugin-linear-sync`: typecheck, build, and 20 tests pass. Its work-contract implementation is local to the plugin, and route company resolution was adapted to the upstream-supported body/query forms rather than expanding the core SDK with a path resolver.
-- `paperclip-plugin-council-email-intake`: typecheck, build, and 6 tests pass. Its external email side effects remain configuration/deployment gated.
+- `paperclip-plugin-linear-sync`: typecheck, build, and 22 tests pass. Its work-contract implementation is local to the plugin, its Triage admission constant is reconciled with the evaluator, and its scheduled/webhook/API paths use explicit company-scoped host services.
+- `paperclip-plugin-council-email-intake`: typecheck, build, and 8 tests pass. Its migration is namespace-qualified and its webhook/config/secret access is explicit and company-scoped; external email side effects remain configuration/deployment gated.
 - `paperclip-plugin-tf-brain`: typecheck and build pass. UI/runtime acceptance and gbrain connectivity remain separate gates.
 
 No plugin was installed, enabled, or executed against the live Paperclip process as part of this work.

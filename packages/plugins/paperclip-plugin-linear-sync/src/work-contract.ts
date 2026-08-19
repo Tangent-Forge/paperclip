@@ -1,7 +1,7 @@
+import { ADMISSION_LINEAR_STATE_NAME } from "./constants.js";
+
 export const WORK_CONTRACT_VERSION = "tf-work/v1" as const;
 export const WORK_CONTRACT_FENCE = "tf-work-contract" as const;
-/** Sole Linear workflow state eligible for Paperclip execution admission. */
-export const ADMISSION_LINEAR_STATE_NAME = "Ready for Paperclip" as const;
 
 export const DELIVERY_STATES = [
   "defined",

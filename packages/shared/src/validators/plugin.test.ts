@@ -197,6 +197,30 @@ describe("plugin UI slot validators", () => {
     expect(parsed.routePath).toBe("wiki");
   });
 
+  it("rejects multi-segment or leading-slash routePath values", () => {
+    const invalid = pluginUiSlotDeclarationSchema.safeParse({
+      type: "page",
+      id: "brain-page",
+      displayName: "Brain",
+      exportName: "BrainPage",
+      routePath: "/tangentforge/brain",
+    });
+    expect(invalid.success).toBe(false);
+    if (invalid.success) return;
+    expect(invalid.error.issues[0]?.message).toBe(
+      "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
+    );
+
+    const valid = pluginUiSlotDeclarationSchema.parse({
+      type: "page",
+      id: "brain-page",
+      displayName: "Brain",
+      exportName: "BrainPage",
+      routePath: "tf-brain",
+    });
+    expect(valid.routePath).toBe("tf-brain");
+  });
+
   it("requires route-scoped sidebar slots to declare a routePath", () => {
     const parsed = pluginUiSlotDeclarationSchema.safeParse({
       type: "routeSidebar",

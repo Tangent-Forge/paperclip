@@ -1,5 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -2330,9 +2330,38 @@ export function agentRoutes(
           : parseObject(rawValue).value;
         if (typeof value === "string") env[key] = value;
       }
+      const secretLikeKey = (key: string) => /(token|secret|api[_-]?key|password|private[_-]?key|credential)/i.test(key);
+      const descriptor = (value: unknown, key = ""): unknown => {
+        if (Array.isArray(value)) return value.map((item) => descriptor(item, key));
+        if (!value || typeof value !== "object") {
+          return secretLikeKey(key) ? { configured: value !== null && value !== undefined } : typeof value;
+        }
+        const record = value as Record<string, unknown>;
+        if (record.type === "secret_ref") {
+          return { type: "secret_ref", secretId: String(record.secretId ?? ""), version: record.version ?? "latest" };
+        }
+        return Object.fromEntries(Object.entries(record).sort(([left], [right]) => left.localeCompare(right)).map(([entryKey, entryValue]) => [entryKey, descriptor(entryValue, entryKey)]));
+      };
+      const cacheFingerprint = createHash("sha256").update(JSON.stringify({
+        agentId: agent.id,
+        updatedAt: agent.updatedAt instanceof Date ? agent.updatedAt.toISOString() : String(agent.updatedAt ?? ""),
+        adapterConfig: descriptor(agent.adapterConfig ?? {}),
+      })).digest("hex");
+      const storedEnv = parseObject(parseObject(agent.adapterConfig).env);
+      const hasUnversionedSecretBinding = Object.values(storedEnv).some((value) => {
+        if (!value || typeof value !== "object") return false;
+        const binding = value as Record<string, unknown>;
+        return binding.type === "secret_ref" && (binding.version === undefined || binding.version === "latest");
+      });
       const context = {
         command: typeof config.command === "string" ? config.command : null,
         env,
+        cacheScope: {
+          companyId,
+          principalId: agent.id,
+          providerAccountFingerprint: cacheFingerprint,
+          cacheable: !hasUnversionedSecretBinding,
+        },
       };
       models = refresh
         ? await refreshGeminiModelsForContext(context)

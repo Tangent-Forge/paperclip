@@ -570,6 +570,86 @@ describe("plugin host company context guards", () => {
       await handle.stop().catch(() => undefined);
     }
   });
+
+  it("runs company-scoped config and secret reads through the real host boundary", async () => {
+    const configGet = vi.fn(async (params: { companyId: string }) => ({ companyId: params.companyId, enabled: true }));
+    const secretsResolve = vi.fn(async (params: { companyId: string }) => `secret-${params.companyId}`);
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["secrets.read-ref"],
+      services: {
+        config: { get: configGet },
+        secrets: { resolve: secretsResolve },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+      for (const hostMethod of ["config.get", "secrets.resolve"] as const) {
+        await expect(handle.call("performAction", {
+          key: "probe",
+          params: { mode: "echo", hostMethod, requestedCompanyId: "company-a" },
+          actorContext: {
+            type: "agent",
+            userId: null,
+            agentId: "agent-1",
+            runId: "run-1",
+            companyId: "company-a",
+          },
+          renderEnvironment: null,
+        })).resolves.toBeDefined();
+      }
+      expect(configGet).toHaveBeenCalledWith({ companyId: "company-a" }, { invocationScope: { companyId: "company-a" } });
+      expect(secretsResolve).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-a" }), { invocationScope: { companyId: "company-a" } });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("allows only configured proactive company scopes and never reuses another scope", async () => {
+    const configGet = vi.fn(async (params: { companyId: string }) => ({ companyId: params.companyId }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: [],
+      services: { config: { get: configGet } } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers,
+      proactiveCompanyScopes: ["company-a", "company-b"],
+    });
+
+    try {
+      await handle.start();
+      for (const companyId of ["company-a", "company-b"]) {
+        await expect(handle.call("getData", {
+          params: { mode: "omit", hostMethod: "config.get", requestedCompanyId: companyId },
+        } as unknown as HostToWorkerMethods["getData"][0])).resolves.toBeDefined();
+      }
+      expect(configGet.mock.calls.map(([params]) => params.companyId)).toEqual(["company-a", "company-b"]);
+
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "config.get", requestedCompanyId: "company-c" },
+      } as unknown as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(configGet).toHaveBeenCalledTimes(2);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
 });
 
 

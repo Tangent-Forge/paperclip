@@ -13,37 +13,97 @@ import {
 } from "./work-contract.js";
 
 let currentContext: Parameters<Parameters<typeof definePlugin>[0]["setup"]>[0] | null = null;
+const configuredCompanyIds = new Set<string>();
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-async function buildSyncDeps(companyIdOverride?: string | null) {
+function requireCompanyId(value: unknown, operation: string): string {
+  const companyId = stringField(value);
+  if (!companyId) throw new Error(`${operation} requires an explicit companyId`);
+  return companyId;
+}
+
+async function loadScopedConfig(companyIdInput: unknown) {
   const ctx = currentContext;
   if (!ctx) throw new Error("Linear sync plugin is not initialized");
-  const config = readConfig(await ctx.config.get());
-  const companyId = companyIdOverride ?? config.companyId;
-  if (!companyId) throw new Error("companyId is required for Linear sync");
+  const companyId = requireCompanyId(companyIdInput, "Linear sync");
+  const config = readConfig(await ctx.config.get(companyId));
+  if (config.companyId !== companyId) {
+    throw new Error("Linear sync config company does not match the authorized company context");
+  }
+  return { ctx, config, companyId };
+}
+
+async function buildSyncDeps(companyIdInput: unknown) {
+  const { ctx, config, companyId } = await loadScopedConfig(companyIdInput);
   if (!config.linearApiKeySecretRef) throw new Error("linearApiKeySecretRef is required for Linear sync");
-  const token = await ctx.secrets.resolve(config.linearApiKeySecretRef);
+  const token = await ctx.secrets.resolve(config.linearApiKeySecretRef, {
+    companyId,
+    configPath: "linearApiKeySecretRef",
+  });
   const linear = createLinearClient({ http: ctx.http, url: config.linearGraphqlUrl, token });
   return { ctx, config, companyId, linear };
 }
 
+async function runScopedSync(
+  companyIdInput: unknown,
+  triggerKind: "poll" | "manual",
+  actor?: { actorAgentId?: string | null; actorRunId?: string | null; actorUserId?: string | null },
+) {
+  const scoped = await loadScopedConfig(companyIdInput);
+  if (!scoped.config.enabled) {
+    return runLinearSync({ host: scoped.ctx, config: scoped.config, companyId: scoped.companyId, linear: null, triggerKind, actor });
+  }
+  const deps = await buildSyncDeps(scoped.companyId);
+  return runLinearSync({ host: deps.ctx, config: deps.config, companyId: deps.companyId, linear: deps.linear, triggerKind, actor });
+}
+
+function readWebhookScope(input: PluginWebhookInput): { companyId: string; payload: unknown } {
+  const body = input.parsedBody && typeof input.parsedBody === "object"
+    ? input.parsedBody as Record<string, unknown>
+    : null;
+  const companyId = requireCompanyId(body?.companyId, "Linear webhook");
+  if (!configuredCompanyIds.has(companyId)) {
+    throw new Error("Linear webhook company is not configured for this plugin");
+  }
+  return { companyId, payload: body?.payload ?? input.parsedBody };
+}
+
 const plugin = definePlugin({
+  multiCompanyConfig: true,
+
   async setup(ctx) {
     currentContext = ctx;
 
     ctx.jobs.register(JOB_KEYS.poll, async () => {
-      const { ctx: host, config, companyId, linear } = await buildSyncDeps();
-      await runLinearSync({ host, linear, config, companyId, triggerKind: "poll" });
+      if (configuredCompanyIds.size === 0) {
+        throw new Error("Linear scheduled sync has no configured company scope");
+      }
+      for (const companyId of [...configuredCompanyIds].sort()) {
+        await runScopedSync(companyId, "poll");
+      }
     });
 
     ctx.data.register("status", async (params) => {
-      const companyId = stringField(params.companyId) ?? readConfig(await ctx.config.get()).companyId;
-      if (!companyId) return { configured: false, error: "companyId is not configured" };
+      const companyId = requireCompanyId(params.companyId, "Linear status lookup");
+      await loadScopedConfig(companyId);
       return readSyncStatus(ctx, companyId);
     });
+  },
+
+  async onConfigChanged(newConfig, context) {
+    const companyId = requireCompanyId(context?.companyId, "Linear config update");
+    const config = readConfig(newConfig);
+    if (!config.companyId) {
+      configuredCompanyIds.delete(companyId);
+      return;
+    }
+    if (config.companyId !== companyId) {
+      throw new Error("Linear config company does not match the authorized company context");
+    }
+    configuredCompanyIds.add(companyId);
   },
 
   async onValidateConfig(config) {
@@ -65,15 +125,21 @@ const plugin = definePlugin({
 
   async onWebhook(input: PluginWebhookInput) {
     if (input.endpointKey !== WEBHOOK_KEYS.linear) throw new Error(`Unsupported webhook endpoint: ${input.endpointKey}`);
-    const { ctx, config, companyId, linear } = await buildSyncDeps();
+    const { companyId, payload } = readWebhookScope(input);
+    const scoped = await loadScopedConfig(companyId);
+    const { ctx, config } = scoped;
     if (!config.enabled) return;
+    const { linear } = await buildSyncDeps(companyId);
     if (config.linearWebhookSigningSecretRef) {
-      const secret = await ctx.secrets.resolve(config.linearWebhookSigningSecretRef);
+      const secret = await ctx.secrets.resolve(config.linearWebhookSigningSecretRef, {
+        companyId,
+        configPath: "linearWebhookSigningSecretRef",
+      });
       if (!verifyLinearSignature({ rawBody: input.rawBody, headers: input.headers, secret })) {
         throw new Error("Linear webhook signature verification failed");
       }
     }
-    await handleWebhookIssue({ host: ctx, linear, config, companyId, payload: input.parsedBody });
+    await handleWebhookIssue({ host: ctx, linear, config, companyId, payload });
   },
 
   async onApiRequest(input: PluginApiRequestInput) {
@@ -125,7 +191,7 @@ const plugin = definePlugin({
     }
     if (input.routeKey === API_ROUTE_KEYS.portfolioInventory) {
       if (input.method !== "GET") return { status: 405, body: { error: "Method not allowed" } };
-      const companyId = input.companyId;
+      const companyId = requireCompanyId(input.companyId, "Linear portfolio inventory");
       const { linear } = await buildSyncDeps(companyId);
       const snapshot = await collectPortfolioInventory(linear, {
         source: { kind: "linear", label: "Linear", host: "api.linear.app", availability: "available" },
@@ -136,24 +202,16 @@ const plugin = definePlugin({
       return { status: 200, body: snapshot };
     }
     if (input.routeKey === API_ROUTE_KEYS.status) {
-      const companyId = stringField(input.query.companyId) ?? input.companyId;
-      return { body: await readSyncStatus((await buildSyncDeps(companyId)).ctx, companyId) };
+      const companyId = requireCompanyId(input.companyId, "Linear status request");
+      const { ctx } = await loadScopedConfig(companyId);
+      return { body: await readSyncStatus(ctx, companyId) };
     }
     if (input.routeKey === API_ROUTE_KEYS.syncNow) {
-      const body = input.body && typeof input.body === "object" ? input.body as Record<string, unknown> : {};
-      const companyId = stringField(body.companyId) ?? input.companyId;
-      const { ctx, config, linear } = await buildSyncDeps(companyId);
-      const summary = await runLinearSync({
-        host: ctx,
-        linear,
-        config,
-        companyId,
-        triggerKind: "manual",
-        actor: {
+      const companyId = requireCompanyId(input.companyId, "Linear manual sync");
+      const summary = await runScopedSync(companyId, "manual", {
           actorAgentId: input.actor.agentId ?? null,
           actorUserId: input.actor.userId ?? null,
           actorRunId: input.actor.runId ?? null,
-        },
       });
       return { status: 202, body: summary };
     }
@@ -163,21 +221,18 @@ const plugin = definePlugin({
   async onHealth() {
     const ctx = currentContext;
     if (!ctx) return { status: "error", message: "Plugin not initialized" };
-    const config = readConfig(await ctx.config.get());
     return {
-      status: config.enabled && (!config.companyId || !config.linearApiKeySecretRef) ? "degraded" : "ok",
-      message: config.enabled ? "Linear sync enabled" : "Linear sync disabled",
+      status: configuredCompanyIds.size > 0 ? "ok" : "degraded",
+      message: configuredCompanyIds.size > 0 ? "Linear sync has configured company scopes" : "Linear sync has no configured company scopes",
       details: {
-        companyIdConfigured: Boolean(config.companyId),
-        tokenSecretConfigured: Boolean(config.linearApiKeySecretRef),
-        candidateStatusNames: config.candidateStatusNames,
-        maxIssuesPerRun: config.maxIssuesPerRun,
+        configuredCompanyCount: configuredCompanyIds.size,
       },
     };
   },
 
   async onShutdown() {
     currentContext = null;
+    configuredCompanyIds.clear();
   },
 });
 
