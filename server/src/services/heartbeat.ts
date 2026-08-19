@@ -164,6 +164,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { checkIssuePlanExecutionReadiness } from "./plan-execution-readiness.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -10635,6 +10636,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+
+    if (issueId) {
+      try {
+        const readiness = await checkIssuePlanExecutionReadiness(db, agent.companyId, issueId);
+        if (readiness) {
+          enrichedContextSnapshot.planExecutionReadiness = readiness;
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId,
+            runId: null,
+            action: "issue.plan_execution_readiness_checked",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              standard: readiness.standard,
+              verdict: readiness.verdict,
+              findingCodes: readiness.findings
+                .map((finding) => finding.code)
+                .filter((code): code is string => typeof code === "string"),
+              checker: readiness.checker,
+              advisory: true,
+            },
+          });
+        }
+      } catch (error) {
+        // PAP-2068 is intentionally advisory. A checker failure is observable
+        // but cannot silently suppress an otherwise-authorized wakeup.
+        logger.warn({ err: error, issueId, agentId }, "plan execution readiness check failed");
+      }
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
