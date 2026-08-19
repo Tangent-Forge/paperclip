@@ -5870,6 +5870,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "patch",
+  path: "/api/plugins/{pluginId}/config",
+  tags: ["plugins"],
+  summary: "Patch company-scoped plugin config",
+  request: {
+    params: z.object({ pluginId: z.string() }),
+    body: jsonBody(z.object({ companyId: z.string(), configJson: z.record(z.unknown()) })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/plugins/{pluginId}/config/test",
   tags: ["plugins"],

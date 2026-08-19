@@ -403,6 +403,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app)
       .patch(`/api/plugins/${pluginId}/config`)
       .send({
+        companyId: companyA,
         configJson: {
           candidateStatusNames: ["Triage"],
           triageAgentId: "88888888-8888-4888-8888-888888888888",
@@ -410,7 +411,8 @@ describe.sequential("plugin install and upgrade authz", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockRegistry.patchConfig).toHaveBeenCalledWith(pluginId, {
+    expect(mockRegistry.getConfig).toHaveBeenCalledWith(pluginId, companyA);
+    expect(mockRegistry.patchConfig).toHaveBeenCalledWith(pluginId, companyA, {
       configJson: {
         candidateStatusNames: ["Triage"],
         triageAgentId: "88888888-8888-4888-8888-888888888888",
@@ -422,14 +424,20 @@ describe.sequential("plugin install and upgrade authz", () => {
   it("rejects a plugin config patch that introduces a credential reference", async () => {
     readyPlugin();
     mockRegistry.getConfig.mockResolvedValue({ configJson: {} });
+    mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyB, status: "active" });
 
     const { app } = await createApp(boardActor({ isInstanceAdmin: true }));
     const res = await request(app)
       .patch(`/api/plugins/${pluginId}/config`)
-      .send({ configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" } });
+      .send({
+        companyId: companyA,
+        configJson: {
+          apiKeyRef: { type: "secret_ref", secretId, version: "latest" },
+        },
+      });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.body.error).toMatch(/outside the selected company/i);
     expect(mockRegistry.patchConfig).not.toHaveBeenCalled();
   }, 20_000);
 

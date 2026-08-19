@@ -90,7 +90,7 @@ import {
 } from "../services/plugin-install-guard.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { secretService } from "../services/secrets.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -491,6 +491,7 @@ interface PluginToolExecuteRequest {
  * | POST | /plugins/tools/execute | Execute a plugin tool |
  * | GET | /plugins/:pluginId/config | Get current plugin config |
  * | POST | /plugins/:pluginId/config | Save (upsert) plugin config |
+ * | PATCH | /plugins/:pluginId/config | Safely merge a partial company config |
  * | POST | /plugins/:pluginId/config/test | Test config via validateConfig RPC |
  * | POST | /plugins/:pluginId/bridge/data | Proxy getData to plugin worker |
  * | POST | /plugins/:pluginId/bridge/action | Proxy performAction to plugin worker |
@@ -2390,6 +2391,113 @@ export function pluginRoutes(
 
       res.json(result);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  /**
+   * PATCH /api/plugins/:pluginId/config
+   *
+   * Shallow-merge a partial company-scoped config without requiring callers
+   * to round-trip unchanged values. Secret bindings are validated against the
+   * selected company and synchronized from the resulting effective config.
+   */
+  router.patch("/plugins/:pluginId/config", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
+      res.status(400).json({ error: '"configJson" is required and must be an object' });
+      return;
+    }
+
+    const patchJson = { ...body.configJson };
+    const schema = plugin.manifestJson?.instanceConfigSchema;
+    const existing = await registry.getConfig(plugin.id, companyId);
+    const existingJson = existing?.configJson && typeof existing.configJson === "object" && !Array.isArray(existing.configJson)
+      ? existing.configJson as Record<string, unknown>
+      : {};
+    const mergedJson = { ...existingJson, ...patchJson };
+
+    if (schema && Object.keys(schema).length > 0) {
+      const validation = validateInstanceConfig(mergedJson, schema);
+      if (!validation.valid) {
+        res.status(400).json({
+          error: "Configuration does not match the plugin's instanceConfigSchema",
+          fieldErrors: validation.errors,
+        });
+        return;
+      }
+    }
+
+    try {
+      const secretRefs = extractSecretRefBindingsFromConfig(mergedJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+      await secretService(db).syncSecretRefsForTarget(
+        companyId,
+        { targetType: "plugin", targetId: plugin.id },
+        secretRefs,
+        { replaceAll: true },
+      );
+
+      const result = await registry.patchConfig(plugin.id, companyId, { configJson: patchJson });
+      const effectiveConfig = result?.configJson && typeof result.configJson === "object"
+        ? result.configJson as Record<string, unknown>
+        : mergedJson;
+      await logPluginMutationActivity(req, "plugin.config.patched", plugin.id, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        companyId,
+        patchedKeys: Object.keys(patchJson).sort(),
+        secretRefCount: secretRefs.length,
+      });
+
+      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        try {
+          const configRows = await registry.listConfigs(plugin.id);
+          bridgeDeps.workerManager.setProactiveCompanyScopes(
+            plugin.id,
+            configRows.map((row) => row.companyId),
+          );
+        } catch {
+          // Non-fatal: the set is rebuilt from the DB on the next worker start.
+        }
+
+        try {
+          await bridgeDeps.workerManager.call(
+            plugin.id,
+            "configChanged",
+            { config: effectiveConfig, companyId },
+          );
+        } catch (rpcErr) {
+          if (
+            rpcErr instanceof JsonRpcCallError
+            && rpcErr.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+          ) {
+            try {
+              await lifecycle.restartWorker(plugin.id);
+            } catch {
+              // Config is persisted; the next worker start will load it.
+            }
+          }
+        }
+      }
+
+      res.json(result);
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({ error: err.message, ...((err.details ?? {}) as Record<string, unknown>) });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

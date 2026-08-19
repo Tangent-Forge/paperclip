@@ -314,3 +314,22 @@ The first workspace-B attempt also surfaced a compatibility-registry gap in the 
 The adapter-utils portion of workspace-B reported five failures in normal project execution: two generated-dist/source callback-bridge timeout observations, one generated-dist source-file fixture mismatch, and two generated-dist/source ACP session-fingerprint assertions. The two changed-path-independent source assertions pass in isolation on both the branch and exact upstream base; the generated-dist failures are stale/fixture-specific. Disposition: **environmental/concurrency-dependent validation failures**, not branch regressions. No adapter-utils source was changed.
 
 The remaining independent workspace-B projects were run directly after the DB package rebuild: shared `58 files / 516 tests` passed; skills-catalog `5 / 20` passed; DB `57 / 229` passed with 8 skips; openclaw `4 / 26` passed; opencode `14 / 84` passed; plugin SDK `6 / 45` passed; and create-paperclip-plugin `1 / 2` passed. Claude reported `27 files`, `438 passed / 2 skipped`, plus two generated-dist setup-token fixture failures because `dist/server/__fixtures__/setup-token*.md` is absent; no Claude source was changed. The aggregate therefore remains explicitly qualified rather than reported as fully green.
+
+## Exact-head serialized authz regression found and semantically reconciled (2026-08-19)
+
+The exact-head CI run `32228293363` on `7e7632181951f03329dbdbfeaa2f6c8351348356` failed serialized server shard 2/5 in `server/src/__tests__/plugin-routes-authz.test.ts`. The two failures were:
+
+1. `plugin install and upgrade authz > patches non-secret config while preserving an existing credential reference`: expected 200, received 404 at line 412.
+2. `plugin install and upgrade authz > rejects a plugin config patch that introduces a credential reference`: expected 422, received 404 at line 431.
+
+The failure was a real branch regression caused by the semantic merge of advanced `origin/master` into the candidate: upstream had added `PATCH /api/plugins/:pluginId/config` and its authorization tests, while the candidate retained the TF company-scoped configuration model and had dropped that route. The repair restores the upstream capability as a company-scoped semantic merge:
+
+- `companyId` is mandatory and checked against the authenticated actor's company access;
+- reads and writes use the `(pluginId, companyId)` registry contract;
+- the shallow patch validates the effective merged config;
+- resulting secret bindings are validated for the selected company and synchronized with `replaceAll`;
+- worker notifications include the company scope and refresh proactive company scopes;
+- OpenAPI and the route inventory document the restored endpoint;
+- the inherited tests now cover the company-scoped call shape and reject a cross-company secret reference rather than asserting the retired instance-scoped secret-disable behavior.
+
+Focused exact-file validation after the repair: `38/38` tests pass; server typecheck passes. This change is a retained semantic merge required to preserve upstream behavior without reintroducing the retired TF instance-scoped contract. It is not a production operation and has not been deployed or executed against the live Paperclip process.
