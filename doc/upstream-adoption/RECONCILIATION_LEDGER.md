@@ -20,7 +20,7 @@ Approved dispositions:
 | Historical 9002/9003 hash recognition | move TF behavior to configuration/operations | Compatibility registry accounts for applied legacy hashes without replaying unresolved SQL |
 | Active wakeup idempotency | retain TF core patch | Safe independent index; integrated as migration 9001 after upstream baseline |
 | Evidence registry | move TF behavior to plugin | No core consumers; require plugin-owned migration/schema contract before migration |
-| Environment tenancy | owner decision required | Live company-scoped shape conflicts with upstream instance-scoped model |
+| Environment tenancy / 9003 retirement | upstream replaces TF implementation | Owner approved upstream instance scope; preserve historical 9003 hash, exclude 9003 SQL from fresh core, and execute only the separately approved retirement plan |
 | Shared sidebar badge | upstream replaces TF implementation | Upstream exposes equivalent capability; verify `agentOperations` semantics |
 | Canary execution constraints | retain TF core patch | Upstream sandbox contract does not enforce TF's exact env/path/network/task restrictions |
 | Agent identity proof acceptance | defer | TF-only corrective-acceptance protocol depends on TF-specific Hermes/heartbeat/routes and is not present in upstream; retain the source checkout for a separately owned acceptance-control decision rather than partially porting it |
@@ -44,6 +44,36 @@ Approved dispositions:
 - No blanket `ours`/`theirs` conflict resolution is permitted.
 - No TF implementation is retained solely because it exists; retention requires a demonstrated upstream gap.
 - Before merge, attach the exact resulting baseline SHA, retained core-delta manifest, replaced/removed patches, plugin/config migrations, unresolved semantic conflicts, security fixes, database reconciliation, complete tests, Companion delta, and cutover plan.
+
+## Owner decision: 9003 retirement
+
+On 2026-08-19 the owner approved adoption of upstream's instance-scoped
+environment model for the synchronized baseline. The approved contract is:
+
+- Paperclip environment identity and the default environment may be
+  instance-scoped.
+- Provider credentials and secret bindings remain company-scoped.
+- Execution leases, accounting, activity, and audit attribution remain
+  company-scoped.
+- Company-specific provider configuration/provisioning remains representable
+  through supported plugin/provider/configuration contracts.
+- Generic environment config/env-vars and row identity need not remain
+  independently selectable per company without a demonstrated future need.
+
+9003 is therefore retired as retained TF core schema semantics. Its historical
+hash remains recognized for the existing live database, its SQL is excluded
+from the fresh synchronized core migration set, and no production schema/data
+operation is authorized by this decision.
+
+The specific design is documented in
+`doc/upstream-adoption/ENVIRONMENT_9003_RETIREMENT_PLAN.md`. The current
+read-only inventory found the older live row
+`0de79471-f411-4868-921f-84eff760ab86` with the instance-settings default and
+25,811 leases, and the newer row
+`c90f52fa-0dfe-4ec3-9f0a-5e026ee37d71` with 17 leases. The previously recorded
+25,805 lease baseline has advanced under the still-running live process; the
+retirement plan preserves every row present at the actual cutover, not a stale
+hard-coded count.
 
 ## Authorization / interactions / sessions phase
 

@@ -1,6 +1,6 @@
 # Database and shared-contract reconciliation
 
-Status: phase 1 complete for history mapping; environment and evidence semantics remain unresolved by design.
+Status: phase 1 complete for history mapping; owner approved upstream instance-scoped environment semantics. Production retirement remains separately gated and is design-only.
 
 ## Live migration ledger
 
@@ -28,7 +28,7 @@ Read-only inspection of `tf-postgres` found `186` rows in `drizzle.__drizzle_mig
 
 `9002` creates 13 evidence-registry tables and is exported only from the TF schema index; no application consumer was found in the TF tree. It is not added to the upstream core baseline. Disposition: move behavior/schema to a plugin or defer pending an owner-approved consumer and plugin migration contract. Its historical live hash remains documented and is recognized by the integration branch's compatibility registry, but its SQL is not in the fresh-database migration set.
 
-`9003` restores company-scoped environments after upstream `0105_instance_scoped_environments`. The live table currently contains both `company_id` and `env_vars`, while upstream models instance-scoped environments. This cannot be resolved safely by copying either schema. Disposition: owner decision required / semantic merge. Its historical hash is recognized by the compatibility registry, but no reversal is applied and its SQL is not in the fresh-database migration set.
+`9003` restores company-scoped environments after upstream `0105_instance_scoped_environments`. The owner approved upstream's instance-scoped environment identity/default model, while retaining company-scoped credentials, secret bindings, leases, accounting, activity, audit attribution, and provider state through supported contracts. Disposition: upstream replaces TF implementation. Its historical hash remains recognized by the compatibility registry, no reversal is applied in this branch, and its SQL is not in the fresh-database migration set. The detailed production retirement design is `doc/upstream-adoption/ENVIRONMENT_9003_RETIREMENT_PLAN.md`; it requires a cutover-time inventory, canonical-row mapping, lease preservation, dry-run, rollback rehearsal, and separate production approval.
 
 ## Sustainable TF migration overlay
 

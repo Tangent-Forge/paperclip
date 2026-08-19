@@ -14,6 +14,6 @@ The clean branch already contains the current upstream fixes listed below. No se
 | One active wake per company/agent/idempotency key | TF `9001_agent_wakeup_active_idempotency_uq.sql` | Bounded backport retained in core; schema and migration added in this branch |
 | Review-path wakeup idempotency | upstream `0206_review_path_recovery_idempotency_index.sql` | Preserve upstream implementation alongside TF active-wakeup guard |
 | Evidence provenance registry | TF `9002_evidence_provenance_registry.sql` | Not an immediate core backport; plugin/defer pending an owner-approved consumer |
-| Company-scoped environments | TF `9003_restore_company_scoped_environments.sql` | Owner decision required; no automatic reversal |
+| Company-scoped environments | TF `9003_restore_company_scoped_environments.sql` | Owner approved upstream instance scope; retire TF schema semantics through the separately gated design in `ENVIRONMENT_9003_RETIREMENT_PLAN.md`; no automatic reversal or production write |
 
 Immediate bounded backports are limited to controls that are independently safe, have a concrete live correctness benefit, and do not conflict with newer upstream semantics. All other listed fixes arrive through the upstream baseline and are validated as one synchronization set.

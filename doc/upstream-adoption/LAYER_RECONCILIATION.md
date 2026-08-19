@@ -2,6 +2,12 @@
 
 This report records the ordered review after database/shared-contract work. It is an integration assessment, not a deployment approval.
 
+The 9003 owner decision is resolved for the synchronized baseline: adopt
+upstream instance-scoped environment identity/defaults while preserving
+company-scoped secret/provider bindings, leases, accounting, activity, and
+audit attribution. Production row retirement remains separately gated by
+`ENVIRONMENT_9003_RETIREMENT_PLAN.md`.
+
 ## Authorization, interactions, and sessions
 
 The upstream baseline now provides the relevant authorization and interaction primitives:
