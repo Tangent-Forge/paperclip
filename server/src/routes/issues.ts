@@ -4568,6 +4568,7 @@ export function issueRoutes(
       issue,
       reason: "issue_assigned",
       mutation: "create",
+      idempotencyKey: `issue-assignment:${issue.id}:create`,
       contextSource: "issue.child_create",
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
