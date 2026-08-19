@@ -333,3 +333,5 @@ The failure was a real branch regression caused by the semantic merge of advance
 - the inherited tests now cover the company-scoped call shape and reject a cross-company secret reference rather than asserting the retired instance-scoped secret-disable behavior.
 
 Focused exact-file validation after the repair: `38/38` tests pass; server typecheck passes. This change is a retained semantic merge required to preserve upstream behavior without reintroducing the retired TF instance-scoped contract. It is not a production operation and has not been deployed or executed against the live Paperclip process.
+
+The next exact-head CI run also caught the related TypeScript contract detail: `PatchPluginConfig` requires `companyId` inside the input object as well as the positional registry argument. The route now supplies both, and its test expectation covers both. Local server build and full repository build pass after this correction; no dependency, lockfile, or policy change was made.

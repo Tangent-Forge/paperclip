@@ -2449,7 +2449,7 @@ export function pluginRoutes(
         { replaceAll: true },
       );
 
-      const result = await registry.patchConfig(plugin.id, companyId, { configJson: patchJson });
+      const result = await registry.patchConfig(plugin.id, companyId, { companyId, configJson: patchJson });
       const effectiveConfig = result?.configJson && typeof result.configJson === "object"
         ? result.configJson as Record<string, unknown>
         : mergedJson;

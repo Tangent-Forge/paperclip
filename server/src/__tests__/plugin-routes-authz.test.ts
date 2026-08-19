@@ -413,6 +413,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(200);
     expect(mockRegistry.getConfig).toHaveBeenCalledWith(pluginId, companyA);
     expect(mockRegistry.patchConfig).toHaveBeenCalledWith(pluginId, companyA, {
+      companyId: companyA,
       configJson: {
         candidateStatusNames: ["Triage"],
         triageAgentId: "88888888-8888-4888-8888-888888888888",
