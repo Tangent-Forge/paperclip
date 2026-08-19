@@ -38,7 +38,7 @@ export function queueIssueAssignmentWakeup(input: {
       triggerDetail: "system",
       reason: input.reason,
       payload: { issueId: input.issue.id, mutation: input.mutation },
-      idempotencyKey: input.idempotencyKey ?? null,
+      ...(input.idempotencyKey == null ? {} : { idempotencyKey: input.idempotencyKey }),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
