@@ -1,4 +1,8 @@
-# 2026-08-17 Ready for Paperclip admission
+# 2026-08-17 Ready for Paperclip admission (superseded)
+
+> Superseded on 2026-08-19 by the operator-directed Triage admission recovery.
+> This file remains as the historical record for PR #89; the current decision is
+> documented in `2026-08-19-triage-admission-recovery.md`.
 
 ## Decision
 

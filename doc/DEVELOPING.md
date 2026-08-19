@@ -786,13 +786,12 @@ A deployment is not healthy until this gate passes.
 
 ## Linear Sync admission state
 
-Paperclip execution admission is **not** Linear `Triage`.
+Paperclip execution admission is explicit Linear `Triage`.
 
-- Human/ops parking stays in `Triage` (and other non-admission states).
-- Only Linear state **`Ready for Paperclip`** is a Paperclip admission candidate.
+- Only Linear state **`Triage`** is a Paperclip admission candidate.
 - State membership alone is never enough: a valid `tf-work-contract` (`tf-work/v1`) is still required.
-- Linear Sync config must set `candidateStatusNames` to exactly `["Ready for Paperclip"]` when enabled.
-- Code fail-closes: even if config drifts to include `Triage`/`Backlog`/`Todo`, those states cannot be admitted.
+- Linear Sync config must set `candidateStatusNames` to exactly `["Triage"]` when enabled.
+- Code fail-closes: even if config drifts to include `Ready for Paperclip`/`Backlog`/`Todo`, those states cannot be admitted.
+- Triage admission creates one stable Paperclip origin and one idempotent Chief of Staff wakeup only after the contract passes.
 
-Do not mass-move the Triage backlog into `Ready for Paperclip`. Move an issue there only when it is intentionally agent-executable and the contract is complete.
-
+Do not treat Backlog or Todo as execution queues. Move an issue into Triage only when it is intentionally agent-executable and the contract is complete.
