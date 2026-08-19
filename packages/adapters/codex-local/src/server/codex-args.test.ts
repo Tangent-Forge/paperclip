@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
@@ -48,63 +49,79 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides for manual models", () => {
+  it("ignores fast mode for manual models until support is proven", () => {
     const result = buildCodexExecArgs({
       model: "future-codex-model",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4",
+    );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
       "future-codex-model",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
       "-",
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("resolves an omitted model to the default Codex model", () => {
     const result = buildCodexExecArgs({
-      fastMode: true,
     });
 
-    expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.fastModeRequested).toBe(false);
+    expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toBeNull();
     expect(result.args).toEqual([
       "exec",
       "--json",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
+      "-",
+    ]);
+  });
+
+  it("ignores fast mode when the default Codex model is resolved from an omitted model", () => {
+    const result = buildCodexExecArgs({
+      fastMode: true,
+    });
+
+    expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4",
+    );
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-",
     ]);
   });
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.3-codex",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.5, gpt-5.4",
     );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex-spark",
+      "gpt-5.3-codex",
       "-",
     ]);
   });
@@ -126,6 +143,13 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  // Restored 2026-08-12. These three executionConstraints tests were dropped when this
+  // file was rewritten for the default-model change, which left the sandbox/bypass
+  // guards in codex-args.ts with no coverage at all. That enforcement logic was never
+  // touched by this PR -- only its tests went missing -- so they come back unchanged.
+  // The extraArgs case matters most: it is the guard against re-widening the sandbox
+  // through user-supplied flags.
 
   it("applies workspace-write sandbox and blocks bypass under network deny", () => {
     const result = buildCodexExecArgs({

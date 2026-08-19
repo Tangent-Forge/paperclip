@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   listAdapterModelProfiles,
   type AdapterModelProfileDefinition,
@@ -35,8 +36,7 @@ describe("heartbeat model profile application", () => {
       configSource: "adapter_default",
       fallbackReason: null,
       adapterConfig: {
-        model: "gpt-5.3-codex-spark",
-        modelReasoningEffort: "high",
+        model: DEFAULT_CODEX_LOCAL_MODEL,
       },
     });
   });

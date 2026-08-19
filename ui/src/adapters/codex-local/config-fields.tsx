@@ -10,7 +10,6 @@ import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
-  isCodexLocalManualModel,
 } from "@paperclipai/adapter-codex-local";
 
 const inputClass =
@@ -38,14 +37,11 @@ export function CodexLocalConfigFields({
   const currentModel = isCreate
     ? String(values!.model ?? "")
     : eff("adapterConfig", "model", String(config.model ?? ""));
-  const fastModeManualModel = isCodexLocalManualModel(currentModel);
   const fastModeSupported = isCodexLocalFastModeSupported(currentModel);
   const supportedModelsLabel = CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
-  const fastModeMessage = fastModeManualModel
-    ? "Fast mode will be passed through for this manual model. If Codex rejects it, turn the toggle off."
-    : fastModeSupported
-      ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
-      : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
+  const fastModeMessage = fastModeSupported
+    ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
+    : `Fast mode currently only works on ${supportedModelsLabel}. Paperclip will ignore this toggle until the model is switched.`;
 
   return (
     <>

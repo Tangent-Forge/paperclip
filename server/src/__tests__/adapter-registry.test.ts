@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const hermesExecuteMock = vi.hoisted(() =>
@@ -222,7 +223,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        adapterConfig: expect.objectContaining({ model: DEFAULT_CODEX_LOCAL_MODEL }),
         source: "adapter_default",
       }),
     ]);
