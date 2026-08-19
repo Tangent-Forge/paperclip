@@ -1,7 +1,9 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "tangentforge.brain";
-const PAGE_ROUTE = "/tangentforge/brain";
+// Host UI mounts plugin pages under a company-scoped path; routePath is only
+// the single-segment slug (no leading slash, no multi-segment paths).
+const PAGE_ROUTE = "tf-brain";
 
 const PAGE_SLOT_ID = "brain-page";
 const SIDEBAR_SLOT_ID = "brain-route-sidebar";
