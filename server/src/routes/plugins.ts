@@ -2843,6 +2843,13 @@ export function pluginRoutes(
     const rawBody = stashedRaw ? stashedRaw.toString("utf-8") : "";
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
+    const parsedBodyRecord = parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+      ? parsedBody as Record<string, unknown>
+      : null;
+    const webhookCompanyId = typeof parsedBodyRecord?.companyId === "string"
+      && parsedBodyRecord.companyId.trim().length > 0
+      ? parsedBodyRecord.companyId.trim()
+      : undefined;
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
@@ -2862,6 +2869,7 @@ export function pluginRoutes(
     try {
       await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
         endpointKey,
+        ...(webhookCompanyId ? { companyId: webhookCompanyId } : {}),
         headers: req.headers as Record<string, string | string[]>,
         rawBody,
         parsedBody,

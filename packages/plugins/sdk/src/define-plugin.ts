@@ -138,6 +138,8 @@ export interface PluginConfigValidationResult {
 export interface PluginWebhookInput {
   /** Endpoint key matching the manifest declaration. */
   endpointKey: string;
+  /** Host-resolved company scope for company-scoped webhook invocations. */
+  companyId?: string;
   /** Inbound request headers. */
   headers: Record<string, string | string[]>;
   /** Raw request body as a UTF-8 string. */

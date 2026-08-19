@@ -335,3 +335,19 @@ The failure was a real branch regression caused by the semantic merge of advance
 Focused exact-file validation after the repair: `38/38` tests pass; server typecheck passes. This change is a retained semantic merge required to preserve upstream behavior without reintroducing the retired TF instance-scoped contract. It is not a production operation and has not been deployed or executed against the live Paperclip process.
 
 The next exact-head CI run also caught the related TypeScript contract detail: `PatchPluginConfig` requires `companyId` inside the input object as well as the positional registry argument. The route now supplies both, and its test expectation covers both. Local server build and full repository build pass after this correction; no dependency, lockfile, or policy change was made.
+
+## Bounded company-scope remediation (2026-08-19)
+
+The remaining Linear/Council company-scope finding was closed with a narrow host/SDK contract repair. `PluginWebhookInput` now accepts the host-resolved top-level `companyId`; the webhook route forwards that field only when the parsed request body contains a non-empty company ID. Generic instance-scoped webhooks remain unscoped. The Linear and Council workers now require the host-issued scope, reject a body company ID that disagrees with it, reject unconfigured companies before reading config or secrets, and fail closed when the scope is absent.
+
+Evidence:
+
+- Linear plugin tests: `23/23` passed, including scheduled per-company config/secret isolation and missing, unconfigured, and mismatched webhook-scope cases.
+- Council plugin tests: `8/8` passed, including company-scoped webhook config/secret isolation and the same negative cases.
+- Route contract test: `plugin-routes-authz.test.ts` passed for top-level company propagation and preservation of instance-scoped webhook behavior.
+- Existing worker-manager scope suite: `38/38` tests passed; the combined Gemini/worker run was `56/56`.
+- Final affected server suites (`plugin-routes-authz`, `plugin-database`, `gemini-models`, `plugin-worker-manager`): `4` files and `118/118` tests passed.
+- Council migration validator/fresh-install coverage remains passing; the migration uses the qualified plugin namespace and no migration SQL was changed in this bounded remediation.
+- Linear plugin build/typecheck, Council plugin build/typecheck, server typecheck, and server build passed.
+
+The initial process-level plugin-worker proof was removed from the candidate after the host test environment reproduced a child-stdin/worker-launch failure before initialization; it was not retained as a weakened or flaky test. The route-level host contract, plugin-level scoped service tests, and existing worker-manager mediation tests are the durable proof surface. No secret values are logged or included in the scope assertions. No production process, database, deployment, or migration was touched.

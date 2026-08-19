@@ -51,6 +51,7 @@ async function createApp(
   routeOverrides: {
     db?: unknown;
     jobDeps?: unknown;
+    webhookDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
     captureJsonContext?: (context: unknown, body: unknown) => void;
@@ -86,7 +87,7 @@ async function createApp(
     (routeOverrides.db ?? {}) as never,
     loader as never,
     routeOverrides.jobDeps as never,
-    undefined,
+    routeOverrides.webhookDeps as never,
     routeOverrides.toolDeps as never,
     routeOverrides.bridgeDeps as never,
   ));
@@ -102,6 +103,21 @@ function createSelectQueueDb(rows: Array<Array<Record<string, unknown>>>) {
         where: vi.fn(() => ({
           limit: vi.fn(() => Promise.resolve(rows.shift() ?? [])),
         })),
+      })),
+    })),
+  };
+}
+
+function createWebhookDb() {
+  return {
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({
+        returning: vi.fn(() => Promise.resolve([{ id: "delivery-1" }])),
+      })),
+    })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve()),
       })),
     })),
   };
@@ -1162,5 +1178,55 @@ describe.sequential("plugin tool and bridge authz", () => {
 
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("passes a top-level webhook company scope to the worker and leaves instance webhooks unscoped", async () => {
+    const db = createWebhookDb();
+    const workerCall = vi.fn().mockResolvedValue(undefined);
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "ready",
+      manifestJson: {
+        capabilities: ["webhooks.receive"],
+        webhooks: [{ endpointKey: "linear" }],
+      },
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "ready",
+      manifestJson: {
+        capabilities: ["webhooks.receive"],
+        webhooks: [{ endpointKey: "linear" }],
+      },
+    });
+    const { app } = await createApp(
+      boardActor(),
+      {},
+      { db, webhookDeps: { workerManager: { call: workerCall } } },
+    );
+
+    const scoped = await request(app)
+      .post(`/api/plugins/${pluginId}/webhooks/linear`)
+      .send({ companyId: companyA, payload: { issueId: "issue-a" } });
+    expect(scoped.status).toBe(200);
+    expect(workerCall).toHaveBeenNthCalledWith(
+      1,
+      pluginId,
+      "handleWebhook",
+      expect.objectContaining({ companyId: companyA, parsedBody: expect.objectContaining({ companyId: companyA }) }),
+    );
+
+    const instanceScoped = await request(app)
+      .post(`/api/plugins/${pluginId}/webhooks/linear`)
+      .send({ payload: { issueId: "instance-issue" } });
+    expect(instanceScoped.status).toBe(200);
+    expect(workerCall).toHaveBeenNthCalledWith(
+      2,
+      pluginId,
+      "handleWebhook",
+      expect.not.objectContaining({ companyId: expect.anything() }),
+    );
   });
 });

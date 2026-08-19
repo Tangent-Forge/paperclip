@@ -205,6 +205,7 @@ describe("council email intake", () => {
         const signature = createHmac("sha256", `signing-${companyId}`).update(rawBody).digest("hex");
         await plugin.definition.onWebhook?.({
           endpointKey: WEBHOOK_KEYS.gmailRelay,
+          companyId,
           rawBody,
           parsedBody: { companyId, payload: { messages: [] } },
           headers: { "x-gmail-relay-signature": `sha256=${signature}` },
@@ -238,6 +239,7 @@ describe("council email intake", () => {
       } as any)).rejects.toThrow(/explicit companyId/);
       await expect(plugin.definition.onWebhook?.({
         endpointKey: WEBHOOK_KEYS.gmailRelay,
+        companyId: "company-b",
         rawBody: JSON.stringify({ companyId: "company-b" }),
         parsedBody: { companyId: "company-b" },
         headers: {},

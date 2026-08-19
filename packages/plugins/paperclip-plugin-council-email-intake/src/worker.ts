@@ -52,7 +52,11 @@ function readWebhookScope(input: PluginWebhookInput): { companyId: string; paylo
   const body = input.parsedBody && typeof input.parsedBody === "object"
     ? input.parsedBody as Record<string, unknown>
     : null;
-  const companyId = requireCompanyId(body?.companyId, "Council email webhook");
+  const companyId = requireCompanyId(input.companyId, "Council email webhook");
+  const bodyCompanyId = stringField(body?.companyId);
+  if (bodyCompanyId && bodyCompanyId !== companyId) {
+    throw new Error("Council email webhook payload company does not match the authorized company context");
+  }
   if (!configuredCompanyIds.has(companyId)) {
     throw new Error("Council email webhook company is not configured for this plugin");
   }

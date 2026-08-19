@@ -607,6 +607,7 @@ describe("linear sync", () => {
       } as any)).rejects.toThrow(/explicit companyId/);
       await expect(plugin.definition.onWebhook?.({
         endpointKey: WEBHOOK_KEYS.linear,
+        companyId: "company-b",
         rawBody: JSON.stringify({ companyId: "company-b" }),
         parsedBody: { companyId: "company-b" },
         headers: {},

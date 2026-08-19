@@ -64,7 +64,11 @@ function readWebhookScope(input: PluginWebhookInput): { companyId: string; paylo
   const body = input.parsedBody && typeof input.parsedBody === "object"
     ? input.parsedBody as Record<string, unknown>
     : null;
-  const companyId = requireCompanyId(body?.companyId, "Linear webhook");
+  const companyId = requireCompanyId(input.companyId, "Linear webhook");
+  const bodyCompanyId = stringField(body?.companyId);
+  if (bodyCompanyId && bodyCompanyId !== companyId) {
+    throw new Error("Linear webhook payload company does not match the authorized company context");
+  }
   if (!configuredCompanyIds.has(companyId)) {
     throw new Error("Linear webhook company is not configured for this plugin");
   }

@@ -93,6 +93,35 @@ describe("Antigravity Gemini model discovery", () => {
     expect(calls).toBe(3);
   });
 
+  it("does not leak entitlement metadata across concurrent company requests", async () => {
+    let calls = 0;
+    setGeminiModelsRunnerForTests(async (_command, env) => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return env.GEMINI_TEST_COMPANY === "company-b"
+        ? "gemini-company-b-entitlement"
+        : "gemini-company-a-entitlement";
+    });
+
+    const common = { command: agy, env: { HOME: "/same/home" } };
+    const [companyA, companyB] = await Promise.all([
+      listGeminiModelsForContext({
+        ...common,
+        env: { ...common.env, GEMINI_TEST_COMPANY: "company-a" },
+        cacheScope: scope("company-a", "account-a"),
+      }),
+      listGeminiModelsForContext({
+        ...common,
+        env: { ...common.env, GEMINI_TEST_COMPANY: "company-b" },
+        cacheScope: scope("company-b", "account-b"),
+      }),
+    ]);
+
+    expect(companyA[0]?.id).toBe("gemini-company-a-entitlement");
+    expect(companyB[0]?.id).toBe("gemini-company-b-entitlement");
+    expect(calls).toBe(2);
+  });
+
   it("does not cache an unscoped or explicitly non-cacheable discovery", async () => {
     let calls = 0;
     setGeminiModelsRunnerForTests(async () => { calls += 1; return output; });
