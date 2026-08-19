@@ -1,7 +1,7 @@
 export const WORK_CONTRACT_VERSION = "tf-work/v1" as const;
 export const WORK_CONTRACT_FENCE = "tf-work-contract" as const;
 /** Sole Linear workflow state eligible for Paperclip execution admission. */
-export const ADMISSION_LINEAR_STATE_NAME = "Ready for Paperclip" as const;
+export const ADMISSION_LINEAR_STATE_NAME = "Triage" as const;
 
 export const DELIVERY_STATES = [
   "defined",
@@ -249,7 +249,7 @@ export function reconcileWorkState(input: {
     conflicts.push(`contract workId ${input.contract.workId} does not match ${input.workId}`);
   }
   if (!admitted && paperclipState) conflicts.push(`Paperclip work exists without explicit Linear "${ADMISSION_LINEAR_STATE_NAME}" admission`);
-  if (["backlog", "todo", "triage"].includes(input.linearState.trim().toLowerCase()) && paperclipState) {
+  if (["backlog", "todo"].includes(input.linearState.trim().toLowerCase()) && paperclipState) {
     conflicts.push(`Linear ${input.linearState} is not an admission state but Paperclip work exists`);
   }
   if ((linearTerminal || paperclipTerminal) && completion && !completion.complete) {

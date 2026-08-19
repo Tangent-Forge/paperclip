@@ -362,7 +362,7 @@ describe.sequential("plugin install and upgrade authz", () => {
       pluginId,
       configJson: {
         ...existingConfig,
-        candidateStatusNames: ["Ready for Paperclip"],
+        candidateStatusNames: ["Triage"],
         triageAgentId: "88888888-8888-4888-8888-888888888888",
       },
     });
@@ -372,7 +372,7 @@ describe.sequential("plugin install and upgrade authz", () => {
       .patch(`/api/plugins/${pluginId}/config`)
       .send({
         configJson: {
-          candidateStatusNames: ["Ready for Paperclip"],
+          candidateStatusNames: ["Triage"],
           triageAgentId: "88888888-8888-4888-8888-888888888888",
         },
       });
@@ -380,7 +380,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(200);
     expect(mockRegistry.patchConfig).toHaveBeenCalledWith(pluginId, {
       configJson: {
-        candidateStatusNames: ["Ready for Paperclip"],
+        candidateStatusNames: ["Triage"],
         triageAgentId: "88888888-8888-4888-8888-888888888888",
       },
     });
