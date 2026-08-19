@@ -294,6 +294,16 @@ describe("gemini_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("routes implicit Antigravity commands to the CLI lane", async () => {
+    setNodeVersion("v20.0.0");
+    await expect(
+      resolveGeminiExecutionEngineForRun({
+        config: { command: "/home/user/.local/bin/agy" },
+        executionTarget: null,
+      }),
+    ).resolves.toEqual({ engine: "cli", explicit: false });
+  });
+
   it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
     setNodeVersion("v20.0.0");
     await expect(

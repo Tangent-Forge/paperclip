@@ -48,7 +48,13 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  DEFAULT_GEMINI_LOCAL_MODEL,
+  isGeminiAntigravityCommand,
+  resolveGeminiLocalModel,
+  sanitizeGeminiLocalExtraArgs,
+  SANDBOX_INSTALL_COMMAND,
+} from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
@@ -336,6 +342,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
   });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+  const commandIsAntigravity = isGeminiAntigravityCommand(resolvedCommand || command);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -509,8 +516,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    const notes: string[] = [
+      commandIsAntigravity
+        ? "Prompt is passed to Antigravity via --prompt for non-interactive execution."
+        : "Prompt is passed to Gemini via --prompt for non-interactive execution.",
+    ];
+    notes.push(
+      commandIsAntigravity
+        ? "Using Antigravity-compatible unattended execution flags."
+        : "Added --approval-mode yolo for unattended execution.",
+    );
     notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -572,15 +587,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
-    if (sandbox) {
-      args.push("--sandbox");
+    if (resumeSessionId) args.push(commandIsAntigravity ? "--conversation" : "--resume", resumeSessionId);
+    const resolvedModel = resolveGeminiLocalModel(resolvedCommand || command, model);
+    if (resolvedModel) args.push("--model", resolvedModel);
+    if (commandIsAntigravity) {
+      args.push("--dangerously-skip-permissions", "--disable-slash-commands");
+      if (sandbox) args.push("--sandbox");
     } else {
-      args.push("--sandbox=none");
+      args.push("--approval-mode", "yolo");
+      if (sandbox) {
+        args.push("--sandbox");
+      } else {
+        args.push("--sandbox=none");
+      }
     }
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    const safeExtraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand || command, extraArgs);
+    if (safeExtraArgs.length > 0) args.push(...safeExtraArgs);
     args.push("--prompt", prompt);
     return args;
   };

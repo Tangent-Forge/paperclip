@@ -31,7 +31,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
+import { DEFAULT_GEMINI_LOCAL_MODEL, isGeminiAntigravityCommand } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -71,6 +71,12 @@ export async function resolveGeminiExecutionEngineForRun(
   input: GeminiEngineResolutionInput,
 ): Promise<GeminiEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  // Antigravity does not expose Gemini CLI's native --acp server. Keep the
+  // richer upstream ACP default for the Gemini CLI, but route an implicit
+  // Antigravity command directly to its CLI lane.
+  if (!selection.explicit && isGeminiAntigravityCommand(asString(input.config.command, "gemini"))) {
+    return { engine: "cli", explicit: false };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultGeminiAcpFallbackReason(input);

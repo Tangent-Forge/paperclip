@@ -1,5 +1,14 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  parseExecutionConstraints,
+  isSafeRelativeWritePath,
+  detectForbiddenEnvSecrets,
+  isGitPathAllowed,
+  parseGitPorcelainPaths,
+  findWritePolicyViolations,
+  type ExecutionConstraints,
+} from "./execution-constraints.js";
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,
@@ -1683,6 +1692,7 @@ export {
   agentSkillSnapshotSchema,
   agentSkillSyncSchema,
   type AgentSkillSync,
+  executionConstraintsSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,

@@ -328,6 +328,7 @@ export {
 } from "./trust-policy.js";
 
 export {
+  executionConstraintsSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,

@@ -4,11 +4,66 @@ import {
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
-export const label = "Gemini CLI";
+export const label = "Gemini CLI / Antigravity";
 
 export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
 
 export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
+
+const AGY_MODEL_ALIASES: Record<string, string> = {
+  "gemini-2.5-flash-lite": "gemini-3.5-flash-low",
+  "gemini-2.5-flash": "gemini-3.5-flash-medium",
+  "gemini-2.5-pro": "gemini-3.1-pro-low",
+  "gemini-3.1-pro-preview": "gemini-3.1-pro-low",
+  "gemini-3-flash-preview": "gemini-3.5-flash-medium",
+  "gemini-3.1-flash-lite": "gemini-3.5-flash-low",
+};
+
+export function isGeminiAntigravityCommand(command: string): boolean {
+  const commandName = command.replace(/\\/g, "/").split("/").pop()?.toLowerCase().replace(/\.(cmd|exe)$/, "");
+  return commandName === "agy";
+}
+
+export function resolveGeminiLocalModel(command: string, model: string): string | null {
+  if (!isGeminiAntigravityCommand(command)) return model && model !== DEFAULT_GEMINI_LOCAL_MODEL ? model : null;
+  const normalized = model.trim().replace(/^google\//i, "");
+  if (!normalized || normalized === DEFAULT_GEMINI_LOCAL_MODEL) return null;
+  return AGY_MODEL_ALIASES[normalized] ?? normalized;
+}
+
+const AGY_VALUE_TAKING_OWNED_FLAGS = new Set([
+  "--approval-mode",
+  "--conversation",
+  "--model",
+  "--output-format",
+  "--prompt",
+  "--resume",
+]);
+const AGY_BOOLEAN_OWNED_FLAGS = new Set([
+  "--dangerously-skip-permissions",
+  "--sandbox",
+  "--sandbox=none",
+  "--skip-trust",
+]);
+
+export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): string[] {
+  if (!isGeminiAntigravityCommand(command)) return args;
+  const sanitized: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const flag = arg.split("=", 1)[0];
+    if (AGY_VALUE_TAKING_OWNED_FLAGS.has(arg)) {
+      const nextArg = args[index + 1];
+      if (nextArg && !nextArg.startsWith("-")) index += 1;
+      continue;
+    }
+    if (AGY_VALUE_TAKING_OWNED_FLAGS.has(flag) || AGY_BOOLEAN_OWNED_FLAGS.has(arg) || AGY_BOOLEAN_OWNED_FLAGS.has(flag)) {
+      continue;
+    }
+    sanitized.push(arg);
+  }
+  return sanitized;
+}
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
@@ -39,7 +94,7 @@ Adapter: gemini_local
 
 Use when:
 - You want Paperclip to run the Gemini CLI locally on the host machine
-- You want Gemini chat sessions resumed across heartbeats with --resume
+- You want Gemini chat sessions resumed across heartbeats (--resume for Gemini CLI, --conversation for Antigravity)
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:
@@ -54,7 +109,7 @@ Core fields:
 - model (string, optional): Gemini model id. Defaults to auto.
 - engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
-- command (string, optional): defaults to "gemini"
+- command (string, optional): defaults to "gemini"; set to "agy" for Antigravity OAuth/subscription execution
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 - agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to gemini --acp
@@ -73,5 +128,5 @@ Notes:
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
-- Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.
+- Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY, local Gemini CLI login, or Antigravity OAuth stored by agy.
 `;

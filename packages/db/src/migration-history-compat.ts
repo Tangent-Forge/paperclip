@@ -16,6 +16,18 @@ export const HISTORICAL_MIGRATION_HASHES = new Map<string, string>([
   ],
 ]);
 
+// Upstream's migration runner also has one historical filename alias used by
+// an existing regression fixture. It maps to the legacy filename intentionally
+// (rather than 0140): the legacy row must remain historical while 0140 stays
+// pending and repairs the current schema. Keep it separate from the two TF-only
+// hashes above: it is an upstream compatibility identity, not absent TF SQL.
+export const UPSTREAM_MIGRATION_HASH_ALIASES = new Map<string, string>([
+  [
+    "03be42e4fe3d0010942e542d3ad7604bcdb3601eb41f4e231227c453d5f74801",
+    "legacy 0136_built_in_managed_resources.sql",
+  ],
+]);
+
 export type MigrationHistoryResolution = {
   appliedMigrations: string[];
   unknownHashes: string[];
@@ -29,7 +41,10 @@ export function resolveMigrationHistoryHashes(
   const unknownHashes: string[] = [];
 
   for (const hash of appliedHashes) {
-    const migrationFile = knownHashes.get(hash) ?? HISTORICAL_MIGRATION_HASHES.get(hash);
+    const migrationFile =
+      knownHashes.get(hash) ??
+      HISTORICAL_MIGRATION_HASHES.get(hash) ??
+      UPSTREAM_MIGRATION_HASH_ALIASES.get(hash);
     if (migrationFile) appliedMigrations.push(migrationFile);
     else unknownHashes.push(hash);
   }

@@ -90,6 +90,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import { listGeminiModelsForContext, refreshGeminiModelsForContext } from "../adapters/gemini-models.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -2308,9 +2309,39 @@ export function agentRoutes(
       res.json(adapter.models ?? []);
       return;
     }
-    const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
+    let models: { id: string; label: string }[];
+    const agentId = asNonEmptyString(req.query.agentId);
+    if (type === "gemini_local" && agentId) {
+      const agent = await svc.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        companyId,
+        (agent.adapterConfig ?? {}) as Record<string, unknown>,
+      );
+      const config = runtimeConfig as Record<string, unknown>;
+      const rawEnv = parseObject(config.env);
+      const env: NodeJS.ProcessEnv = {};
+      for (const [key, rawValue] of Object.entries(rawEnv)) {
+        const value = typeof rawValue === "string"
+          ? rawValue
+          : parseObject(rawValue).value;
+        if (typeof value === "string") env[key] = value;
+      }
+      const context = {
+        command: typeof config.command === "string" ? config.command : null,
+        env,
+      };
+      models = refresh
+        ? await refreshGeminiModelsForContext(context)
+        : await listGeminiModelsForContext(context);
+    } else {
+      models = refresh
+        ? await refreshAdapterModels(type)
+        : await listAdapterModels(type);
+    }
     res.json(models);
   });
 

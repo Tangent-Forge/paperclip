@@ -40,6 +40,15 @@ Compared with manually re-appending files after every sync, the reserved overlay
 
 Fresh-database behavior is tested by applying the current sequence and verifying the `9001` index. Existing-TF-database behavior is tested by recognizing the applied `9002`/`9003` hashes without making their SQL executable, preserving pending detection, and rejecting unknown history hashes visibly.
 
+The runner also recognizes the upstream regression-fixture hash
+`03be42e4fe3d0010942e542d3ad7604bcdb3601eb41f4e231227c453d5f74801` as the
+legacy filename `legacy 0136_built_in_managed_resources.sql`. It is deliberately
+not mapped to `0140_built_in_managed_resources.sql`: the legacy row remains
+historical, so 0140 stays pending and repairs the current schema. This alias is
+separate from the exact two TF-only compatibility hashes and does not make absent
+TF SQL executable. Focused source migration tests pass 21/21 after this fix; the
+generated DB package was rebuilt so its compatibility code matches source.
+
 The migration safety checker reports the retained 9001 `CREATE UNIQUE INDEX` as a known-large-table warning (local sample 52,791 rows; estimated 13,197,750 rows). The exact SQL is preserved so its live hash remains unchanged; the reviewed finding is recorded in the repository safety baseline. The current runner executes migrations inside a transaction, so `CREATE UNIQUE INDEX CONCURRENTLY` is PostgreSQL-valid only outside the current runner transaction and is not substituted here. The baseline records review status, not production execution authorization.
 
 ## Shared-contract implications

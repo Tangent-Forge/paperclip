@@ -8,6 +8,7 @@ import {
 import {
   assertKnownMigrationHistory,
   HISTORICAL_MIGRATION_HASHES,
+  UPSTREAM_MIGRATION_HASH_ALIASES,
   pendingMigrationFiles,
   resolveMigrationHistoryHashes,
 } from "./migration-history-compat.js";
@@ -58,6 +59,18 @@ describe("historical migration compatibility", () => {
       "9003_restore_company_scoped_environments.sql",
     ]);
     expect(migrationFiles).not.toEqual(expect.arrayContaining(resolution.appliedMigrations));
+  });
+
+  it("keeps the upstream 0140 fixture alias separate from TF-only history", () => {
+    const resolution = resolveMigrationHistoryHashes(
+      [...UPSTREAM_MIGRATION_HASH_ALIASES.keys()],
+      new Map(),
+    );
+    expect(resolution).toEqual({
+      appliedMigrations: ["legacy 0136_built_in_managed_resources.sql"],
+      unknownHashes: [],
+    });
+    expect([...HISTORICAL_MIGRATION_HASHES.values()]).not.toContain("legacy 0136_built_in_managed_resources.sql");
   });
 
   it("does not mark an unrelated or new migration as applied", () => {
