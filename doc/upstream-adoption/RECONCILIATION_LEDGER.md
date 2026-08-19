@@ -92,6 +92,11 @@ separate from the earlier reviewed head:
   lane stopped on the first affected suite with 1 failed file / 10 failed tests
   and the same `listen EPERM` signature. This is qualified environmental
   evidence, not a green full-suite result.
+- Exact-head GitHub CI then exposed two missing `vi.fn()` declarations for the
+  advanced-master plugin-config patch tests (`getConfig` and `patchConfig`).
+  This was a test-fixture defect, not a product regression; the two mocks were
+  added and the local rerun no longer reports those `TypeError` failures (the
+  remaining local failures are listener-denial exceptions).
 
 ## Hard stops
 
