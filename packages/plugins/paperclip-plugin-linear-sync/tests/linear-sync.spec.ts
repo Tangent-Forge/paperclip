@@ -23,6 +23,7 @@ import {
   type WorkContract,
 } from "../src/work-contract.js";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 type IssueRecord = {
   id: string;
@@ -178,6 +179,19 @@ function fakeLinear(issues: LinearIssue[]): LinearClient {
 }
 
 describe("linear sync", () => {
+  it("keeps the installable package version and Triage manifest defaults canonical", () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    const schema = manifest.instanceConfigSchema as {
+      properties?: { candidateStatusNames?: { default?: string[] } };
+    };
+
+    expect(manifest.version).toBe(packageJson.version);
+    expect(manifest.version).toBe("0.1.1");
+    expect(schema.properties?.candidateStatusNames?.default).toEqual([ADMISSION_LINEAR_STATE_NAME]);
+  });
+
   it("declares updatedAfter as DateTimeOrDuration for Linear updatedAt filters", async () => {
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
