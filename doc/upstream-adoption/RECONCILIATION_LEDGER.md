@@ -97,6 +97,10 @@ separate from the earlier reviewed head:
   This was a test-fixture defect, not a product regression; the two mocks were
   added and the local rerun no longer reports those `TypeError` failures (the
   remaining local failures are listener-denial exceptions).
+- The next exact-head CI cycle exposed one unsafe `pnpm paperclipai
+  allowed-hostname` guidance line from the advanced-master documentation merge.
+  It was changed to the repository-approved `npx paperclipai` form; the
+  focused CLI-invocation safety suite passes 37/37.
 
 ## Hard stops
 
