@@ -31,9 +31,18 @@ human-gated per the global ingestion policy.
 
 ## Enabling the plugin
 
-TBD: registration steps after Phase 1 merge. The orchestrator wires
-`pnpm-workspace.yaml`, runs `pnpm install` once, and installs the plugin into
-the local Paperclip instance via the standard plugin install flow.
+1. Build this package from a Paperclip workspace checkout:
+   `pnpm --filter @paperclipai/plugin-tf-brain build`
+2. Install into the running Paperclip instance (local path):
+
+```http
+POST /api/plugins/install
+{ "packageName": "/abs/path/to/packages/plugins/paperclip-plugin-tf-brain", "isLocalPath": true }
+```
+
+3. Confirm plugin status is `ready` and open the company UI page slug `tf-brain`
+   (manifest `ui.slots[].routePath` must be a lowercase single-segment slug —
+   not `/tangentforge/brain`).
 
 ## Related
 
