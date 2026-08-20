@@ -1444,6 +1444,56 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBeTruthy();
   });
 
+  it("stores only allowlisted webhook context fields in allVariables", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "none",
+      },
+      {},
+    );
+
+    const payload = {
+      from: "alerts@example.com",
+      subject: "Council intake reconciliation",
+      body_text: "Hermes lead should receive this intake.",
+      body_html: "<p>ignored</p>",
+      to: "ingest+hermes@paperclip.dev",
+      variables: { ignored: true },
+    };
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      payload,
+    });
+
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    const allVariables = storedRun?.triggerPayload && typeof storedRun.triggerPayload === "object"
+      ? (storedRun.triggerPayload as Record<string, unknown>).allVariables
+      : null;
+
+    expect(storedRun?.triggerPayload).toEqual(
+      expect.objectContaining({
+        variables: {},
+        allVariables: expect.objectContaining({
+          from: "alerts@example.com",
+          subject: "Council intake reconciliation",
+          body_text: "Hermes lead should receive this intake.",
+        }),
+      }),
+    );
+    expect(allVariables).toBeTruthy();
+    expect(allVariables).not.toHaveProperty("body_html");
+    expect(allVariables).not.toHaveProperty("to");
+    expect(allVariables).not.toHaveProperty("variables");
+  });
+
   it("uses the configured provider for generated webhook trigger secrets", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const originalGetSecretProvider = providerRegistry.getSecretProvider;

@@ -45,6 +45,12 @@ export function getBuiltinRoutineVariableValues(): Record<string, string> {
   };
 }
 
+const WEBHOOK_ROUTINE_VARIABLE_NAMES = ["from", "subject", "body_text"] as const;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function isValidRoutineVariableName(name: string): boolean {
   return /^[A-Za-z][A-Za-z0-9_]*$/.test(name);
 }
@@ -109,4 +115,27 @@ export function interpolateRoutineTemplate(
     if (!(name in values)) return match;
     return stringifyRoutineVariableValue(values[name]);
   });
+}
+
+export function buildRoutineVariableContext(input: {
+  source: "schedule" | "manual" | "api" | "webhook";
+  payload?: Record<string, unknown> | null;
+  automaticVariables?: Record<string, string | number | boolean>;
+  resolvedVariables?: Record<string, string | number | boolean>;
+}): Record<string, unknown> {
+  const webhookVariables =
+    input.source === "webhook" && isPlainRecord(input.payload)
+      ? Object.fromEntries(
+          WEBHOOK_ROUTINE_VARIABLE_NAMES
+            .filter((key) => Object.prototype.hasOwnProperty.call(input.payload, key))
+            .map((key) => [key, input.payload[key]]),
+        )
+      : {};
+
+  return {
+    ...webhookVariables,
+    ...getBuiltinRoutineVariableValues(),
+    ...(input.automaticVariables ?? {}),
+    ...(input.resolvedVariables ?? {}),
+  };
 }
