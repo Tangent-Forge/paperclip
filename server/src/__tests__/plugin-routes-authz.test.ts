@@ -10,6 +10,7 @@ const mockRegistry = vi.hoisted(() => ({
   patchConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
+  backfillWebhookDeliveryExternalId: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -87,12 +88,18 @@ async function createApp(
 }
 
 function createSelectQueueDb(rows: Array<Array<Record<string, unknown>>>) {
+  const limit = vi.fn(() => Promise.resolve(rows.shift() ?? []));
+  const queryResult = {
+    limit,
+    orderBy: vi.fn(() => ({ limit })),
+  };
+
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(rows.shift() ?? [])),
-        })),
+        where: vi.fn(() => queryResult),
+        orderBy: vi.fn(() => queryResult),
+        limit,
       })),
     })),
   };
@@ -133,7 +140,9 @@ function readyPlugin() {
     pluginKey: "paperclip.example",
     version: "1.0.0",
     status: "ready",
+    lastError: null,
     manifestJson: {
+      id: "paperclip.example",
       instanceConfigSchema: {
         type: "object",
         additionalProperties: true,
@@ -349,6 +358,49 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/secret references are disabled/i);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("surfaces webhook delivery externalId in the plugin dashboard and backfills missing rows", async () => {
+    readyPlugin();
+    mockRegistry.backfillWebhookDeliveryExternalId.mockResolvedValue({
+      id: "delivery-1",
+      webhookKey: "linear",
+      externalId: "linear-delivery-123",
+      status: "success",
+      durationMs: 87,
+      error: null,
+      startedAt: new Date("2026-08-20T12:00:00.000Z"),
+      finishedAt: new Date("2026-08-20T12:00:01.000Z"),
+      createdAt: new Date("2026-08-20T12:00:02.000Z"),
+    });
+
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([[
+        {
+          id: "delivery-1",
+          webhookKey: "linear",
+          externalId: null,
+          status: "success",
+          durationMs: 87,
+          error: null,
+          startedAt: new Date("2026-08-20T12:00:00.000Z"),
+          finishedAt: new Date("2026-08-20T12:00:01.000Z"),
+          createdAt: new Date("2026-08-20T12:00:02.000Z"),
+        },
+      ]]),
+    });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/dashboard`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.recentWebhookDeliveries).toEqual([
+      expect.objectContaining({
+        id: "delivery-1",
+        webhookKey: "linear",
+        externalId: "linear-delivery-123",
+      }),
+    ]);
+    expect(mockRegistry.backfillWebhookDeliveryExternalId).toHaveBeenCalledWith("delivery-1");
   }, 20_000);
 
   it("patches non-secret config while preserving an existing credential reference", async () => {
