@@ -44,6 +44,19 @@ function isPluginKeyConflict(error: unknown): boolean {
   return err.code === "23505" && constraint === "plugins_plugin_key_idx";
 }
 
+function normalizeExternalId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractPayloadExternalId(payload: Record<string, unknown>): string | null {
+  const data = payload.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+
+  return normalizeExternalId((data as Record<string, unknown>).id);
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -741,6 +754,7 @@ export function pluginRegistryService(db: Db) {
         externalId?: string;
         payload: Record<string, unknown>;
         headers?: Record<string, string>;
+        startedAt?: Date;
       },
     ) => {
       return db
@@ -749,13 +763,50 @@ export function pluginRegistryService(db: Db) {
           pluginId,
           webhookKey,
           companyId,
-          externalId: input.externalId,
+          externalId: normalizeExternalId(input.externalId),
           payload: input.payload,
           headers: input.headers ?? {},
           status: "pending",
+          startedAt: input.startedAt,
         })
         .returning()
         .then((rows) => rows[0]);
+    },
+
+    /**
+     * Backfill a missing webhook delivery external ID from `payload.data.id`.
+     * The value is already stored in the delivery row and is not secret data.
+     */
+    backfillWebhookDeliveryExternalId: async (deliveryId: string) => {
+      const delivery = await db
+        .select()
+        .from(pluginWebhookDeliveries)
+        .where(eq(pluginWebhookDeliveries.id, deliveryId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!delivery) return null;
+
+      const currentExternalId = normalizeExternalId(delivery.externalId);
+      if (currentExternalId) {
+        return delivery.externalId === currentExternalId
+          ? delivery
+          : db
+              .update(pluginWebhookDeliveries)
+              .set({ externalId: currentExternalId })
+              .where(eq(pluginWebhookDeliveries.id, deliveryId))
+              .returning()
+              .then((rows) => rows[0] ?? delivery);
+      }
+
+      const derivedExternalId = extractPayloadExternalId(delivery.payload);
+      if (!derivedExternalId) return delivery;
+
+      return db
+        .update(pluginWebhookDeliveries)
+        .set({ externalId: derivedExternalId })
+        .where(eq(pluginWebhookDeliveries.id, deliveryId))
+        .returning()
+        .then((rows) => rows[0] ?? delivery);
     },
 
     /**
