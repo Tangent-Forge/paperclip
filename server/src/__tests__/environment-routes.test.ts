@@ -2684,6 +2684,65 @@ describe("environment routes", () => {
     expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
   });
 
+  it("commits a non-secret config change while retaining one top-level secret binding", async () => {
+    const secretId = "44444444-4444-4444-4444-444444444444";
+    const existing = {
+      ...createEnvironment(),
+      id: "env-sandbox-top-level-ref",
+      name: "Daytona",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: secretId,
+        runtime: { region: "old" },
+      },
+    };
+    const updated = {
+      ...existing,
+      config: { ...existing.config, runtime: { region: "new" } },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(existing);
+    mockEnvironmentService.update.mockResolvedValue(updated);
+    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ config }: { config: Record<string, unknown> }) => ({
+      normalizedConfig: { ...config },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            apiKey: { type: "string", format: "secret-ref" },
+            runtime: { type: "object" },
+          },
+        },
+      },
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager: {} });
+
+    const res = await request(app)
+      .patch("/api/environments/env-sandbox-top-level-ref?companyId=company-1")
+      .send({ config: { runtime: { region: "new" } } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.config).toMatchObject({
+      apiKey: secretId,
+      runtime: { region: "new" },
+    });
+    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
+      { targetType: "environment", targetId: "env-sandbox-top-level-ref" },
+      [{ secretId, configPath: "apiKey", versionSelector: "latest" }],
+      { db: routeDbTx },
+    );
+  });
+
   it("fails the whole save when a referenced secret cannot be bound", async () => {
     const existing = {
       ...createEnvironment(),

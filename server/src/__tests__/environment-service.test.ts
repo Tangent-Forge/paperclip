@@ -118,6 +118,33 @@ describeEmbeddedPostgres("environmentService leases", () => {
     return { companyId, agentId, environmentId, runId };
   }
 
+  it("persists an environment update across a fresh service reload", async () => {
+    const { environmentId } = await seedEnvironment();
+
+    const updated = await svc.update(environmentId, {
+      description: "Updated by the environment persistence fixture",
+      config: {
+        host: "fixture.example.test",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip/updated",
+      },
+    });
+
+    expect(updated).toMatchObject({
+      id: environmentId,
+      description: "Updated by the environment persistence fixture",
+      config: { port: 2222, remoteWorkspacePath: "/srv/paperclip/updated" },
+    });
+
+    const reloadedService = environmentService(db);
+    await expect(reloadedService.getById(environmentId)).resolves.toMatchObject({
+      id: environmentId,
+      description: "Updated by the environment persistence fixture",
+      config: { port: 2222, remoteWorkspacePath: "/srv/paperclip/updated" },
+    });
+  });
+
   async function seedCompany(name = "Acme") {
     const companyId = randomUUID();
     await db.insert(companies).values({
