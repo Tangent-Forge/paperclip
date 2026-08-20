@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_ROUTINE_VARIABLE_NAMES,
+  buildRoutineVariableContext,
   extractRoutineVariableNames,
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,
@@ -94,6 +95,32 @@ describe("routine variable helpers", () => {
     expect(values.timestamp).toContain(year);
     expect(values.timestamp).toMatch(/\d{1,2}:\d{2}\s?(AM|PM)/);
     expect(values.timestamp).toContain("UTC");
+  });
+
+  it("buildRoutineVariableContext keeps only allowlisted webhook fields while preserving built-in precedence", () => {
+    const values = buildRoutineVariableContext({
+      source: "webhook",
+      payload: {
+        from: "alerts@example.com",
+        subject: "Build failed",
+        body_text: "Build failed in CI",
+        body_html: "<p>ignored</p>",
+        date: "payload-date",
+        to: "ingest@example.com",
+        variables: { ignored: true },
+      },
+      automaticVariables: { workspaceBranch: "pap-1234" },
+      resolvedVariables: { subject: "Build failed" },
+    });
+
+    expect(values.from).toBe("alerts@example.com");
+    expect(values.subject).toBe("Build failed");
+    expect(values.body_text).toBe("Build failed in CI");
+    expect(values.workspaceBranch).toBe("pap-1234");
+    expect(values.date).toBe(new Date().toISOString().slice(0, 10));
+    expect(values).not.toHaveProperty("body_html");
+    expect(values).not.toHaveProperty("to");
+    expect(values).not.toHaveProperty("variables");
   });
 
   it("excludes built-in variables from syncRoutineVariablesWithTemplate", () => {
