@@ -123,12 +123,13 @@ export function buildRoutineVariableContext(input: {
   automaticVariables?: Record<string, string | number | boolean>;
   resolvedVariables?: Record<string, string | number | boolean>;
 }): Record<string, unknown> {
+  const payload = input.payload;
   const webhookVariables =
-    input.source === "webhook" && isPlainRecord(input.payload)
+    input.source === "webhook" && isPlainRecord(payload)
       ? Object.fromEntries(
           WEBHOOK_ROUTINE_VARIABLE_NAMES
-            .filter((key) => Object.prototype.hasOwnProperty.call(input.payload, key))
-            .map((key) => [key, input.payload[key]]),
+            .filter((key) => Object.prototype.hasOwnProperty.call(payload, key))
+            .map((key) => [key, payload[key]]),
         )
       : {};
 
