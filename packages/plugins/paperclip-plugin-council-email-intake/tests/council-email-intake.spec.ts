@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { ORIGIN_KIND_EMAIL } from "../src/constants.js";
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { ORIGIN_KIND_EMAIL, WEBHOOK_KEYS } from "../src/constants.js";
 import {
   extractEmailMessages,
   importEmailMessage,
@@ -11,6 +12,8 @@ import {
   type CouncilEmailMessage,
   type IntakeHost,
 } from "../src/council-email-intake.js";
+import manifest from "../src/manifest.js";
+import plugin from "../src/worker.js";
 
 type IssueRecord = {
   id: string;
@@ -22,6 +25,8 @@ type IssueRecord = {
   originKind: string | null;
   originId: string | null;
 };
+
+const secretRef = (secretId: string) => ({ type: "secret_ref" as const, secretId, version: "latest" as const });
 
 function email(overrides: Partial<CouncilEmailMessage> = {}): CouncilEmailMessage {
   return {
@@ -48,7 +53,7 @@ function fakeHost() {
   const runs: any[] = [];
   const host: IntakeHost = {
     db: {
-      namespace: "plugin_council_email_intake_861efcc900",
+      namespace: "plugin_council_email_intake_f6365ccdd0",
       async query(sql: string, params: unknown[] = []) {
         if (sql.includes("INSERT INTO") && sql.includes("email_links")) {
           const [id, companyId, sourceMessageId, sourceThreadId, subject, sender, receivedAt, metadata] = params as string[];
@@ -176,5 +181,72 @@ describe("council email intake", () => {
     expect(disabled).toMatchObject({ status: "skipped", disabled: true });
     expect(filtered).toBe("not_candidate");
     expect(issues).toHaveLength(0);
+  });
+
+  it("scopes webhook config and signing-secret reads without cross-company reuse", async () => {
+    await plugin.definition.onShutdown?.();
+    const configs = new Map([
+      ["company-a", { enabled: true, companyId: "company-a", gmailWebhookSigningSecretRef: secretRef("gmail-a") }],
+      ["company-b", { enabled: true, companyId: "company-b", gmailWebhookSigningSecretRef: secretRef("gmail-b") }],
+    ]);
+    const harness = createTestHarness({ manifest });
+    const configGet = vi.fn(async (companyId?: string) => ({ ...configs.get(String(companyId))! }));
+    const secretResolve = vi.fn(async (_ref: unknown, options?: { companyId?: string }) => `signing-${options?.companyId}`);
+    harness.ctx.config.get = configGet;
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await plugin.definition.onConfigChanged?.(configs.get("company-a")!, { companyId: "company-a" });
+      await plugin.definition.onConfigChanged?.(configs.get("company-b")!, { companyId: "company-b" });
+
+      for (const companyId of ["company-a", "company-b"]) {
+        const rawBody = JSON.stringify({ companyId, payload: { messages: [] } });
+        const signature = createHmac("sha256", `signing-${companyId}`).update(rawBody).digest("hex");
+        await plugin.definition.onWebhook?.({
+          endpointKey: WEBHOOK_KEYS.gmailRelay,
+          companyId,
+          rawBody,
+          parsedBody: { companyId, payload: { messages: [] } },
+          headers: { "x-gmail-relay-signature": `sha256=${signature}` },
+        } as any);
+      }
+
+      expect(configGet.mock.calls.map(([companyId]) => companyId)).toEqual(["company-a", "company-b"]);
+      expect(secretResolve.mock.calls.map(([, options]) => options)).toEqual([
+        { companyId: "company-a", configPath: "gmailWebhookSigningSecretRef" },
+        { companyId: "company-b", configPath: "gmailWebhookSigningSecretRef" },
+      ]);
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("fails Council webhooks closed when company scope is missing or unconfigured", async () => {
+    await plugin.definition.onShutdown?.();
+    const config = { enabled: false, companyId: "company-a" };
+    const harness = createTestHarness({ manifest, config });
+    const configGet = vi.spyOn(harness.ctx.config, "get");
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await plugin.definition.onConfigChanged?.(config, { companyId: "company-a" });
+      await expect(plugin.definition.onWebhook?.({
+        endpointKey: WEBHOOK_KEYS.gmailRelay,
+        rawBody: "{}",
+        parsedBody: {},
+        headers: {},
+      } as any)).rejects.toThrow(/explicit companyId/);
+      await expect(plugin.definition.onWebhook?.({
+        endpointKey: WEBHOOK_KEYS.gmailRelay,
+        companyId: "company-b",
+        rawBody: JSON.stringify({ companyId: "company-b" }),
+        parsedBody: { companyId: "company-b" },
+        headers: {},
+      } as any)).rejects.toThrow(/not configured/);
+      expect(configGet).not.toHaveBeenCalled();
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
   });
 });

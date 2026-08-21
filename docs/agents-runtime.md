@@ -39,7 +39,8 @@ Built-in adapters:
 - `opencode_local`: runs your local `opencode` CLI
 - `cursor`: runs Cursor in background mode
 - `pi_local`: runs an embedded Pi agent locally
-- `hermes_local`: runs your local `hermes` CLI (`hermes-paperclip-adapter`)
+- `hermes_local`: starts your local `hermes` CLI through `@paperclipai/hermes-paperclip-adapter`
+- `hermes_gateway`: calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway`
 - `openclaw_gateway`: connects to an OpenClaw gateway endpoint
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
@@ -48,7 +49,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine.
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. For `hermes_gateway`, Paperclip assumes the Hermes API server is already running, reachable from the Paperclip server, and configured with an API key. The older `@paperclipai/adapter-hermes-gateway` npm package is only a deprecated compatibility shim; the adapter type remains `hermes_gateway`.
 
 ## 3.2 Runtime behavior
 
@@ -65,7 +66,7 @@ In agent runtime settings, configure heartbeat policy:
 For local adapters, set:
 
 - `cwd` (working directory)
-- `timeoutSec` (max runtime per heartbeat)
+- `timeoutSec` (max runtime per heartbeat; `0` uses the target default — no adapter timeout on local/SSH, a 4-hour backstop on sandbox targets — and a negative value disables the adapter timeout everywhere, including sandboxes)
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
@@ -140,34 +141,6 @@ If the connection drops, the UI reconnects automatically.
 3. Monitor errors + cancel quickly when needed
 4. Reset sessions when drift appears
 
-## 7.4 Cloud-to-local handoff proof
-
-Use Paperclip issues as the handoff bus when a cloud operator needs local execution without receiving local secrets. The cloud side creates a normal issue assigned to a local adapter agent (`codex_local` or `claude_local`), and Paperclip's assignment wakeup starts the local heartbeat.
-
-The proof helper creates a structured, inert issue:
-
-```sh
-pnpm paperclipai cloud handoff-proof \
-  --company-id <company-id> \
-  --assignee-agent-id <local-agent-id> \
-  --repo /path/or/repo-label \
-  --workspace /path/to/local/workspace \
-  --required-secret-names OPENAI_API_KEY,GITHUB_TOKEN \
-  --callback-issue-id <issue-id-or-identifier>
-```
-
-The generated issue description includes a `paperclip.cloudLocalHandoffProof.v1` JSON payload with:
-
-- `command`: inert local command to run
-- `repo` / `workspace`: intended local workspace context
-- `requiredLocalSecretNames`: secret names only, never values
-- `expectedOutputOrArtifact`: what the local agent should comment or attach
-- `callback`: same issue thread or an explicit issue id/identifier
-
-For workspace routing, pass `--execution-workspace-id` to reuse an existing Paperclip execution workspace, or `--inherit-execution-workspace-from-issue-id` to reuse another issue's workspace context. When the local adapter wakes, it should verify `PAPERCLIP_WORKSPACE_SOURCE` and `PWD`, run the inert command, then comment the command, cwd, exit code, and trimmed output back on the issue. If cross-host sync is needed, local adapters should use the existing remote-managed runtime bridge rather than a separate runner control bus.
-
-Do not expose local secret values to cloud-created handoff issues. The cloud side may reference required secret names so the local adapter can verify configuration on the local host. A self-hosted GitHub runner can be documented as a fallback, but the primary path is Paperclip issue assignment plus local adapter execution.
-
 ## 8. Troubleshooting
 
 If runs fail repeatedly:
@@ -205,7 +178,7 @@ Start with least privilege where possible, and avoid exposing secrets in broad r
 
 ## 10. Minimal setup checklist
 
-1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
+1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `hermes_gateway`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.
 2. Set `cwd` to the target workspace (for local adapters).
 3. Optionally add a prompt template (`promptTemplate`) or use the managed instructions bundle.
 4. Configure heartbeat policy (timer and/or assignment wakeups).

@@ -1,17 +1,11 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type {
   Environment,
   EnvironmentLease,
   ExecutionWorkspaceConfig,
-  ExecutionWorkspace,
-  ProjectExecutionWorkspacePolicy,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
 } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
-
-const execFileAsync = promisify(execFile);
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -27,257 +21,45 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function normalizeGithubRepoUrl(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const httpsMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return `github.com/${httpsMatch[1].toLowerCase()}/${httpsMatch[2].toLowerCase()}`;
-  }
-  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return `github.com/${sshMatch[1].toLowerCase()}/${sshMatch[2].toLowerCase()}`;
-  }
-  return null;
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(readString).filter((entry): entry is string => entry !== null)
+    : [];
 }
 
-function stripRepoSuffix(value: string): string {
-  return value.replace(/\/$/, "").replace(/\.git$/, "");
+function readPathAliases(value: unknown): Array<{ path: string; target: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = parseObject(entry);
+    const aliasPath = readString(parsed.path);
+    const target = readString(parsed.target);
+    return aliasPath && target ? [{ path: aliasPath, target }] : [];
+  });
 }
 
-function normalizeRepoIdentity(value: string | null | undefined): string | null {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed) return null;
-
-  const github = normalizeGithubRepoUrl(trimmed);
-  if (github) return github;
-
-  try {
-    const parsed = new URL(trimmed);
-    const repoPath = stripRepoSuffix(parsed.pathname.replace(/^\//, ""));
-    if (!parsed.hostname || !repoPath) return stripRepoSuffix(trimmed);
-    const authority = `${parsed.hostname.toLowerCase()}${parsed.port ? `:${parsed.port}` : ""}`;
-    return `${authority}/${repoPath}${parsed.search}${parsed.hash}`;
-  } catch {
-    const scpMatch = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
-    if (scpMatch) {
-      return `${scpMatch[1].toLowerCase()}/${stripRepoSuffix(scpMatch[2])}`;
-    }
-    return stripRepoSuffix(trimmed);
-  }
+// Read the additional referenced (mentioned) project sources. Legacy payloads omit the field, so
+// this defaults to an empty array. Each source needs a localPath; entries without one are dropped.
+function readAdditionalSources(
+  value: unknown,
+): NonNullable<WorkspaceRealizationRequest["additionalSources"]> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = parseObject(entry);
+    const localPath = readString(parsed.localPath);
+    if (!localPath) return [];
+    return [
+      {
+        localPath,
+        projectId: readString(parsed.projectId),
+        projectWorkspaceId: readString(parsed.projectWorkspaceId),
+        repoUrl: readString(parsed.repoUrl),
+        repoRef: readString(parsed.repoRef),
+      },
+    ];
+  });
 }
 
-function readPolicyString(policy: Record<string, unknown> | null | undefined, key: string): string | null {
-  return policy && typeof policy[key] === "string" ? readString(policy[key]) : null;
-}
-
-type RepositoryRoutingPolicy = {
-  enforcement: boolean;
-  destinationRepo: string | null;
-  defaultBaseBranch: string | null;
-  owningProjectId: string | null;
-};
-
-export type RepositoryRoutingGuardFailure = {
-  reason: "repository_routing_guard_failed";
-  codeProducing: boolean;
-  governed: boolean;
-  canonicalOwnerRepo: string | null;
-  owningProjectId: string | null;
-  executionWorkspaceId: string | null;
-  mismatches: Array<{ field: string; expected: string | null; actual: string | null }>;
-};
-
-function parseRepositoryRoutingPolicy(projectPolicy: ProjectExecutionWorkspacePolicy | null | undefined): RepositoryRoutingPolicy {
-  const policy = projectPolicy?.pullRequestPolicy && typeof projectPolicy.pullRequestPolicy === "object"
-    ? projectPolicy.pullRequestPolicy as Record<string, unknown>
-    : null;
-  return {
-    enforcement: Boolean(policy && (policy.enforcement === true || policy.enabled === true || policy.enforce === true)),
-    destinationRepo: normalizeRepoIdentity(readPolicyString(policy, "destinationRepo") ?? readPolicyString(policy, "repoUrl") ?? readPolicyString(policy, "repositoryUrl")),
-    defaultBaseBranch: readPolicyString(policy, "defaultBaseBranch"),
-    owningProjectId: readPolicyString(policy, "owningProjectId") ?? readPolicyString(policy, "projectId") ?? null,
-  };
-}
-
-function isCodeProducingRoutedWork(request: WorkspaceRealizationRequest): boolean {
-  return request.source.kind === "project_primary" || request.source.strategy === "git_worktree";
-}
-
-type GitCommandRunner = (args: string[], cwd: string) => Promise<string | null>;
-
-async function runGitCommand(args: string[], cwd: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd });
-    return readString(stdout);
-  } catch {
-    return null;
-  }
-}
-
-export async function inspectLiveLocalGitRouting(
-  cwd: string,
-  runGit: GitCommandRunner = runGitCommand,
-): Promise<{
-  repoRoot: string | null;
-  remoteUrl: string | null;
-  branchName: string | null;
-} | null> {
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], cwd);
-  if (!repoRoot) return null;
-
-  const branchName = await runGit(["branch", "--show-current"], repoRoot);
-  const configuredRemote = branchName
-    ? (await runGit(["config", "--get", `branch.${branchName}.pushRemote`], repoRoot)) ??
-      (await runGit(["config", "--get", "remote.pushDefault"], repoRoot)) ??
-      (await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot))
-    : null;
-  const remoteNames = configuredRemote && configuredRemote !== "."
-    ? [configuredRemote]
-    : (await runGit(["remote"], repoRoot))?.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) ?? [];
-  const remoteName = remoteNames.length === 1 ? remoteNames[0] : null;
-  const remoteUrl = remoteName
-    ? normalizeRepoIdentity(await runGit(["remote", "get-url", remoteName], repoRoot))
-    : null;
-
-  return {
-    repoRoot,
-    remoteUrl,
-    branchName,
-  };
-}
-
-function actualMatchesExpected(expected: string | null, actual: string | null): boolean {
-  return expected !== null && actual === expected;
-}
-
-export async function validateWorkspaceRepositoryRouting(input: {
-  request: WorkspaceRealizationRequest;
-  executionWorkspace: RealizedExecutionWorkspace;
-  projectPolicy?: ProjectExecutionWorkspacePolicy | null;
-  persistedExecutionWorkspace?: ExecutionWorkspace | null;
-  inspectLiveGit?: typeof inspectLiveLocalGitRouting;
-}): Promise<RepositoryRoutingGuardFailure | null> {
-  const mismatches: RepositoryRoutingGuardFailure["mismatches"] = [];
-  const requestRepo = normalizeRepoIdentity(input.request.source.repoUrl);
-  const workspaceRepo = normalizeRepoIdentity(input.executionWorkspace.repoUrl);
-  const persistedRepo = normalizeRepoIdentity(input.persistedExecutionWorkspace?.repoUrl ?? null);
-  const canonicalRepo = requestRepo ?? persistedRepo ?? workspaceRepo;
-  const routingPolicy = parseRepositoryRoutingPolicy(input.projectPolicy);
-  const codeProducing = isCodeProducingRoutedWork(input.request);
-  const routingMetadataDeclared = Boolean(
-    routingPolicy.destinationRepo ||
-    routingPolicy.defaultBaseBranch ||
-    routingPolicy.owningProjectId,
-  );
-  const governed = routingPolicy.enforcement || (
-    input.projectPolicy?.enabled === true && routingMetadataDeclared
-  );
-  const expectedRepo = routingPolicy.destinationRepo;
-  const expectedBaseRef = routingPolicy.defaultBaseBranch;
-  const expectedProjectId = routingPolicy.owningProjectId ?? input.request.source.projectId ?? input.executionWorkspace.projectId ?? input.persistedExecutionWorkspace?.projectId ?? null;
-  const expectedBranchName = input.request.source.branchName ?? input.persistedExecutionWorkspace?.branchName ?? input.executionWorkspace.branchName ?? null;
-
-  if (!governed || !codeProducing) return null;
-
-  const requiredValues = (
-    expected: string | null,
-    entries: Array<{ field: string; actual: string | null }>,
-  ) => {
-    for (const entry of entries) {
-      if (!actualMatchesExpected(expected, entry.actual)) {
-        mismatches.push({ field: entry.field, expected, actual: entry.actual });
-      }
-    }
-  };
-
-  if (!expectedRepo) {
-    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.destinationRepo", expected: null, actual: canonicalRepo });
-  } else {
-    requiredValues(expectedRepo, [
-      { field: "request.source.repoUrl", actual: requestRepo },
-      { field: "executionWorkspace.repoUrl", actual: workspaceRepo },
-      ...(input.persistedExecutionWorkspace
-        ? [{ field: "persistedExecutionWorkspace.repoUrl", actual: persistedRepo }]
-        : []),
-    ]);
-  }
-
-  if (!expectedBaseRef) {
-    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.defaultBaseBranch", expected: null, actual: input.request.source.repoRef ?? null });
-  } else {
-    requiredValues(expectedBaseRef, [
-      { field: "request.source.repoRef", actual: input.request.source.repoRef ?? null },
-      { field: "executionWorkspace.repoRef", actual: input.executionWorkspace.repoRef ?? null },
-      ...(input.persistedExecutionWorkspace
-        ? [{ field: "persistedExecutionWorkspace.baseRef", actual: input.persistedExecutionWorkspace.baseRef ?? null }]
-        : []),
-    ]);
-  }
-
-  if (!routingPolicy.owningProjectId) {
-    mismatches.push({ field: "projectExecutionWorkspacePolicy.pullRequestPolicy.owningProjectId", expected: null, actual: null });
-  } else {
-    requiredValues(routingPolicy.owningProjectId, [
-      { field: "request.source.projectId", actual: input.request.source.projectId ?? null },
-      { field: "executionWorkspace.projectId", actual: input.executionWorkspace.projectId ?? null },
-      ...(input.persistedExecutionWorkspace
-        ? [{ field: "persistedExecutionWorkspace.projectId", actual: input.persistedExecutionWorkspace.projectId ?? null }]
-        : []),
-    ]);
-  }
-
-  if (!expectedBranchName) {
-    mismatches.push({ field: "workspace.branchName", expected: "declared execution branch", actual: null });
-  } else {
-    requiredValues(expectedBranchName, [
-      { field: "request.source.branchName", actual: input.request.source.branchName ?? null },
-      { field: "executionWorkspace.branchName", actual: input.executionWorkspace.branchName ?? null },
-      ...(input.persistedExecutionWorkspace
-        ? [{ field: "persistedExecutionWorkspace.branchName", actual: input.persistedExecutionWorkspace.branchName ?? null }]
-        : []),
-    ]);
-  }
-
-  const liveGit = codeProducing
-    ? await (input.inspectLiveGit ?? inspectLiveLocalGitRouting)(input.executionWorkspace.cwd)
-    : null;
-  if (codeProducing) {
-    if (!liveGit) {
-      if (governed) {
-        mismatches.push({ field: "liveGit", expected: "inspectable local git checkout", actual: null });
-      }
-    } else {
-      if (!liveGit.remoteUrl && governed) {
-        mismatches.push({ field: "liveGit.remoteUrl", expected: expectedRepo ?? requestRepo, actual: null });
-      } else if (requestRepo && liveGit.remoteUrl && requestRepo !== liveGit.remoteUrl) {
-        mismatches.push({ field: "liveGit.remoteUrl", expected: requestRepo, actual: liveGit.remoteUrl });
-      }
-      if (expectedRepo && liveGit.remoteUrl && expectedRepo !== liveGit.remoteUrl) {
-        mismatches.push({ field: "liveGit.remoteUrl", expected: expectedRepo, actual: liveGit.remoteUrl });
-      }
-      if (!liveGit.branchName && governed) {
-        mismatches.push({ field: "liveGit.branchName", expected: expectedBranchName, actual: null });
-      } else if (expectedBranchName && liveGit.branchName && expectedBranchName !== liveGit.branchName) {
-        mismatches.push({ field: "liveGit.branchName", expected: expectedBranchName, actual: liveGit.branchName });
-      }
-    }
-  }
-
-  if (!governed && mismatches.length === 0) return null;
-  if (mismatches.length === 0) return null;
-  return {
-    reason: "repository_routing_guard_failed",
-    codeProducing,
-    governed,
-    canonicalOwnerRepo: canonicalRepo,
-    owningProjectId: expectedProjectId,
-    executionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
-    mismatches,
-  };
-}
-
-function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
+export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
   const parsed = parseObject(value);
   if (parsed.version !== 1) return null;
   const source = parseObject(parsed.source);
@@ -300,7 +82,7 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
     requestedMode: readString(parsed.requestedMode),
     source: {
       kind:
-        source.kind === "task_session" || source.kind === "agent_home" || source.kind === "agent_adapter_cwd"
+        source.kind === "task_session" || source.kind === "agent_home"
           ? source.kind
           : "project_primary",
       localPath,
@@ -312,8 +94,10 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
       branchName: readString(source.branchName),
       worktreePath: readString(source.worktreePath),
     },
+    additionalSources: readAdditionalSources(parsed.additionalSources),
     runtimeOverlay: {
       provisionCommand: readString(runtimeOverlay.provisionCommand),
+      runtimeProvisionCommand: readString(runtimeOverlay.runtimeProvisionCommand),
       teardownCommand: readString(runtimeOverlay.teardownCommand),
       cleanupCommand: readString(runtimeOverlay.cleanupCommand),
       workspaceRuntime: Object.keys(parseObject(runtimeOverlay.workspaceRuntime)).length > 0
@@ -354,8 +138,22 @@ export function buildWorkspaceRealizationRequest(input: {
       branchName: input.workspace.branchName,
       worktreePath: input.workspace.worktreePath,
     },
+    // The additional (referenced) sources carry the read-only referenced-project workspaces. Run
+    // preparation resolves them for a local execution target only and exposes each local path to
+    // the agent through the workspace-hints channel (`PAPERCLIP_WORKSPACES_JSON`). A remote target
+    // never receives a referenced source: run preparation skips referenced-project resolution on a
+    // remote target, so this array is empty there. The `sync` block below therefore realizes only
+    // the anchor source; a remote-transport sync of the referenced trees is not implemented yet.
+    additionalSources: (input.workspace.additionalWorkspaces ?? []).map((additional) => ({
+      localPath: additional.cwd,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.workspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     runtimeOverlay: {
       provisionCommand: input.workspaceConfig?.provisionCommand ?? null,
+      runtimeProvisionCommand: input.workspaceConfig?.runtimeProvisionCommand ?? null,
       teardownCommand: input.workspaceConfig?.teardownCommand ?? null,
       cleanupCommand: input.workspaceConfig?.cleanupCommand ?? null,
       workspaceRuntime: input.workspaceConfig?.workspaceRuntime ?? null,
@@ -385,9 +183,23 @@ export function buildWorkspaceRealizationRecord(input: {
   const port = readNumber(leaseMetadata.port);
   const username = readString(leaseMetadata.username);
   const sandboxId = readString(leaseMetadata.sandboxId) ?? readString(providerMetadata.sandboxId);
+  const realizationMetadata = {
+    ...parseObject(leaseMetadata.workspaceRealization),
+    ...parseObject(providerMetadata.workspaceRealization),
+    ...providerMetadata,
+  };
+  const mode = realizationMetadata.mode === "in_place" || realizationMetadata.realizationMode === "in_place"
+    ? "in_place" as const
+    : "copy" as const;
+  const authoritativeRoot =
+    readString(realizationMetadata.authoritativeRoot) ??
+    (mode === "in_place" ? remotePath : null) ??
+    input.request.source.localPath;
+  const pathAliases = readPathAliases(realizationMetadata.pathAliases ?? realizationMetadata.workspaceAliases);
+  const outboundRestorePaths = readStringArray(realizationMetadata.outboundRestorePaths);
 
   const sync = (() => {
-    if (transport === "local") {
+    if (mode === "in_place" || transport === "local") {
       return {
         strategy: "none" as const,
         prepare: "Use the realized local execution workspace directly.",
@@ -430,6 +242,10 @@ export function buildWorkspaceRealizationRecord(input: {
 
   return {
     version: 1,
+    mode,
+    authoritativeRoot,
+    pathAliases,
+    outboundRestorePaths,
     transport,
     provider,
     environmentId: input.environment.id,
@@ -446,6 +262,13 @@ export function buildWorkspaceRealizationRecord(input: {
       branchName: input.request.source.branchName,
       worktreePath: input.request.source.worktreePath,
     },
+    additional: (input.request.additionalSources ?? []).map((additional) => ({
+      path: additional.localPath,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.projectWorkspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     remote: {
       path: remotePath,
       ...(host ? { host } : {}),
@@ -477,6 +300,14 @@ export function buildWorkspaceRealizationRecord(input: {
   };
 }
 
+/**
+ * Build the workspace-realization record from the run request. The server owns the record;
+ * a driver realize handler (built-in or plugin) returns only a realized cwd and provider
+ * metadata. Every `realizeWorkspace` exit must route through this helper, so the record carries
+ * the referenced (mentioned) project sources in `additional`. The adapter reads `additional` to
+ * stage each referenced tree into the target; a realize exit that returns a raw provider result
+ * without this helper drops the mentioned projects.
+ */
 export function buildWorkspaceRealizationRecordFromDriverInput(input: {
   environment: Environment;
   lease: EnvironmentLease;

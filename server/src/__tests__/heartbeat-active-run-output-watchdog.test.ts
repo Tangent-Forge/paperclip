@@ -121,7 +121,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  }, 30_000);
+  });
 
   async function seedRunningRun(opts: {
     now: Date;
@@ -147,6 +147,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       id: companyId,
       name: "Watchdog Co",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values([

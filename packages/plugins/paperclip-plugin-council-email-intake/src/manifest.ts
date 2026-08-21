@@ -40,7 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
       allowedSenderDomains: { type: "array", items: { type: "string" }, default: [] },
       allowedRecipientPatterns: { type: "array", items: { type: "string" }, default: ["council"] },
       subjectIncludePatterns: { type: "array", items: { type: "string" }, default: [] },
-      gmailWebhookSigningSecretRef: { type: "string", description: "Secret reference used to verify Gmail relay HMAC signatures." },
+      gmailWebhookSigningSecretRef: { type: "string", format: "secret-ref", description: "Secret reference used to verify Gmail relay HMAC signatures." },
       maxMessagesPerWebhook: { type: "integer", minimum: 1, maximum: 100, default: 25 }
     }
   },

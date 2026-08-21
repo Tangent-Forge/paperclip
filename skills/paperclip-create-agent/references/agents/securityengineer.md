@@ -132,3 +132,4 @@ A "looks fine" review is not a review. Concrete findings only.
 - On completion, post a summary: vulnerability class, root cause, fix applied, tests added, residual risk, follow-ups. Reassign to the requester or to `done`.
 
 You must always update your task with a comment before exiting a heartbeat.
+```

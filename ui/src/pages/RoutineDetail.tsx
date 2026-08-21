@@ -19,6 +19,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
@@ -43,6 +44,7 @@ import {
   ROUTINE_SECTION_KEYS,
   SECTION_FIELD_KEYS,
   RoutineDetailContext,
+  createDefaultNewTrigger,
   type RoutineDetailContextValue,
   type RoutineEditDraft,
   type RoutineSectionKey,
@@ -67,6 +69,18 @@ import type {
 } from "@paperclipai/shared";
 
 const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
+
+export function buildRoutineProjectOptions(
+  projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
+): InlineEntityOption[] {
+  return projects
+    .filter((project) => !project.archivedAt)
+    .map((project) => ({
+      id: project.id,
+      label: project.name,
+      searchText: project.description ?? "",
+    }));
+}
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
@@ -154,12 +168,7 @@ export function RoutineDetail() {
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
-  const [newTrigger, setNewTrigger] = useState({
-    kind: "schedule",
-    cronExpression: "0 10 * * *",
-    signingMode: "bearer",
-    replayWindowSec: "300",
-  });
+  const [newTrigger, setNewTrigger] = useState(createDefaultNewTrigger);
   const [editDraft, setEditDraft] = useState<RoutineEditDraft>({
     title: "",
     description: "",
@@ -168,6 +177,8 @@ export function RoutineDetail() {
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    activityGatePolicy: "always",
+    activityGateScope: "company",
     variables: [],
     env: null,
   });
@@ -224,8 +235,8 @@ export function RoutineDetail() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -260,6 +271,8 @@ export function RoutineDetail() {
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
+            activityGatePolicy: routine.activityGatePolicy,
+            activityGateScope: routine.activityGateScope,
             variables: routine.variables,
             env: routine.env ?? null,
           }
@@ -287,6 +300,12 @@ export function RoutineDetail() {
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
       result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+    }
+    if (editDraft.activityGatePolicy !== routineDefaults.activityGatePolicy) {
+      result.push({ key: "activityGatePolicy", label: "the advanced run policy" });
+    }
+    if (editDraft.activityGateScope !== routineDefaults.activityGateScope) {
+      result.push({ key: "activityGateScope", label: "the activity gate scope" });
     }
     if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
       result.push({ key: "variables", label: "the variables" });
@@ -351,7 +370,7 @@ export function RoutineDetail() {
   const copySecretValue = useCallback(
     async (label: string, value: string) => {
       try {
-        await navigator.clipboard.writeText(value);
+        await copyTextToClipboard(value);
         pushToast({ title: `${label} copied`, tone: "success" });
       } catch (copyError) {
         pushToast({
@@ -571,16 +590,15 @@ export function RoutineDetail() {
     [agents, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      (projects ?? []).map((project) => ({
-        id: project.id,
-        label: project.name,
-        searchText: project.description ?? "",
-      })),
+    () => buildRoutineProjectOptions(projects ?? []),
     [projects],
   );
   const mentionOptions = useMemo<MentionOption[]>(
-    () => buildMarkdownMentionOptions({ agents, projects, members: companyMembers?.users }),
+    () => buildMarkdownMentionOptions({
+      agents,
+      projects: (projects ?? []).filter((project) => !project.archivedAt),
+      members: companyMembers?.users,
+    }),
     [agents, companyMembers?.users, projects],
   );
 
@@ -645,6 +663,8 @@ export function RoutineDetail() {
         priority: response.routine.priority,
         concurrencyPolicy: response.routine.concurrencyPolicy,
         catchUpPolicy: response.routine.catchUpPolicy,
+        activityGatePolicy: response.routine.activityGatePolicy,
+        activityGateScope: response.routine.activityGateScope,
         variables: response.routine.variables as RoutineVariable[],
         env: (response.routine.env ?? null) as RoutineEnvConfig | null,
       });
@@ -781,8 +801,11 @@ export function RoutineDetail() {
         Skip to section
       </a>
 
-      <div className="-m-4 flex min-h-full flex-col md:-m-6">
-        {/* Slim page header — scrolls with the page (not sticky) */}
+      {/* Bounded to the main scroll area's height so the header + sub-nav stay
+          fixed and only the section content below scrolls (no page-level
+          scroll, no competing sticky points). */}
+      <div className="-m-4 flex h-full min-h-0 flex-col overflow-hidden md:-m-6">
+        {/* Slim page header — fixed at the top of the routine layout. */}
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <textarea
@@ -811,7 +834,7 @@ export function RoutineDetail() {
               <Badge variant="outline" className="hidden shrink-0 gap-1.5 text-xs text-muted-foreground sm:inline-flex">
                 <Sparkles className="h-3 w-3" />
                 {routine.managedByPlugin.pluginDisplayName}
-                <span className="font-mono text-[10px]">{routine.managedByPlugin.resourceKey}</span>
+                <span className="font-mono text-(length:--text-nano)">{routine.managedByPlugin.resourceKey}</span>
               </Badge>
             ) : null}
           </div>
@@ -849,7 +872,7 @@ export function RoutineDetail() {
           <main
             id="routine-section"
             role="main"
-            className="min-w-0 flex-1 px-4 pb-6 pt-10 md:px-8"
+            className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-10 md:px-8"
           >
             <section
               aria-labelledby="routine-section-title"

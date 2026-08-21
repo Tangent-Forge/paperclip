@@ -137,8 +137,8 @@ interface ZonedParts {
   weekday: number;
 }
 
-function createZonedMinuteFormatter(timeZone: string): Intl.DateTimeFormat {
-  return new Intl.DateTimeFormat("en-US", {
+function getZonedMinuteParts(date: Date, timeZone: string): ZonedParts {
+  const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "2-digit",
@@ -148,9 +148,6 @@ function createZonedMinuteFormatter(timeZone: string): Intl.DateTimeFormat {
     weekday: "short",
     hourCycle: "h23",
   });
-}
-
-function getZonedMinuteParts(date: Date, timeZone: string, formatter: Intl.DateTimeFormat): ZonedParts {
   const map: Record<string, string> = {};
   for (const part of formatter.formatToParts(date)) {
     if (part.type !== "literal") map[part.type] = part.value;
@@ -201,18 +198,12 @@ export function nextCronFires(
   cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
 
   const fires: Date[] = [];
-  let formatter: Intl.DateTimeFormat;
-  try {
-    formatter = createZonedMinuteFormatter(timeZone);
-  } catch {
-    return fires;
-  }
   // Preview-only bound: cap sparse or impossible schedules before they can stall the UI.
   const maxIterations = 2 * 366 * 24 * 60;
   for (let i = 0; i < maxIterations && fires.length < count; i++) {
     let parts: ZonedParts;
     try {
-      parts = getZonedMinuteParts(cursor, timeZone, formatter);
+      parts = getZonedMinuteParts(cursor, timeZone);
     } catch {
       return fires;
     }

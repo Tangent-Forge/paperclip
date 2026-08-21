@@ -1,4 +1,3 @@
-import path from "node:path";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
@@ -11,6 +10,10 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { isSafeRelativeWritePath } from "../execution-constraints.js";
+
+function isAbsoluteWorkspacePath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(value);
+}
 
 export const executionConstraintsSchema = z.object({
   profile: z.enum(["canary_strict"]).optional(),
@@ -31,6 +34,7 @@ export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
   canAssignTasks: z.boolean().optional(),
   canCreateTasks: z.boolean().optional(),
+  canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
@@ -78,25 +82,16 @@ const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value
     });
     return;
   }
-
   const constraints = parsedConstraints.data;
   for (const entry of constraints.writeAllowlist) {
     if (!isSafeRelativeWritePath(entry)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "executionConstraints.writeAllowlist entries must be relative POSIX paths without ..",
-        path: ["executionConstraints", "writeAllowlist"],
-      });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "executionConstraints.writeAllowlist entries must be relative POSIX paths without ..", path: ["executionConstraints", "writeAllowlist"] });
       break;
     }
   }
   for (const entry of constraints.workspaceAllowlist) {
-    if (!path.isAbsolute(entry)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "executionConstraints.workspaceAllowlist entries must be absolute paths",
-        path: ["executionConstraints", "workspaceAllowlist"],
-      });
+    if (!isAbsoluteWorkspacePath(entry)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "executionConstraints.workspaceAllowlist entries must be absolute paths", path: ["executionConstraints", "workspaceAllowlist"] });
       break;
     }
   }
@@ -104,59 +99,38 @@ const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "search must be false when network is denied", path: ["search"] });
   }
   if (constraints.network === "deny" && constraints.sandboxMode === "danger-full-access") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "sandboxMode cannot be danger-full-access when network is denied",
-      path: ["executionConstraints", "sandboxMode"],
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "sandboxMode cannot be danger-full-access when network is denied", path: ["executionConstraints", "sandboxMode"] });
   }
   if (
     (constraints.profile === "canary_strict" || constraints.network === "deny" || constraints.gitMutation === "deny") &&
     (value.dangerouslyBypassApprovalsAndSandbox === true || value.dangerouslyBypassSandbox === true)
   ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "bypass flags must be false when canary restrictions are active",
-      path: ["dangerouslyBypassApprovalsAndSandbox"],
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "bypass flags must be false when canary restrictions are active", path: ["dangerouslyBypassApprovalsAndSandbox"] });
   }
   if (constraints.forbidSecretEnvBindings && envValue && typeof envValue === "object" && !Array.isArray(envValue)) {
     for (const [key, envBinding] of Object.entries(envValue as Record<string, unknown>)) {
       const keyLooksSecret = /(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|API_KEY)/i.test(key);
       const stringBinding = typeof envBinding === "string" ? envBinding : "";
-      const plainEmptyOpenAi =
-        key === "OPENAI_API_KEY" &&
-        (stringBinding === "" ||
-          (typeof envBinding === "object" &&
-            envBinding !== null &&
-            (envBinding as { type?: string; value?: string }).type === "plain" &&
-            (envBinding as { value?: string }).value === ""));
-      const isSecretRef =
-        typeof envBinding === "object" &&
-        envBinding !== null &&
-        (envBinding as { type?: string }).type === "secret_ref";
+      const plainEmptyOpenAi = key === "OPENAI_API_KEY" &&
+        (stringBinding === "" || (typeof envBinding === "object" && envBinding !== null && (envBinding as { type?: string; value?: string }).type === "plain" && (envBinding as { value?: string }).value === ""));
+      const isSecretRef = typeof envBinding === "object" && envBinding !== null && (envBinding as { type?: string }).type === "secret_ref";
       if ((keyLooksSecret && !plainEmptyOpenAi) || isSecretRef) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "secret env bindings are forbidden under execution constraints",
-          path: ["env", key],
-        });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "secret env bindings are forbidden under execution constraints", path: ["env", key] });
         break;
       }
     }
   }
   if (constraints.profile === "canary_strict") {
-    const issues: Array<[string[], string]> = [];
-    if (constraints.inheritProcessEnv !== false) issues.push([["executionConstraints", "inheritProcessEnv"], "inheritProcessEnv must be false"]);
-    if (constraints.forbidSecretEnvBindings !== true) issues.push([["executionConstraints", "forbidSecretEnvBindings"], "forbidSecretEnvBindings must be true"]);
-    if (constraints.network !== "deny") issues.push([["executionConstraints", "network"], "network must be deny"]);
-    if (constraints.gitMutation !== "deny") issues.push([["executionConstraints", "gitMutation"], "gitMutation must be deny"]);
-    if (constraints.canCreateTasks !== false) issues.push([["executionConstraints", "canCreateTasks"], "canCreateTasks must be false"]);
-    if (constraints.canAssignTasks !== false) issues.push([["executionConstraints", "canAssignTasks"], "canAssignTasks must be false"]);
-    if (constraints.canCreateAgents !== false) issues.push([["executionConstraints", "canCreateAgents"], "canCreateAgents must be false"]);
-    for (const [pathParts, message] of issues) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: pathParts });
-    }
+    const checks: Array<[string, boolean]> = [
+      ["inheritProcessEnv must be false", constraints.inheritProcessEnv === false],
+      ["forbidSecretEnvBindings must be true", constraints.forbidSecretEnvBindings === true],
+      ["network must be deny", constraints.network === "deny"],
+      ["gitMutation must be deny", constraints.gitMutation === "deny"],
+      ["canCreateTasks must be false", constraints.canCreateTasks === false],
+      ["canAssignTasks must be false", constraints.canAssignTasks === false],
+      ["canCreateAgents must be false", constraints.canCreateAgents === false],
+    ];
+    for (const [message, ok] of checks) if (!ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: ["executionConstraints"] });
   }
 });
 
@@ -195,9 +169,36 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  // The optional stored-session claim from a completed Claude login session. It
+  // is the non-secret `storedSessionId`; it carries no token. The agent-create
+  // transaction consumes it as the one-time stored-session claim.
+  storedSessionId: z.string().min(1).max(256).optional(),
+  // The optional apply-existing flag. When true, the caller binds the fixed
+  // Claude OAuth token reference to the owner stored value with no new login
+  // round trip. The server permits the no-claim bind only for a user actor and
+  // only when that owner already has a stored value. It carries no token.
+  applyStoredClaudeLogin: z.boolean().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
+
+export const builtInAgentProvisionSchema = z.object({
+  adapterType: agentAdapterTypeSchema.optional(),
+  adapterConfig: adapterConfigSchema.optional(),
+  budgetMonthlyCents: z.number().int().nonnegative().optional(),
+}).strict();
+
+export type BuiltInAgentProvision = z.infer<typeof builtInAgentProvisionSchema>;
+
+export const builtInAgentEmptyMutationSchema = z.object({}).strict().default({});
+
+export type BuiltInAgentEmptyMutation = z.infer<typeof builtInAgentEmptyMutationSchema>;
+
+export const builtInAgentResetSchema = z.object({
+  resources: z.array(z.enum(["agent", "instructions", "skill", "routine"])).optional(),
+}).strict().default({});
+
+export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
 export const createAgentHireSchema = createAgentSchema.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
@@ -225,8 +226,52 @@ export const updateAgentInstructionsPathSchema = z.object({
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
+export const taskBridgeAgentKeyScopeSchema = z.object({
+  kind: z.literal("task_bridge"),
+  projectId: z.string().uuid().optional().nullable(),
+  projectIds: z.array(z.string().uuid()).max(50).optional(),
+  parentIssueId: z.string().uuid().optional().nullable(),
+  parentIssueIds: z.array(z.string().uuid()).max(50).optional(),
+  allowedAssigneeAgentIds: z.array(z.string().uuid()).max(50).optional(),
+}).strict().superRefine((value, ctx) => {
+  const hasProjectBoundary = Boolean(value.projectId) || Boolean(value.projectIds?.length);
+  const hasParentBoundary = Boolean(value.parentIssueId) || Boolean(value.parentIssueIds?.length);
+  if (!hasProjectBoundary && !hasParentBoundary) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "task_bridge keys require at least one project or parent issue boundary",
+      path: ["projectId"],
+    });
+  }
+});
+
+export const standardAgentKeyScopeSchema = z.object({
+  kind: z.literal("standard"),
+}).strict();
+
+export const skillTestAgentKeyScopeSchema = z.object({
+  kind: z.literal("skill_test"),
+  issueId: z.string().uuid(),
+}).strict();
+
+export const agentApiKeyScopeSchema = z.union([
+  standardAgentKeyScopeSchema,
+  taskBridgeAgentKeyScopeSchema,
+  skillTestAgentKeyScopeSchema,
+]);
+
+export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
+export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
+export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
+
+export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
+  const parsed = agentApiKeyScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : { kind: "standard" };
+}
+
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
+  scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;
@@ -273,6 +318,7 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
+  canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),

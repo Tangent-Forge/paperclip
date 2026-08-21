@@ -26,6 +26,7 @@ describe("codex_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
@@ -57,6 +58,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: process.execPath,
           cwd,
           env: { CODEX_HOME: codexHome },
@@ -86,6 +88,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: process.execPath,
           cwd,
           env: { CODEX_HOME: codexHome },
@@ -124,6 +127,7 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
+          engine: "cli",
           command: "codex",
           cwd,
           env: {
@@ -135,69 +139,6 @@ describe("codex_local environment diagnostics", () => {
 
       expect(result.status).toBe("pass");
       expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("prefers a seeded native auth.json over an ambient server-wide OPENAI_API_KEY", async () => {
-    const root = path.join(
-      os.tmpdir(),
-      `paperclip-codex-native-vs-ambient-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    );
-    const codexHome = path.join(root, "codex-home");
-    const binDir = path.join(root, "bin");
-    const cwd = path.join(root, "workspace");
-    const fakeCodex = path.join(binDir, "codex");
-    const marker = "seeded-native-auth-marker";
-
-    // A script standing in for the real `codex` binary: it only reports
-    // success if it can see the auth.json this test seeded into CODEX_HOME.
-    // If the adapter instead wraps it with a synthetic auth.json built from
-    // an ambient OPENAI_API_KEY (the bug this test guards against), the
-    // marker will be absent and the script reports an auth failure instead.
-    const script = [
-      "#!/bin/sh",
-      'if [ -f "$CODEX_HOME/auth.json" ] && grep -q "' + marker + '" "$CODEX_HOME/auth.json"; then',
-      '  echo \'{"type":"thread.started","thread_id":"test-thread"}\'',
-      '  echo \'{"type":"item.completed","item":{"type":"agent_message","text":"hello"}}\'',
-      '  echo \'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}\'',
-      "  exit 0",
-      "else",
-      '  echo \'{"type":"item.completed","item":{"type":"error","message":"unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"}}\' 1>&2',
-      "  exit 1",
-      "fi",
-      "",
-    ].join("\n");
-
-    vi.stubEnv("OPENAI_API_KEY", "ambient-server-wide-key");
-
-    try {
-      await fs.mkdir(codexHome, { recursive: true });
-      await fs.writeFile(
-        path.join(codexHome, "auth.json"),
-        JSON.stringify({ tokens: { access_token: marker }, last_refresh: new Date().toISOString() }),
-      );
-      await fs.mkdir(binDir, { recursive: true });
-      await fs.writeFile(fakeCodex, script, { mode: 0o755 });
-
-      const result = await testEnvironment({
-        companyId: "company-1",
-        adapterType: "codex_local",
-        config: {
-          command: "codex",
-          cwd,
-          env: {
-            CODEX_HOME: codexHome,
-            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          },
-        },
-      });
-
-      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
-      expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
-      expect(result.checks.some((check) => check.code === "codex_hello_probe_auth_required")).toBe(false);
-      expect(result.status).toBe("pass");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

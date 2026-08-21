@@ -80,7 +80,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/sync-now",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "path", param: "companyId" }
+      companyResolution: { from: "body", key: "companyId" }
     },
     {
       routeKey: API_ROUTE_KEYS.status,
@@ -88,7 +88,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/status",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "path", param: "companyId" }
+      companyResolution: { from: "query", key: "companyId" }
     },
     {
       routeKey: API_ROUTE_KEYS.portfolioInventory,
@@ -96,7 +96,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/portfolio-inventory",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "path", param: "companyId" }
+      companyResolution: { from: "query", key: "companyId" }
     },
     {
       routeKey: API_ROUTE_KEYS.reconcileWorkState,
@@ -104,7 +104,7 @@ const manifest: PaperclipPluginManifestV1 = {
       path: "/companies/:companyId/reconcile-work-state",
       auth: "board-or-agent",
       capability: "api.routes.register",
-      companyResolution: { from: "path", param: "companyId" }
+      companyResolution: { from: "body", key: "companyId" }
     },
   ]
 };

@@ -19,22 +19,18 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout base branch (never PR code)
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: master
 
       - name: Dependency Review
-        # Dependency Review is unsupported on forks; keep the gate for the
-        # canonical upstream repository while allowing fork PRs to run the
-        # repository-local policy checks below.
-        if: github.event.repository.fork != true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
           head-ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '20'
 
@@ -45,17 +41,7 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          # Accept either secret name: the app key has been stored as
-          # REVIEW_APP_PRIVATE_KEY in this repo, while the scripts and the
-          # local-dev instructions use COMMITPERCLIP_KEY. Taking whichever is
-          # populated keeps the gate working under both names.
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
-          # Authenticate as the App this org actually owns. Without these the
-          # script signs its JWT as iss=3718661 (upstream's commitperclip),
-          # whose private key is never released to installers -- so no key
-          # uploaded here could ever produce a valid token.
-          REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
-          REVIEW_APP_SLUG: ${{ vars.REVIEW_APP_SLUG }}
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Run quality gates
         id: quality

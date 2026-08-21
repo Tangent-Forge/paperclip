@@ -2,55 +2,82 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   companies,
-  companySecretVersions,
+  companySecretBindings,
+  companySecretProviderConfigs,
   companySecrets,
+  companySecretVersions,
   createDb,
-  pluginConfig,
   plugins,
+  secretAccessEvents,
 } from "@paperclipai/db";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { createPluginSecretsHandler } from "../services/plugin-secrets-handler.js";
+import {
+  createPluginSecretsHandler,
+  extractSecretRefBindingsFromConfig,
+} from "../services/plugin-secrets-handler.js";
 import { secretService } from "../services/secrets.js";
 
+const pluginId = "11111111-1111-4111-8111-111111111111";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
-    `Skipping plugin secrets handler tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+    `Skipping plugin secret handler integration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
 
-function manifest(): PaperclipPluginManifestV1 {
-  return {
-    id: "paperclip.test-secret-plugin",
-    apiVersion: 1,
-    version: "0.1.0",
-    displayName: "Secret Plugin Test",
-    description: "Test plugin",
-    author: "Paperclip",
-    categories: ["automation"],
-    capabilities: ["secrets.read-ref"],
-    entrypoints: { worker: "./dist/worker.js" },
-    instanceConfigSchema: {
-      type: "object",
-      properties: {
-        apiKeySecretRef: { type: "string", format: "secret-ref" },
-        ignoredUuid: { type: "string" },
-      },
-    },
-  };
-}
+describe("extractSecretRefBindingsFromConfig", () => {
+  it("ignores UUID strings outside schema-declared secret fields", () => {
+    const externalProjectId = "77777777-7777-4777-8777-777777777777";
 
-describeEmbeddedPostgres("createPluginSecretsHandler", () => {
+    expect(extractSecretRefBindingsFromConfig(
+      { externalProjectId },
+      { type: "object", properties: { externalProjectId: { type: "string" } } },
+    )).toEqual([]);
+  });
+
+  it("rejects legacy UUID strings at schema-declared secret fields", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+
+    expect(() => extractSecretRefBindingsFromConfig(
+      { token: secretId },
+      { type: "object", properties: { token: { format: "secret-ref" } } },
+    )).toThrow(/must use.*secret_ref/i);
+  });
+});
+
+describe("createPluginSecretsHandler fail-closed guards", () => {
+  it("requires company context before touching the database", async () => {
+    const db = { select: vi.fn(() => { throw new Error("db should not be touched"); }) };
+    const handler = createPluginSecretsHandler({ db: db as never, pluginId });
+
+    await expect(
+      handler.resolve({ secretRef: { type: "secret_ref", secretId: randomUUID() } }),
+    ).rejects.toThrow(/companyId is required/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy string refs before provider resolution", async () => {
+    const db = { select: vi.fn(() => { throw new Error("db should not be touched"); }) };
+    const handler = createPluginSecretsHandler({ db: db as never, pluginId });
+
+    await expect(
+      handler.resolve({ companyId: randomUUID(), secretRef: randomUUID() }),
+    ).rejects.toThrow(/use \{ type: "secret_ref"/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
   const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-  const secretsTmpDir = path.join(os.tmpdir(), `paperclip-plugin-secrets-handler-${randomUUID()}`);
+  const secretsTmpDir = path.join(os.tmpdir(), `paperclip-plugin-secrets-${randomUUID()}`);
 
   beforeAll(async () => {
     mkdirSync(secretsTmpDir, { recursive: true });
@@ -58,13 +85,15 @@ describeEmbeddedPostgres("createPluginSecretsHandler", () => {
     const started = await startEmbeddedPostgresTestDatabase("plugin-secrets-handler");
     stopDb = started.cleanup;
     db = createDb(started.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
-    await db.delete(pluginConfig);
-    await db.delete(plugins);
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(companySecretProviderConfigs);
+    await db.delete(plugins);
     await db.delete(companies);
   });
 
@@ -78,12 +107,12 @@ describeEmbeddedPostgres("createPluginSecretsHandler", () => {
     rmSync(secretsTmpDir, { recursive: true, force: true });
   });
 
-  async function seedCompany(name = "Acme") {
+  async function seedCompany(name: string) {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name,
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix: `P${companyId.slice(0, 7)}`.toUpperCase(),
       status: "active",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -91,70 +120,94 @@ describeEmbeddedPostgres("createPluginSecretsHandler", () => {
     return companyId;
   }
 
-  async function seedPlugin(configJson: Record<string, unknown>) {
-    const pluginId = randomUUID();
+  async function seedPlugin() {
     await db.insert(plugins).values({
       id: pluginId,
-      pluginKey: "paperclip.test-secret-plugin",
-      packageName: "@paperclipai/test-secret-plugin",
-      version: "0.1.0",
+      pluginKey: "paperclip.plugin-secrets-test",
+      packageName: "@paperclipai/plugin-secrets-test",
+      version: "0.0.1",
       apiVersion: 1,
       categories: ["automation"],
-      manifestJson: manifest(),
+      manifestJson: {
+        id: "paperclip.plugin-secrets-test",
+        apiVersion: 1,
+        version: "0.0.1",
+        displayName: "Plugin Secrets Test",
+        description: "Test plugin",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: [],
+        entrypoints: { worker: "./dist/worker.js" },
+      },
       status: "ready",
-      installedAt: new Date(),
-      updatedAt: new Date(),
+      installOrder: 1,
     });
-    await db.insert(pluginConfig).values({
-      id: randomUUID(),
-      pluginId,
-      configJson,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    return pluginId;
   }
 
-  it("resolves a secret UUID referenced by the plugin config schema", async () => {
-    const companyId = await seedCompany();
-    const secret = await secretService(db).create(companyId, {
-      name: `linear-token-${randomUUID()}`,
+  it("resolves bound plugin refs through secretService and emits plugin_worker access events", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Plugin Co");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `plugin-api-key-${randomUUID()}`,
       provider: "local_encrypted",
-      value: "linear-token-value",
+      value: "resolved-plugin-secret",
     });
-    const pluginId = await seedPlugin({
-      apiKeySecretRef: secret.id,
-      ignoredUuid: randomUUID(),
-    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
     const handler = createPluginSecretsHandler({ db, pluginId });
-
-    await expect(handler.resolve({ secretRef: secret.id })).resolves.toBe("linear-token-value");
-  });
-
-  it("rejects valid secret UUIDs that are not referenced by the plugin config schema", async () => {
-    const companyId = await seedCompany();
-    const allowedSecret = await secretService(db).create(companyId, {
-      name: `allowed-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "allowed-value",
-    });
-    const unreferencedSecret = await secretService(db).create(companyId, {
-      name: `unreferenced-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "unreferenced-value",
-    });
-    const pluginId = await seedPlugin({ apiKeySecretRef: allowedSecret.id });
-    const handler = createPluginSecretsHandler({ db, pluginId });
-
-    await expect(handler.resolve({ secretRef: unreferencedSecret.id })).rejects.toThrow(/secret not found/i);
-  });
-
-  it("still rejects malformed secret refs before database lookup", async () => {
-    const pluginId = await seedPlugin({});
-    const handler = createPluginSecretsHandler({ db, pluginId });
-
     await expect(
-      handler.resolve({ secretRef: "not-a-uuid" }),
-    ).rejects.toThrow(/invalid secret reference/i);
+      handler.resolve({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      }),
+    ).resolves.toBe("resolved-plugin-secret");
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, secret.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "plugin_worker",
+      consumerId: pluginId,
+      configPath: "apiKey",
+      pluginId,
+      outcome: "success",
+      errorCode: null,
+    });
+  });
+
+  it("fails closed for cross-company resolve before secret provider access", async () => {
+    await seedPlugin();
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const foreignSecret = await svc.create(companyB, {
+      name: `foreign-plugin-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "foreign-value",
+    });
+    await svc.syncSecretRefsForTarget(companyB, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: foreignSecret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
+    const handler = createPluginSecretsHandler({ db, pluginId });
+    await expect(
+      handler.resolve({
+        companyId: companyA,
+        secretRef: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
+      }),
+    ).rejects.toThrow(/not bound/i);
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, foreignSecret.id));
+    expect(events).toHaveLength(0);
   });
 });

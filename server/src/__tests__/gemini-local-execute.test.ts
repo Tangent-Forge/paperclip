@@ -94,7 +94,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: null,
@@ -103,6 +103,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
@@ -126,7 +127,8 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("--output-format");
       expect(capture.argv).toContain("stream-json");
       expect(capture.argv).toContain("--prompt");
-      expect(capture.argv).toContain("--dangerously-skip-permissions");
+      expect(capture.argv).toContain("--approval-mode");
+      expect(capture.argv).toContain("yolo");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(promptArg).toContain("Follow the paperclip heartbeat.");
@@ -155,7 +157,7 @@ describe("gemini execute", () => {
     }
   });
 
-  it("always passes --dangerously-skip-permissions", async () => {
+  it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -169,9 +171,10 @@ describe("gemini execute", () => {
     try {
       await execute({
         runId: "run-yolo",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
@@ -182,7 +185,8 @@ describe("gemini execute", () => {
       });
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.argv).toContain("--dangerously-skip-permissions");
+      expect(capture.argv).toContain("--approval-mode");
+      expect(capture.argv).toContain("yolo");
       expect(capture.argv).not.toContain("--policy");
       expect(capture.argv).not.toContain("--allow-all");
       expect(capture.argv).not.toContain("--allow-read");
@@ -219,9 +223,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-turn-limit",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -260,9 +265,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-exit-53",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -309,9 +315,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-turn-limit-text",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -353,7 +360,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: "gemini-session-1",
@@ -362,6 +369,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
@@ -415,7 +423,7 @@ describe("gemini execute", () => {
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(capture.argv).toContain("--conversation");
+      expect(capture.argv).toContain("--resume");
       expect(capture.argv).toContain("gemini-session-1");
       expect(promptArg).toContain("## Paperclip Resume Delta");
       expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
@@ -427,42 +435,6 @@ describe("gemini execute", () => {
       } else {
         process.env.HOME = previousHome;
       }
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a missing configured workspace before resolving or spawning the agent command", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-missing-workspace-"));
-    const missingWorkspace = path.join(root, "workspace-that-must-not-be-created");
-    const commandPath = path.join(root, "gemini");
-    const capturePath = path.join(root, "command-was-invoked.json");
-    await writeFakeGeminiCommand(commandPath);
-    let spawned = false;
-
-    try {
-      await expect(
-        execute({
-          runId: "run-missing-workspace",
-          agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
-          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-          config: {
-            command: commandPath,
-            cwd: missingWorkspace,
-            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
-          },
-          context: {},
-          authToken: "t",
-          onLog: async () => {},
-          onSpawn: async () => {
-            spawned = true;
-          },
-        }),
-      ).rejects.toThrow(/directory does not exist|not a directory/i);
-
-      await expect(fs.access(missingWorkspace)).rejects.toThrow();
-      await expect(fs.access(capturePath)).rejects.toThrow();
-      expect(spawned).toBe(false);
-    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });

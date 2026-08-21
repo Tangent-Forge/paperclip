@@ -4,12 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
-async function writeFakeGeminiCommand(
-  binDir: string,
-  argsCapturePath: string,
-  commandName = "gemini",
-): Promise<string> {
-  const commandPath = path.join(binDir, commandName);
+async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
+  const commandPath = path.join(binDir, "gemini");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
@@ -46,10 +42,7 @@ process.exit(1);
 }
 
 describe("gemini_local environment diagnostics", () => {
-  it("rejects a missing absolute working directory", async () => {
-    // A configured Paperclip workspace is an execution boundary, not a hint --
-    // a missing directory must fail the probe rather than get silently
-    // created, which could mask a workspace/configuration error as success.
+  it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -62,18 +55,20 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
     });
 
-    expect(result.checks.some((check) => check.code === "gemini_cwd_invalid")).toBe(true);
-    expect(result.checks.some((check) => check.level === "error")).toBe(true);
-    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.checks.some((check) => check.code === "gemini_cwd_valid")).toBe(true);
+    expect(result.checks.some((check) => check.level === "error")).toBe(false);
+    const stats = await fs.stat(cwd);
+    expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes agy-compatible flags to the hello probe", async () => {
+  it("passes model and yolo flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -82,19 +77,19 @@ describe("gemini_local environment diagnostics", () => {
     const cwd = path.join(root, "workspace");
     const argsCapturePath = path.join(root, "args.json");
     await fs.mkdir(binDir, { recursive: true });
-    await fs.mkdir(cwd, { recursive: true });
-    await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
+    await writeFakeGeminiCommand(binDir, argsCapturePath);
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
-        command: "agy",
+        engine: "cli",
+        command: "gemini",
         cwd,
         model: "gemini-2.5-pro",
         yolo: true,
         env: {
-          GOOGLE_API_KEY: "test-key",
+          GEMINI_API_KEY: "test-key",
           PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
@@ -104,70 +99,10 @@ describe("gemini_local environment diagnostics", () => {
     expect(result.status).not.toBe("fail");
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--model");
-    // gemini-2.5-pro is configured; resolveGeminiLocalModel maps it onto an id agy
-    // actually serves, so the resolved value is what reaches the CLI.
-    expect(args).toContain("gemini-3.1-pro-low");
-    expect(args).toContain("--dangerously-skip-permissions");
-    expect(args).toContain("--disable-slash-commands");
-    // agy-only since 2026-08-09: the Gemini CLI flags must never be emitted.
-    expect(args).not.toContain("--approval-mode");
-    expect(args).not.toContain("--skip-trust");
-    expect(args).not.toContain("--sandbox=none");
+    expect(args).toContain("gemini-2.5-pro");
+    expect(args).toContain("--approval-mode");
+    expect(args).toContain("yolo");
     expect(args).toContain("--prompt");
-    await fs.rm(root, { recursive: true, force: true });
-  });
-
-  it("strips extraArgs attempting to override adapter-owned flags", async () => {
-    // extraArgs is user/config-supplied. A configured value for a flag the
-    // adapter already resolves itself (model, prompt, session, sandbox mode,
-    // approval/trust flags) must never be able to override what the adapter
-    // computed -- covering both "--flag value" and "--flag=value" forms.
-    const root = path.join(
-      os.tmpdir(),
-      `paperclip-gemini-local-arg-injection-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    );
-    const binDir = path.join(root, "bin");
-    const cwd = path.join(root, "workspace");
-    const argsCapturePath = path.join(root, "args.json");
-    await fs.mkdir(binDir, { recursive: true });
-    await fs.mkdir(cwd, { recursive: true });
-    await writeFakeGeminiCommand(binDir, argsCapturePath, "agy");
-
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "gemini_local",
-      config: {
-        command: "agy",
-        cwd,
-        model: "gemini-2.5-pro",
-        yolo: true,
-        extraArgs: [
-          "--model=evil-model",
-          "--output-format=json",
-          "--prompt", "override",
-          "--conversation=evil-session",
-          "--sandbox",
-          "--custom-flag", "kept",
-        ],
-        env: {
-          GOOGLE_API_KEY: "test-key",
-          PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
-          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-        },
-      },
-    });
-
-    expect(result.status).not.toBe("fail");
-    const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
-    expect(args).not.toContain("evil-model");
-    expect(args).not.toContain("--output-format=json");
-    expect(args).not.toContain("override");
-    expect(args).not.toContain("evil-session");
-    // sandbox defaults to false in this config, so a bare --sandbox smuggled
-    // through extraArgs must not survive either.
-    expect(args.filter((arg) => arg === "--sandbox")).toHaveLength(0);
-    expect(args).toContain("--custom-flag");
-    expect(args).toContain("kept");
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -179,17 +114,17 @@ describe("gemini_local environment diagnostics", () => {
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
     await fs.mkdir(binDir, { recursive: true });
-    await fs.mkdir(cwd, { recursive: true });
     await writeQuotaGeminiCommand(binDir);
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: "gemini",
         cwd,
         env: {
-          GOOGLE_API_KEY: "test-key",
+          GEMINI_API_KEY: "test-key",
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
       },
@@ -207,6 +142,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: "gemini",
       },
       executionTarget: {

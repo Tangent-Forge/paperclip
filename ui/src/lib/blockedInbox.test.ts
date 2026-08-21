@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "vitest";
 import type {
-  Approval,
   Issue,
   IssueBlockedInboxAttention,
   IssueBlockedInboxReason,
@@ -17,35 +16,13 @@ import {
   blockedSeverityRank,
   blockedVariantLabel,
   buildBlockedInboxRows,
-  classifyBlockedInboxLane,
   compareBlockedAttention,
   compareBlockedRows,
-  countBlockedInboxLanes,
   formatStoppedAge,
   groupBlockedInboxRows,
-  isPendingHumanApproval,
-  orphanApprovalMatchesSearch,
-  selectPendingHumanApprovals,
   sortBlockedInboxRows,
   type BlockedInboxIssueRow,
 } from "./blockedInbox";
-
-function makeApproval(overrides: Partial<Approval> & { id: string }): Approval {
-  return {
-    companyId: "company-1",
-    type: "request_board_approval",
-    requestedByAgentId: null,
-    requestedByUserId: "local-board",
-    status: "pending",
-    payload: {},
-    decisionNote: null,
-    decidedByUserId: null,
-    decidedAt: null,
-    createdAt: new Date("2026-08-17T15:11:37.692Z"),
-    updatedAt: new Date("2026-08-17T15:11:37.692Z"),
-    ...overrides,
-  } as Approval;
-}
 
 function makeAttention(
   overrides: Partial<IssueBlockedInboxAttention> = {},
@@ -114,24 +91,6 @@ function makeIssue(
 }
 
 describe("blockedInbox", () => {
-  it("separates genuine human decisions from agent operations and external waits", () => {
-    const human = makeAttention({ owner: { type: "board", agentId: null, userId: null, label: "Board" } });
-    const agent = makeAttention({ owner: { type: "agent", agentId: "agent-1", userId: null, label: "Flow Steward" } });
-    const unknown = makeAttention({ owner: { type: "unknown", agentId: null, userId: null, label: null } });
-    const external = makeAttention({ owner: { type: "external", agentId: null, userId: null, label: "Vendor" } });
-
-    expect(classifyBlockedInboxLane(human)).toBe("human");
-    expect(classifyBlockedInboxLane(agent)).toBe("agent_operations");
-    expect(classifyBlockedInboxLane(unknown)).toBe("agent_operations");
-    expect(classifyBlockedInboxLane(external)).toBe("external");
-    expect(countBlockedInboxLanes([
-      makeIssue({ id: "human" }, human),
-      makeIssue({ id: "agent" }, agent),
-      makeIssue({ id: "unknown" }, unknown),
-      makeIssue({ id: "external" }, external),
-    ])).toEqual({ human: 1, agentOperations: 2, external: 1 });
-  });
-
   it("maps every reason to a known variant and label", () => {
     const reasons: IssueBlockedInboxReason[] = [
       "pending_board_decision",
@@ -312,86 +271,5 @@ describe("blockedInbox", () => {
     expect(formatStoppedAge("2026-05-09T20:00:00.000Z", now)).toBe("stopped 4h");
     expect(formatStoppedAge("2026-05-07T00:00:00.000Z", now)).toBe("stopped 3d");
     expect(formatStoppedAge("2026-04-15T00:00:00.000Z", now)).toBe("stopped 3w");
-  });
-
-  // Regression test for the "Human Decisions" tab showing empty while the Dashboard
-  // "Pending Approvals" tile has dozens of BOARD APPROVAL cards. Those approvals are
-  // routed from stale ledger asks / blocked-with-no-blocker issues and are never linked
-  // to a live issue, so they can't flow through the Issue-driven rows above — they must
-  // surface via this separate, issue-less path instead.
-  describe("orphan (issue-unlinked) pending approvals", () => {
-    it("treats pending and revision_requested BOARD APPROVAL records as waiting on a human decision", () => {
-      const pendingBoardApproval = makeApproval({
-        id: "approval-1",
-        type: "request_board_approval",
-        status: "pending",
-      });
-      const revisionRequested = makeApproval({
-        id: "approval-2",
-        type: "budget_override_required",
-        status: "revision_requested",
-      });
-      const approved = makeApproval({ id: "approval-3", status: "approved" });
-      const rejected = makeApproval({ id: "approval-4", status: "rejected" });
-      const cancelled = makeApproval({ id: "approval-5", status: "cancelled" });
-
-      expect(isPendingHumanApproval(pendingBoardApproval)).toBe(true);
-      expect(isPendingHumanApproval(revisionRequested)).toBe(true);
-      expect(isPendingHumanApproval(approved)).toBe(false);
-      expect(isPendingHumanApproval(rejected)).toBe(false);
-      expect(isPendingHumanApproval(cancelled)).toBe(false);
-
-      expect(
-        selectPendingHumanApprovals([
-          pendingBoardApproval,
-          revisionRequested,
-          approved,
-          rejected,
-          cancelled,
-        ]),
-      ).toEqual([pendingBoardApproval, revisionRequested]);
-    });
-
-    it("does not silently drop a pending BOARD APPROVAL that has no linked issue", () => {
-      // Mirrors a real routed decision: source_id references a board item, but the
-      // approval itself was created without issueIds, so issue_approvals has no row for it.
-      const routedBoardApproval = makeApproval({
-        id: "41fd10de-01ba-43d9-af59-a13f71dbcb4c",
-        type: "request_board_approval",
-        status: "pending",
-        requestedByUserId: "local-board",
-        payload: {
-          title: "Decide: Run a post-Option-B apply round and report same-session metrics",
-          summary:
-            "Routed from board item PAP-2725 (severity high, waiting 0d). This decision had no destination.",
-          source_id: "PAP-2725",
-          source_kind: "board",
-          routed_by: "scripts/route_decisions.py",
-        },
-      });
-
-      const pending = selectPendingHumanApprovals([routedBoardApproval]);
-      expect(pending).toHaveLength(1);
-      expect(pending[0].id).toBe(routedBoardApproval.id);
-    });
-
-    it("orphanApprovalMatchesSearch matches the approval label, payload title, summary and source id", () => {
-      const approval = makeApproval({
-        id: "approval-1",
-        type: "request_board_approval",
-        payload: {
-          title: "Decide: Run a post-Option-B apply round",
-          summary: "Routed from board item PAP-2725.",
-          source_id: "PAP-2725",
-        },
-      });
-      const label = "Board Approval: Decide: Run a post-Option-B apply round";
-
-      expect(orphanApprovalMatchesSearch(approval, label, "")).toBe(true);
-      expect(orphanApprovalMatchesSearch(approval, label, "board approval")).toBe(true);
-      expect(orphanApprovalMatchesSearch(approval, label, "pap-2725")).toBe(true);
-      expect(orphanApprovalMatchesSearch(approval, label, "apply round")).toBe(true);
-      expect(orphanApprovalMatchesSearch(approval, label, "no match here")).toBe(false);
-    });
   });
 });

@@ -11,7 +11,6 @@ export const agentSkillStateSchema = z.enum([
 
 export const agentSkillOriginSchema = z.enum([
   "company_managed",
-  "paperclip_required",
   "user_installed",
   "external_unknown",
 ]);
@@ -20,6 +19,12 @@ export const agentSkillSyncModeSchema = z.enum([
   "unsupported",
   "persistent",
   "ephemeral",
+]);
+
+export const agentSkillAssignmentModeSchema = z.enum([
+  "add",
+  "remove",
+  "replace",
 ]);
 
 export const agentDesiredSkillEntrySchema = z.object({
@@ -39,8 +44,6 @@ export const agentSkillEntrySchema = z.object({
   currentVersionId: z.string().uuid().nullable().optional(),
   desired: z.boolean(),
   managed: z.boolean(),
-  required: z.boolean().optional(),
-  requiredReason: z.string().nullable().optional(),
   state: agentSkillStateSchema,
   origin: agentSkillOriginSchema.optional(),
   originLabel: z.string().nullable().optional(),
@@ -62,6 +65,7 @@ export const agentSkillSnapshotSchema = z.object({
 });
 
 export const agentSkillSyncSchema = z.object({
+  mode: agentSkillAssignmentModeSchema,
   desiredSkills: z.array(agentDesiredSkillSelectionSchema),
 });
 

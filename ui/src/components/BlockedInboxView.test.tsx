@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Approval, Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
+import type { Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -11,16 +11,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   count: vi.fn(),
 }));
 
-const mockApprovalsApi = vi.hoisted(() => ({
-  listUnlinked: vi.fn(),
-}));
-
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
-}));
-
-vi.mock("../api/approvals", () => ({
-  approvalsApi: mockApprovalsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -38,6 +30,14 @@ vi.mock("@/lib/router", () => ({
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 import { BlockedInboxView } from "./BlockedInboxView";
 import { defaultIssueFilterState } from "../lib/issue-filters";
@@ -108,23 +108,6 @@ function makeIssue(
   } as Issue;
 }
 
-function makeApproval(overrides: Partial<Approval> & { id: string }): Approval {
-  return {
-    companyId: "company-1",
-    type: "request_board_approval",
-    requestedByAgentId: null,
-    requestedByUserId: "local-board",
-    status: "pending",
-    payload: {},
-    decisionNote: null,
-    decidedByUserId: null,
-    decidedAt: null,
-    createdAt: new Date("2026-08-17T15:11:37.692Z"),
-    updatedAt: new Date("2026-08-17T15:11:37.692Z"),
-    ...overrides,
-  } as Approval;
-}
-
 function renderWithClient(node: React.ReactNode, container: HTMLDivElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
@@ -145,8 +128,8 @@ const blockedViewProps = {
   sortBy: "most_recent" as const,
   issueFilters: defaultIssueFilterState,
   currentUserId: "local-board",
-  lane: "all" as const,
   liveIssueIds: new Set<string>(),
+  subtreeLiveCounts: new Map<string, number>(),
   workspaceFilterContext: {},
   showStatusColumn: true,
   showIdentifierColumn: true,
@@ -170,8 +153,6 @@ describe("BlockedInboxView", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockIssuesApi.list.mockReset();
-    mockApprovalsApi.listUnlinked.mockReset();
-    mockApprovalsApi.listUnlinked.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -188,118 +169,6 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
     expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).not.toBeNull();
-    act(() => root.unmount());
-  });
-
-  // Regression test: the Dashboard "Pending Approvals" tile and /approvals/pending can
-  // show dozens of BOARD APPROVAL cards while this tab used to render
-  // data-testid="blocked-inbox-empty" ("No human decisions are waiting"), because pending
-  // approvals routed from a stale ledger ask / blocked-with-no-blocker issue are never
-  // linked to a live issue and so never appeared in issuesApi.list's blocked-attention
-  // response. This asserts the tab surfaces them instead of reporting empty.
-  it("shows a pending BOARD APPROVAL that has no linked issue, instead of the empty state", async () => {
-    mockIssuesApi.list.mockResolvedValue([]);
-    mockApprovalsApi.listUnlinked.mockResolvedValue([
-      makeApproval({
-        id: "41fd10de-01ba-43d9-af59-a13f71dbcb4c",
-        type: "request_board_approval",
-        status: "pending",
-        payload: {
-          title: "Decide: Run a post-Option-B apply round and report same-session metrics",
-          summary: "Routed from board item PAP-2725 (severity high, waiting 0d).",
-          source_id: "PAP-2725",
-        },
-      }),
-    ]);
-
-    const { root } = renderWithClient(
-      <BlockedInboxView {...blockedViewProps} lane="human" />,
-      container,
-    );
-    await waitFor(
-      () => container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]') !== null,
-    );
-
-    expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).toBeNull();
-    const row = container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]');
-    expect(row?.getAttribute("to")).toBe("/approvals/41fd10de-01ba-43d9-af59-a13f71dbcb4c");
-    expect(row?.textContent).toContain("Board Approval");
-    expect(row?.textContent).toContain("Decide: Run a post-Option-B apply round");
-    expect(container.querySelector('[data-testid="blocked-inbox-lane-counts"]')?.textContent).toContain(
-      "Human Decisions 1",
-    );
-
-    act(() => root.unmount());
-  });
-
-  it("does not fetch unlinked approvals for the Agent Operations lane", async () => {
-    mockIssuesApi.list.mockResolvedValue([]);
-
-    const { root } = renderWithClient(
-      <BlockedInboxView {...blockedViewProps} lane="agent_operations" />,
-      container,
-    );
-    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
-
-    expect(mockApprovalsApi.listUnlinked).not.toHaveBeenCalled();
-
-    act(() => root.unmount());
-  });
-
-  // Regression test for a bug found in live browser verification of the merged fix (PR #90):
-  // opening the Human Decisions tab (lane="human") populates react-query's cache for the
-  // `listUnlinked` query key; switching to the Agent Operations tab (lane="agent_operations")
-  // on the SAME component instance/QueryClient re-renders with `enabled: false`, but
-  // `enabled: false` only stops a refetch — it does NOT clear already-cached data for that
-  // key. Without an explicit lane re-gate on the derived value, the 39 orphan approval rows
-  // from the Human Decisions visit leaked straight into Agent Operations. Every other test in
-  // this file uses a fresh QueryClient per render, so this cross-lane cache persistence was
-  // invisible to them — this test deliberately keeps one QueryClient across a lane switch to
-  // reproduce the real Inbox.tsx usage (same page, same QueryClientProvider, tab click swaps
-  // the `lane` prop on the same mounted BlockedInboxView).
-  it("does not leak cached orphan approval rows into Agent Operations after visiting Human Decisions", async () => {
-    mockIssuesApi.list.mockResolvedValue([]);
-    mockApprovalsApi.listUnlinked.mockResolvedValue([
-      makeApproval({
-        id: "41fd10de-01ba-43d9-af59-a13f71dbcb4c",
-        type: "request_board_approval",
-        status: "pending",
-        payload: { title: "Decide: something routed with no destination" },
-      }),
-    ]);
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
-    });
-    const root = createRoot(container);
-
-    // Visit Human Decisions first — this populates the listUnlinked cache entry.
-    act(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <BlockedInboxView {...blockedViewProps} lane="human" />
-        </QueryClientProvider>,
-      );
-    });
-    await waitFor(
-      () => container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]') !== null,
-    );
-
-    // Switch to Agent Operations on the SAME root/QueryClient, exactly like clicking the tab
-    // in Inbox.tsx — no unmount, just a prop change on the same component instance.
-    act(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <BlockedInboxView {...blockedViewProps} lane="agent_operations" />
-        </QueryClientProvider>,
-      );
-    });
-    await waitFor(() => container.querySelector('[data-testid="blocked-inbox-empty"]') !== null);
-
-    expect(container.querySelector('[data-testid="blocked-inbox-orphan-approval-row"]')).toBeNull();
-    expect(container.querySelector('[data-testid="blocked-inbox-orphan-approvals"]')).toBeNull();
-    expect(container.textContent).not.toContain("something routed with no destination");
-
     act(() => root.unmount());
   });
 
@@ -394,7 +263,7 @@ describe("BlockedInboxView", () => {
     );
     await waitFor(() => container.querySelector("a") !== null);
 
-    const rowText = container.querySelector("a")?.textContent ?? "";
+    const rowText = container.querySelector("a")?.parentElement?.textContent ?? "";
     expect(rowText.indexOf("Pending board decision")).toBeGreaterThanOrEqual(0);
     expect(rowText.indexOf("Needs decision")).toBeGreaterThan(rowText.indexOf("Pending board decision"));
     expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));
@@ -442,6 +311,35 @@ describe("BlockedInboxView", () => {
     const titles = Array.from(links).map((a) => a.textContent ?? "");
     expect(titles.some((t) => t.includes("Resume parked work"))).toBe(true);
     expect(titles.some((t) => t.includes("Other unrelated thing"))).toBe(false);
+
+    act(() => root.unmount());
+  });
+
+  it("uses loaded live descendants when blocked inbox rows do not have a server summary", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        ...makeIssue(
+          "blocked-parent",
+          "PAP-77",
+          "Blocked parent with active child",
+          attention({ reason: "blocked_chain_stalled" }),
+        ),
+        status: "blocked",
+        blockerAttention: null,
+        liveDescendantCount: undefined,
+      } as unknown as Issue,
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+        subtreeLiveCounts={new Map([["blocked-parent", 1]])}
+      />,
+      container,
+    );
+    await waitFor(() => container.querySelector("a") !== null);
+
+    expect(container.querySelector('[aria-label="Blocked · waiting on 1 active sub-task"]')).not.toBeNull();
 
     act(() => root.unmount());
   });
