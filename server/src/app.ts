@@ -324,6 +324,10 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  // Read by routes/authz.ts to give board-access-denied errors a mode-aware,
+  // actionable message instead of a bare 403 — see PAP-1975's removal of the
+  // local_trusted implicit-board grant.
+  app.locals.deploymentMode = opts.deploymentMode;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };

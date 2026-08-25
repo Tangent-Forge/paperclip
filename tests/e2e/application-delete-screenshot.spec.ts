@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
 
 // One-off visual capture for PAP-10817. The retired Tools -> Applications
 // table now redirects into Apps, so capture the current app removal

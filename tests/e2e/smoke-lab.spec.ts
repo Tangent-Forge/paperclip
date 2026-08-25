@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import type { APIRequestContext, Page } from "@playwright/test";
 import { ciSmokeLabScenarios, type SmokeLabLifecycleTool, type SmokeLabScenario, type SmokeRunStepPath } from "./smoke-lab.catalog";
 
 type SmokeRunStepStatus = "pass" | "fail" | "skipped";
