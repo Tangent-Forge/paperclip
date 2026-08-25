@@ -260,8 +260,7 @@ export function readCanonicalExecutionContinuationSignals(executionState: unknow
   // Canonical success disposition: execution policy completed with approved outcome
   // (buildCompletedState). completed alone is terminal; approved on completed is verifier pass.
   const verifierPassed = Boolean(
-    legacyVerifier ||
-      (canonicalTerminal && (lastDecisionOutcome === "approved" || lastDecisionOutcome == null)),
+    legacyVerifier || (canonicalTerminal && lastDecisionOutcome === "approved"),
   );
 
   return {

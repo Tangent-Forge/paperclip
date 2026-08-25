@@ -299,13 +299,15 @@ describe("canonical executionState terminal/verifier signals", () => {
     expect(signals.lastDecisionOutcome).toBe("approved");
   });
 
-  it("treats completed without outcome as terminal disposition", () => {
+  it("treats completed without outcome as terminal disposition but not verifier pass", () => {
     const signals = readCanonicalExecutionContinuationSignals({
       status: "completed",
       lastDecisionOutcome: null,
     });
     expect(signals.terminalDispositionRecorded).toBe(true);
-    expect(signals.verifierPassed).toBe(true);
+    // buildCompletedState always stamps lastDecisionOutcome "approved"; a completed
+    // state without it is non-canonical and must not read as verifier-passed.
+    expect(signals.verifierPassed).toBe(false);
   });
 
   it("does not suppress pending stages that merely retain a prior approved outcome", () => {
