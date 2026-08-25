@@ -72,6 +72,12 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  // Delivery controller v1 is an internal platform-level surface (candidate
+  // submission, route contracts, worker activation) — never deployed, both
+  // activation gates default off, not yet public API surface. Add real
+  // OpenAPI coverage when/if this becomes a documented public integration
+  // point, not before.
+  "delivery-controller.ts",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
