@@ -84,6 +84,21 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     },
   },
+  // Required to actually provision this plugin's Postgres schema and run
+  // migrations/migrations/001_companion.sql before worker startup — without
+  // this block the host's ensureNamespaceWithClient() short-circuits
+  // (`if (!manifest.database) return null`), no namespace/schema is ever
+  // created, and every ctx.db.query() call at runtime throws "Plugin
+  // database namespace is not active". Declaring the
+  // `database.namespace.*` capabilities above is necessary but not
+  // sufficient — this declaration is what wires them to an actual schema.
+  // Confirmed missing (and this fix confirmed to close it) via a disposable-
+  // instance install/e2e validation pass. Mirrors
+  // paperclip-plugin-linear-sync's own manifest.ts `database` block.
+  database: {
+    namespaceSlug: "companion",
+    migrationsDir: "migrations",
+  },
   localFolders: [
     {
       folderKey: LOCAL_FOLDER_KEYS.evidence,

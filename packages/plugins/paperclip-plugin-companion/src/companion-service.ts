@@ -17,6 +17,26 @@ export class CompanionAuthorizationError extends Error {}
 export class CompanionNotFoundError extends Error {}
 
 // ---------------------------------------------------------------------------
+// Schema-qualified table references. The host's runtime SQL validator (and
+// its migration validator) both require every table reference to be fully
+// schema-qualified with this plugin's own provisioned namespace — an
+// unqualified "companion_threads" is rejected outright, not silently
+// resolved via search_path. Mirrors paperclip-plugin-linear-sync's own
+// quoteIdent()/table() helpers.
+// ---------------------------------------------------------------------------
+
+function quoteIdent(identifier: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+type CompanionTableName = "companion_threads" | "companion_messages" | "companion_action_proposals" | "companion_company_state";
+
+function table(host: CompanionHost, name: CompanionTableName): string {
+  return `${quoteIdent(host.db.namespace)}.${quoteIdent(name)}`;
+}
+
+// ---------------------------------------------------------------------------
 // Standing issue (attachment point for request_confirmation interactions —
 // see design record §4. This issue is never Companion's conversation storage;
 // it exists only because issue_thread_interactions require an issueId.)
@@ -34,7 +54,7 @@ export class CompanionNotFoundError extends Error {}
 
 export async function findOrCreateCompanionIssue(host: CompanionHost, companyId: string): Promise<string> {
   const claimed = await host.db.query<{ companion_issue_id: string }>(
-    "SELECT companion_issue_id FROM companion_company_state WHERE company_id = $1",
+    `SELECT companion_issue_id FROM ${table(host, "companion_company_state")} WHERE company_id = $1`,
     [companyId],
   );
   if (claimed[0]) return claimed[0].companion_issue_id;
@@ -52,17 +72,20 @@ export async function findOrCreateCompanionIssue(host: CompanionHost, companyId:
         })
       ).id;
 
-  const claim = await host.db.query<{ companion_issue_id: string }>(
-    `INSERT INTO companion_company_state (company_id, companion_issue_id)
+  // ctx.db.query() is SELECT-only (the host's runtime SQL validator rejects
+  // any mutation keyword, and RETURNING isn't usable from it); ctx.db.execute()
+  // is the only way to mutate, and it returns no rows. So the claim insert
+  // and the "who won" read are necessarily two calls, not one
+  // INSERT...RETURNING — mirrors paperclip-plugin-linear-sync's own
+  // execute()-then-query() idiom (see e.g. reserveLink()).
+  await host.db.execute(
+    `INSERT INTO ${table(host, "companion_company_state")} (company_id, companion_issue_id)
      VALUES ($1, $2)
-     ON CONFLICT (company_id) DO NOTHING
-     RETURNING companion_issue_id`,
+     ON CONFLICT (company_id) DO NOTHING`,
     [companyId, candidateId],
   );
-  if (claim[0]) return claim[0].companion_issue_id;
-
   const winner = await host.db.query<{ companion_issue_id: string }>(
-    "SELECT companion_issue_id FROM companion_company_state WHERE company_id = $1",
+    `SELECT companion_issue_id FROM ${table(host, "companion_company_state")} WHERE company_id = $1`,
     [companyId],
   );
   if (!winner[0]) {
@@ -80,7 +103,7 @@ export async function findOrCreateCompanionIssue(host: CompanionHost, companyId:
 
 export async function listThreads(host: CompanionHost, companyId: string): Promise<CompanionThreadRow[]> {
   return host.db.query<CompanionThreadRow>(
-    "SELECT * FROM companion_threads WHERE company_id = $1 ORDER BY updated_at DESC",
+    `SELECT * FROM ${table(host, "companion_threads")} WHERE company_id = $1 ORDER BY updated_at DESC`,
     [companyId],
   );
 }
@@ -94,11 +117,16 @@ export async function createThread(
   if (!actorUserId) {
     throw new CompanionAuthorizationError("createThread requires an authenticated human actorUserId");
   }
-  const rows = await host.db.query<CompanionThreadRow>(
-    `INSERT INTO companion_threads (id, company_id, title, created_by_user_id)
-     VALUES ($1, $2, $3, $4) RETURNING *`,
-    [randomUUID(), companyId, title || "New conversation", actorUserId],
+  const id = randomUUID();
+  await host.db.execute(
+    `INSERT INTO ${table(host, "companion_threads")} (id, company_id, title, created_by_user_id) VALUES ($1, $2, $3, $4)`,
+    [id, companyId, title || "New conversation", actorUserId],
   );
+  const rows = await host.db.query<CompanionThreadRow>(
+    `SELECT * FROM ${table(host, "companion_threads")} WHERE company_id = $1 AND id = $2`,
+    [companyId, id],
+  );
+  if (!rows[0]) throw new Error(`createThread: insert of ${id} did not produce a readable row`);
   return rows[0];
 }
 
@@ -108,7 +136,7 @@ export async function getThreadWithMessages(
   threadId: string,
 ): Promise<{ thread: CompanionThreadRow; messages: CompanionMessageRow[]; proposals: CompanionActionProposalRow[] }> {
   const threads = await host.db.query<CompanionThreadRow>(
-    "SELECT * FROM companion_threads WHERE company_id = $1 AND id = $2",
+    `SELECT * FROM ${table(host, "companion_threads")} WHERE company_id = $1 AND id = $2`,
     [companyId, threadId],
   );
   const thread = threads[0];
@@ -116,7 +144,7 @@ export async function getThreadWithMessages(
     throw new CompanionNotFoundError(`Thread ${threadId} not found in company ${companyId}`);
   }
   const messages = await host.db.query<CompanionMessageRow>(
-    "SELECT * FROM companion_messages WHERE company_id = $1 AND thread_id = $2 ORDER BY created_at ASC",
+    `SELECT * FROM ${table(host, "companion_messages")} WHERE company_id = $1 AND thread_id = $2 ORDER BY created_at ASC`,
     [companyId, threadId],
   );
   // Proposals ride along with thread data so the UI can hydrate pending /
@@ -124,7 +152,7 @@ export async function getThreadWithMessages(
   // (including after a page reload), instead of only from transient
   // in-memory state populated by this session's own propose/decide calls.
   const proposals = await host.db.query<CompanionActionProposalRow>(
-    "SELECT * FROM companion_action_proposals WHERE company_id = $1 AND thread_id = $2 ORDER BY created_at ASC",
+    `SELECT * FROM ${table(host, "companion_action_proposals")} WHERE company_id = $1 AND thread_id = $2 ORDER BY created_at ASC`,
     [companyId, threadId],
   );
   return { thread, messages, proposals };
@@ -147,47 +175,42 @@ async function insertMessage(
     throw new CompanionAuthorizationError("a 'companion' message must not carry an actorUserId");
   }
   const clientRequestId = opts.clientRequestId ?? null;
+  const id = randomUUID();
   // Idempotency: `companion_messages_dedup_idx` is a UNIQUE INDEX on
   // (thread_id, role, client_request_id) WHERE client_request_id IS NOT
   // NULL. A retried insert with the same key for the same role loses this
-  // INSERT and gets nothing back from RETURNING — in that case we fetch and
-  // return the row that already exists instead of creating a duplicate. When
-  // no clientRequestId is supplied (legacy/internal callers), the predicate
-  // never matches and every insert proceeds normally.
-  const rows = await host.db.query<CompanionMessageRow>(
-    `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence, client_request_id)
+  // INSERT (ctx.db.execute() is INSERT/UPDATE/DELETE-only and returns no
+  // rows — RETURNING isn't usable here, so we always re-read by the natural
+  // key afterward, rather than by the id we generated, since on a conflict
+  // that id was never actually written). When no clientRequestId is
+  // supplied (legacy/internal callers), the predicate never matches and
+  // every insert proceeds normally.
+  await host.db.execute(
+    `INSERT INTO ${table(host, "companion_messages")} (id, company_id, thread_id, role, actor_user_id, body, evidence, client_request_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     ON CONFLICT (thread_id, role, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING
-     RETURNING *`,
-    [
-      randomUUID(),
-      companyId,
-      threadId,
-      role,
-      opts.actorUserId ?? null,
-      body,
-      opts.evidence ? JSON.stringify(opts.evidence) : null,
-      clientRequestId,
-    ],
+     ON CONFLICT (thread_id, role, client_request_id) WHERE client_request_id IS NOT NULL DO NOTHING`,
+    [id, companyId, threadId, role, opts.actorUserId ?? null, body, opts.evidence ? JSON.stringify(opts.evidence) : null, clientRequestId],
   );
-  if (rows[0]) {
-    await host.db.execute("UPDATE companion_threads SET updated_at = now() WHERE company_id = $1 AND id = $2", [
+
+  const readBack = clientRequestId
+    ? await host.db.query<CompanionMessageRow>(
+        `SELECT * FROM ${table(host, "companion_messages")} WHERE thread_id = $1 AND role = $2 AND client_request_id = $3`,
+        [threadId, role, clientRequestId],
+      )
+    : await host.db.query<CompanionMessageRow>(`SELECT * FROM ${table(host, "companion_messages")} WHERE id = $1`, [id]);
+  const row = readBack[0];
+  if (!row) {
+    throw new Error("insertMessage: insert did not produce a readable row");
+  }
+  if (row.id === id) {
+    // Only touch the thread's updated_at when this call actually created the
+    // row (not on an idempotent replay that resolved to an earlier insert).
+    await host.db.execute(`UPDATE ${table(host, "companion_threads")} SET updated_at = now() WHERE company_id = $1 AND id = $2`, [
       companyId,
       threadId,
     ]);
-    return rows[0];
   }
-  if (!clientRequestId) {
-    throw new Error("insertMessage: ON CONFLICT DO NOTHING fired with no clientRequestId (unexpected)");
-  }
-  const existing = await host.db.query<CompanionMessageRow>(
-    "SELECT * FROM companion_messages WHERE thread_id = $1 AND role = $2 AND client_request_id = $3",
-    [threadId, role, clientRequestId],
-  );
-  if (!existing[0]) {
-    throw new Error("insertMessage: ON CONFLICT DO NOTHING fired but no existing row found (unexpected)");
-  }
-  return existing[0];
+  return row;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,11 +623,11 @@ export async function sendMessage(
   if (clientRequestId) {
     const [existingHuman, existingCompanion] = await Promise.all([
       host.db.query<CompanionMessageRow>(
-        "SELECT * FROM companion_messages WHERE thread_id = $1 AND role = $2 AND client_request_id = $3",
+        `SELECT * FROM ${table(host, "companion_messages")} WHERE thread_id = $1 AND role = $2 AND client_request_id = $3`,
         [threadId, "human", clientRequestId],
       ),
       host.db.query<CompanionMessageRow>(
-        "SELECT * FROM companion_messages WHERE thread_id = $1 AND role = $2 AND client_request_id = $3",
+        `SELECT * FROM ${table(host, "companion_messages")} WHERE thread_id = $1 AND role = $2 AND client_request_id = $3`,
         [threadId, "companion", clientRequestId],
       ),
     ]);
@@ -653,7 +676,7 @@ export async function proposeAction(
   // message should resolve to at most one proposal. Check before spending an
   // interaction on a duplicate call.
   const existingForMessage = await host.db.query<CompanionActionProposalRow>(
-    "SELECT * FROM companion_action_proposals WHERE company_id = $1 AND message_id = $2",
+    `SELECT * FROM ${table(host, "companion_action_proposals")} WHERE company_id = $1 AND message_id = $2`,
     [companyId, messageId],
   );
   if (existingForMessage[0]) return existingForMessage[0];
@@ -672,36 +695,37 @@ export async function proposeAction(
   // Idempotency backstop: `companion_action_proposals_message_idx` is a
   // UNIQUE INDEX on (company_id, message_id). If a concurrent call won the
   // race between the fast-path check above and this insert, this INSERT
-  // loses and returns nothing — we then return the winner's row instead of
-  // a duplicate. The interaction requested above is orphaned in that case
-  // (never attached to any persisted proposal) but harmless: nothing links
-  // to it, and it is never surfaced to a human.
-  const rows = await host.db.query<CompanionActionProposalRow>(
-    `INSERT INTO companion_action_proposals
+  // loses silently (ctx.db.execute() has no RETURNING) — the re-read below
+  // then finds the winner's row instead of a duplicate. The interaction
+  // requested above is orphaned in that case (never attached to any
+  // persisted proposal) but harmless: nothing links to it, and it is never
+  // surfaced to a human.
+  const id = randomUUID();
+  await host.db.execute(
+    `INSERT INTO ${table(host, "companion_action_proposals")}
        (id, company_id, thread_id, message_id, companion_issue_id, interaction_id, summary)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (company_id, message_id) DO NOTHING
-     RETURNING *`,
-    [randomUUID(), companyId, threadId, messageId, companionIssueId, interaction.id, summary],
+     ON CONFLICT (company_id, message_id) DO NOTHING`,
+    [id, companyId, threadId, messageId, companionIssueId, interaction.id, summary],
   );
-  if (rows[0]) {
+  const rows = await host.db.query<CompanionActionProposalRow>(
+    `SELECT * FROM ${table(host, "companion_action_proposals")} WHERE company_id = $1 AND message_id = $2`,
+    [companyId, messageId],
+  );
+  const proposal = rows[0];
+  if (!proposal) {
+    throw new Error(`proposeAction: insert for message ${messageId} did not produce a readable row`);
+  }
+  if (proposal.id === id) {
     await host.activity.log({
       companyId,
       message: "companion.action_proposed",
       entityType: "companion_action_proposal",
-      entityId: rows[0].id,
+      entityId: proposal.id,
       metadata: { threadId, interactionId: interaction.id },
     });
-    return rows[0];
   }
-  const winner = await host.db.query<CompanionActionProposalRow>(
-    "SELECT * FROM companion_action_proposals WHERE company_id = $1 AND message_id = $2",
-    [companyId, messageId],
-  );
-  if (!winner[0]) {
-    throw new Error(`proposeAction: lost the claim race for message ${messageId} but found no winner row`);
-  }
-  return winner[0];
+  return proposal;
 }
 
 export async function decideProposal(
@@ -723,7 +747,7 @@ export async function decideProposal(
     );
   }
   const rows = await host.db.query<CompanionActionProposalRow>(
-    "SELECT * FROM companion_action_proposals WHERE company_id = $1 AND id = $2",
+    `SELECT * FROM ${table(host, "companion_action_proposals")} WHERE company_id = $1 AND id = $2`,
     [companyId, proposalId],
   );
   const proposal = rows[0];
@@ -744,12 +768,15 @@ export async function decideProposal(
     companyId,
   );
 
-  const updated = await host.db.query<CompanionActionProposalRow>(
-    `UPDATE companion_action_proposals
+  await host.db.execute(
+    `UPDATE ${table(host, "companion_action_proposals")}
      SET status = $1, decided_by_user_id = $2, decided_at = now()
-     WHERE company_id = $3 AND id = $4 AND status = 'pending'
-     RETURNING *`,
+     WHERE company_id = $3 AND id = $4 AND status = 'pending'`,
     [action === "accept" ? "accepted" : "rejected", actorUserId, companyId, proposalId],
+  );
+  const updated = await host.db.query<CompanionActionProposalRow>(
+    `SELECT * FROM ${table(host, "companion_action_proposals")} WHERE company_id = $1 AND id = $2`,
+    [companyId, proposalId],
   );
 
   await host.activity.log({

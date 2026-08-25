@@ -44,6 +44,15 @@ export interface CompanionLocalFolderEntry {
 
 export interface CompanionHost {
   db: {
+    /**
+     * The plugin's host-provisioned Postgres schema name (e.g.
+     * "plugin_companion_46345b9b3b"). Every query/execute statement below
+     * must qualify its own table references with this — the host's runtime
+     * SQL validator requires fully schema-qualified identifiers, exactly
+     * like it requires for this plugin's own migration DDL. See
+     * companion-service.ts's `table()` helper.
+     */
+    namespace: string;
     query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
     execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>;
   };

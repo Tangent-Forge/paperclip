@@ -60,8 +60,82 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
 
   const host: CompanionHost = {
     db: {
+      // Fixed fake namespace, standing in for the real host-derived schema
+      // name (e.g. "plugin_companion_46345b9b3b"). companion-service.ts
+      // always qualifies its own table references via table(host, name) —
+      // this dispatcher matches on the bare table name as a substring of the
+      // qualified reference, so it doesn't need to know the exact literal
+      // namespace string, only that every reference contains it.
+      namespace: "companion_test_ns",
+
+      // Real ctx.db.query() is SELECT-only; real ctx.db.execute() is
+      // INSERT/UPDATE/DELETE-only and returns no rows (see
+      // PluginDatabaseClient in packages/plugins/sdk/src/types.ts). This
+      // fake enforces the same split so a regression back to an
+      // INSERT/UPDATE-via-query() (unusable against the real host) fails
+      // loudly here instead of only in a live e2e run.
       async query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-        if (sql.startsWith("INSERT INTO companion_threads")) {
+        const normalized = sql.trim().toUpperCase();
+        if (!normalized.startsWith("SELECT")) {
+          throw new Error(`fakeHost.db.query: only SELECT is allowed (real ctx.db.query is SELECT-only): ${sql}`);
+        }
+        if (sql.includes("companion_company_state")) {
+          const [cid] = params as string[];
+          const issueId = state.companyState[cid];
+          return (issueId ? [{ companion_issue_id: issueId }] : []) as unknown as T[];
+        }
+        if (sql.includes("companion_threads") && sql.includes("AND id = $2")) {
+          const [cid, id] = params as string[];
+          return state.threads.filter((t) => t.company_id === cid && t.id === id) as unknown as T[];
+        }
+        if (sql.includes("companion_threads")) {
+          const [cid] = params as string[];
+          return state.threads
+            .filter((t) => t.company_id === cid)
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) as unknown as T[];
+        }
+        if (sql.includes("companion_messages") && sql.includes("client_request_id = $3")) {
+          const [tid, role, crid] = params as string[];
+          return state.messages.filter((m) => m.thread_id === tid && m.role === role && m.client_request_id === crid) as unknown as T[];
+        }
+        if (sql.includes("companion_messages") && sql.includes("WHERE id = $1")) {
+          const [id] = params as string[];
+          return state.messages.filter((m) => m.id === id) as unknown as T[];
+        }
+        if (sql.includes("companion_messages")) {
+          const [cid, tid] = params as string[];
+          return state.messages
+            .filter((m) => m.company_id === cid && m.thread_id === tid)
+            .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
+        }
+        if (sql.includes("companion_action_proposals") && sql.includes("AND message_id = $2")) {
+          const [cid, mid] = params as string[];
+          return state.proposals.filter((p) => p.company_id === cid && p.message_id === mid) as unknown as T[];
+        }
+        if (sql.includes("companion_action_proposals") && sql.includes("AND thread_id = $2")) {
+          const [cid, tid] = params as string[];
+          return state.proposals
+            .filter((p) => p.company_id === cid && p.thread_id === tid)
+            .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
+        }
+        if (sql.includes("companion_action_proposals") && sql.includes("AND id = $2")) {
+          const [cid, id] = params as string[];
+          return state.proposals.filter((p) => p.company_id === cid && p.id === id) as unknown as T[];
+        }
+        throw new Error(`fakeHost.db.query: unhandled SQL: ${sql}`);
+      },
+      async execute(sql: string, params: unknown[] = []): Promise<{ rowCount: number }> {
+        const normalized = sql.trim().toUpperCase();
+        if (normalized.startsWith("SELECT")) {
+          throw new Error(`fakeHost.db.execute: SELECT is not allowed (use query()): ${sql}`);
+        }
+        if (sql.startsWith("INSERT INTO") && sql.includes("companion_company_state")) {
+          const [cid, issueId] = params as string[];
+          if (state.companyState[cid]) return { rowCount: 0 }; // ON CONFLICT (company_id) DO NOTHING
+          state.companyState[cid] = issueId;
+          return { rowCount: 1 };
+        }
+        if (sql.startsWith("INSERT INTO") && sql.includes("companion_threads")) {
           const [id, company_id, title, created_by_user_id] = params as string[];
           const row: CompanionThreadRow = {
             id,
@@ -72,34 +146,15 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             updated_at: new Date().toISOString(),
           };
           state.threads.push(row);
-          return [row] as unknown as T[];
+          return { rowCount: 1 };
         }
-        if (sql.startsWith("SELECT * FROM companion_threads WHERE company_id = $1 AND id = $2")) {
+        if (sql.startsWith("UPDATE") && sql.includes("companion_threads")) {
           const [cid, id] = params as string[];
-          return state.threads.filter((t) => t.company_id === cid && t.id === id) as unknown as T[];
+          const t = state.threads.find((th) => th.company_id === cid && th.id === id);
+          if (t) t.updated_at = new Date().toISOString();
+          return { rowCount: t ? 1 : 0 };
         }
-        if (sql.startsWith("SELECT * FROM companion_threads")) {
-          const [cid] = params as string[];
-          return state.threads
-            .filter((t) => t.company_id === cid)
-            .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) as unknown as T[];
-        }
-        if (sql.startsWith("SELECT companion_issue_id FROM companion_company_state")) {
-          const [cid] = params as string[];
-          const issueId = state.companyState[cid];
-          return (issueId ? [{ companion_issue_id: issueId }] : []) as unknown as T[];
-        }
-        if (sql.startsWith("INSERT INTO companion_company_state")) {
-          const [cid, issueId] = params as string[];
-          if (state.companyState[cid]) return [] as unknown as T[]; // ON CONFLICT (company_id) DO NOTHING
-          state.companyState[cid] = issueId;
-          return [{ companion_issue_id: issueId }] as unknown as T[];
-        }
-        if (sql.startsWith("SELECT * FROM companion_messages WHERE thread_id = $1 AND role = $2 AND client_request_id = $3")) {
-          const [tid, role, crid] = params as string[];
-          return state.messages.filter((m) => m.thread_id === tid && m.role === role && m.client_request_id === crid) as unknown as T[];
-        }
-        if (sql.startsWith("INSERT INTO companion_messages")) {
+        if (sql.startsWith("INSERT INTO") && sql.includes("companion_messages")) {
           const [id, company_id, thread_id, role, actor_user_id, body, evidence, client_request_id = null] = params as [
             string,
             string,
@@ -114,7 +169,7 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             const dup = state.messages.find(
               (m) => m.thread_id === thread_id && m.role === role && m.client_request_id === client_request_id,
             );
-            if (dup) return [] as unknown as T[]; // ON CONFLICT (thread_id, role, client_request_id) DO NOTHING
+            if (dup) return { rowCount: 0 }; // ON CONFLICT (thread_id, role, client_request_id) DO NOTHING
           }
           const row: CompanionMessageRow = {
             id,
@@ -128,32 +183,12 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             created_at: new Date().toISOString(),
           };
           state.messages.push(row);
-          return [row] as unknown as T[];
+          return { rowCount: 1 };
         }
-        if (sql.startsWith("SELECT * FROM companion_messages")) {
-          const [cid, tid] = params as string[];
-          return state.messages
-            .filter((m) => m.company_id === cid && m.thread_id === tid)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
-        }
-        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND message_id = $2")) {
-          const [cid, mid] = params as string[];
-          return state.proposals.filter((p) => p.company_id === cid && p.message_id === mid) as unknown as T[];
-        }
-        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND thread_id = $2")) {
-          const [cid, tid] = params as string[];
-          return state.proposals
-            .filter((p) => p.company_id === cid && p.thread_id === tid)
-            .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
-        }
-        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND id = $2")) {
-          const [cid, id] = params as string[];
-          return state.proposals.filter((p) => p.company_id === cid && p.id === id) as unknown as T[];
-        }
-        if (sql.startsWith("INSERT INTO companion_action_proposals")) {
+        if (sql.startsWith("INSERT INTO") && sql.includes("companion_action_proposals")) {
           const [id, company_id, thread_id, message_id, companion_issue_id, interaction_id, summary] = params as string[];
           const dup = state.proposals.find((p) => p.company_id === company_id && p.message_id === message_id);
-          if (dup) return [] as unknown as T[]; // ON CONFLICT (company_id, message_id) DO NOTHING
+          if (dup) return { rowCount: 0 }; // ON CONFLICT (company_id, message_id) DO NOTHING
           const row: CompanionActionProposalRow = {
             id,
             company_id,
@@ -168,21 +203,18 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             created_at: new Date().toISOString(),
           };
           state.proposals.push(row);
-          return [row] as unknown as T[];
+          return { rowCount: 1 };
         }
-        if (sql.startsWith("UPDATE companion_action_proposals")) {
+        if (sql.startsWith("UPDATE") && sql.includes("companion_action_proposals")) {
           const [status, decidedByUserId, cid, id] = params as string[];
           const proposal = state.proposals.find((p) => p.company_id === cid && p.id === id && p.status === "pending");
-          if (!proposal) return [] as unknown as T[];
+          if (!proposal) return { rowCount: 0 };
           proposal.status = status as "accepted" | "rejected";
           proposal.decided_by_user_id = decidedByUserId;
           proposal.decided_at = new Date().toISOString();
-          return [proposal] as unknown as T[];
+          return { rowCount: 1 };
         }
-        throw new Error(`fakeHost.db.query: unhandled SQL: ${sql}`);
-      },
-      async execute() {
-        return { rowCount: 1 };
+        throw new Error(`fakeHost.db.execute: unhandled SQL: ${sql}`);
       },
     },
     issues: {
@@ -270,6 +302,30 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
   };
 
   return { host, state };
+}
+
+/**
+ * Test-only helper for seeding a human message directly (bypassing
+ * sendMessage()'s evidence-gathering/LLM-call machinery) in tests that only
+ * need a message row to exist so proposeAction()/decideProposal() have
+ * something to attach to. Mirrors real ctx.db usage: execute() to insert
+ * (no RETURNING — the real host doesn't support it), then query() to read
+ * the row back. Returns a 1-element array to match host.db.query()'s
+ * shape, since call sites index it as `humanMsg[0]`.
+ */
+async function insertTestHumanMessage(
+  host: CompanionHost,
+  companyId: string,
+  threadId: string,
+  actorUserId: string,
+  body: string,
+): Promise<CompanionMessageRow[]> {
+  const id = randomUUID();
+  await host.db.execute(
+    `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id, companyId, threadId, "human", actorUserId, body, null],
+  );
+  return host.db.query<CompanionMessageRow>(`SELECT * FROM companion_messages WHERE id = $1`, [id]);
 }
 
 describe("companion-service — thread/message persistence", () => {
@@ -368,10 +424,7 @@ describe("companion-service — no Companion self-approval", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
 
     await expect(decideProposal(host, companyId, proposal.id, "accept", undefined)).rejects.toThrow(
@@ -384,10 +437,7 @@ describe("companion-service — no Companion self-approval", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
 
     const decided = await decideProposal(host, companyId, proposal.id, "accept", "user-1");
@@ -401,10 +451,7 @@ describe("companion-service — idempotency / duplicate resolution", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
 
     const respondSpy = vi.spyOn(host.issues, "respondInteraction");
@@ -498,10 +545,7 @@ describe("companion-service — proposal hydration (persisted-proposal-visibilit
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
     await decideProposal(host, companyId, proposal.id, "accept", "user-1");
 
@@ -518,10 +562,7 @@ describe("companion-service — proposal hydration (persisted-proposal-visibilit
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
 
     await expect(getThreadWithMessages(host, "company-b", thread.id)).rejects.toThrow(CompanionNotFoundError);
@@ -574,10 +615,7 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const first = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
     const second = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do a different thing");
 
@@ -590,10 +628,7 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await host.db.query<CompanionMessageRow>(
-      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
-    );
+    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
     const results = await Promise.all(
       Array.from({ length: 5 }, () => proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing")),
     );
