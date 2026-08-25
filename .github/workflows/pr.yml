@@ -65,9 +65,6 @@ jobs:
       - name: Test e2e board-auth coverage check
         run: node --test ./scripts/check-e2e-board-auth-coverage.test.mjs
 
-      - name: Test e2e board-key bootstrap guard
-        run: node ./cli/node_modules/tsx/dist/cli.mjs --test ./tests/e2e/board-key-bootstrap.guard.test.ts
-
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
@@ -151,6 +148,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Test e2e board-key bootstrap guard
+        run: node ./cli/node_modules/tsx/dist/cli.mjs --test ./tests/e2e/board-key-bootstrap.guard.test.ts
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
