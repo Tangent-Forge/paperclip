@@ -521,3 +521,5 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 <p align="center">
   <sub>Open source under MIT. Built for people who want to get work done, not babysit agents.</sub>
 </p>
+
+<!-- trivial edit: verifying commitperclip-review workflow post PR #110, remove after confirming -->
