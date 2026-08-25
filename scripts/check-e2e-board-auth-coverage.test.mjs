@@ -75,6 +75,34 @@ test("checkSpecSource passes a company-creating spec with the manual opt-out mar
   assert.equal(checkSpecSource("tests/e2e/example.spec.ts", source), null);
 });
 
+// Regression: an independent review found that a spec importing the
+// board-auth fixture AND separately building its own raw APIRequestContext
+// (which the fixture cannot reach) still silently passed as "covered".
+test("checkSpecSource flags a raw standalone context with no credential evidence, even if the fixture is also imported", () => {
+  const source = [
+    'import { request as pwRequest, test as base, expect } from "@playwright/test";',
+    'import { test } from "./fixtures/board-auth.js";',
+    'test("x", async () => {',
+    '  const board = await pwRequest.newContext({ baseURL: "http://x" });',
+    '  await board.post("/api/companies", { data: {} });',
+    "});",
+  ].join("\n");
+  const offense = checkSpecSource("tests/e2e/example.spec.ts", source);
+  assert.ok(offense);
+  assert.match(offense.message, /raw "request"/);
+});
+
+test("checkSpecSource passes a raw standalone context that does attach a credential header", () => {
+  const source = [
+    'import { request as pwRequest } from "@playwright/test";',
+    'test("x", async () => {',
+    '  const board = await pwRequest.newContext({ baseURL: "http://x", extraHTTPHeaders: { Authorization: `Bearer ${token}` } });',
+    '  await board.post("/api/companies", { data: {} });',
+    "});",
+  ].join("\n");
+  assert.equal(checkSpecSource("tests/e2e/example.spec.ts", source), null);
+});
+
 test("checkSpecSource ignores specs that never create a company", () => {
   const source = [
     'import { expect, test } from "@playwright/test";',

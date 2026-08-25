@@ -127,3 +127,28 @@ test("assertConnectedToThisRunsIsolatedDatabase accepts a data directory genuine
     else process.env.PAPERCLIP_HOME = original;
   }
 });
+
+// Regression: an independent review found this exact boundary case was
+// completely untested — mutation-tested the production code by dropping the
+// `${sep}` from the `startsWith` check (board-key-bootstrap.ts) and by
+// swapping it for a naive `.includes()`, and both weakened versions still
+// passed the suite as it stood before this test existed. Both are real,
+// live-reproducible false negatives: `/tmp/paperclip-e2e-home-1` is a
+// string-prefix of `/tmp/paperclip-e2e-home-12/db`, a real, plausible
+// sibling temp-dir collision (mkdtempSync's own naming scheme), but
+// `home-12` is NOT a subdirectory of `home-1` — accepting it would defeat
+// the entire guard for exactly the class of collision it exists to catch.
+test("assertConnectedToThisRunsIsolatedDatabase refuses a sibling directory that merely shares a string prefix", async () => {
+  const original = process.env.PAPERCLIP_HOME;
+  process.env.PAPERCLIP_HOME = "/tmp/paperclip-e2e-home-1";
+  try {
+    const { assertConnectedToThisRunsIsolatedDatabase } = await import("./board-key-bootstrap.js");
+    await assert.rejects(
+      () => assertConnectedToThisRunsIsolatedDatabase(fakeSql("/tmp/paperclip-e2e-home-12/instances/playwright-e2e/db")),
+      /does not resolve under this run's PAPERCLIP_HOME/,
+    );
+  } finally {
+    if (original === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = original;
+  }
+});

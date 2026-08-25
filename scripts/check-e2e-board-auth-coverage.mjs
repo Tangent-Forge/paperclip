@@ -32,6 +32,21 @@ export const ALLOW_MARKER = "board-auth-coverage-check: manual-credential";
 
 export const BOARD_AUTH_IMPORT_PATTERN = /from\s+["']\.\/fixtures\/board-auth(?:\.js)?["']/;
 
+// Regression: an independent review found that importing the board-auth
+// fixture is necessary but NOT sufficient. The fixture only overrides the
+// `context` and injected `request` fixtures — a spec that ALSO imports the
+// raw `request` export from "@playwright/test" to build its own standalone
+// `APIRequestContext` (e.g. `pwRequest.newContext({ baseURL })`) is not
+// covered by the fixture at all for that context; it needs its own
+// `extraHTTPHeaders`/Authorization header, attached manually. Three real
+// specs already do this correctly (signoff-policy, sidebar-takeover,
+// pipelines-tutorial-flow) — this only requires *some* evidence of a
+// manually-attached credential anywhere in the file, not that it's on the
+// exact right call, so it stays a cheap tripwire rather than a full parse.
+export const RAW_PLAYWRIGHT_REQUEST_IMPORT_PATTERN =
+  /import\s*\{[^}]*\brequest\b[^}]*\}\s*from\s*["']@playwright\/test["']/;
+export const MANUAL_CREDENTIAL_HEADER_EVIDENCE_PATTERN = /extraHTTPHeaders|Authorization/;
+
 // Specs run through a dedicated, non-default Playwright config that isn't
 // wired into any package.json script or CI workflow (confirmed via repo-wide
 // grep 2026-08-25) — no `globalSetup` provisions a board credential for
@@ -47,8 +62,26 @@ const NOT_WIRED_INTO_ANY_HARNESS = new Set(["multi-user.spec.ts"]);
 
 export function checkSpecSource(relativePath, source) {
   if (!COMPANY_CREATE_POST_PATTERN.test(source)) return null;
-  if (BOARD_AUTH_IMPORT_PATTERN.test(source)) return null;
   if (source.includes(ALLOW_MARKER)) return null;
+
+  const importsFixture = BOARD_AUTH_IMPORT_PATTERN.test(source);
+  const buildsRawContext = RAW_PLAYWRIGHT_REQUEST_IMPORT_PATTERN.test(source);
+  const hasManualCredentialEvidence = MANUAL_CREDENTIAL_HEADER_EVIDENCE_PATTERN.test(source);
+
+  if (buildsRawContext && !hasManualCredentialEvidence) {
+    return {
+      relativePath,
+      message:
+        `${relativePath} imports the raw "request" export from "@playwright/test" to build its ` +
+        `own APIRequestContext, but has no extraHTTPHeaders/Authorization evidence anywhere in ` +
+        `the file — the board-auth fixture does NOT cover a manually-built context, only ` +
+        `\`context\`/the injected \`request\` fixture. Attach a board credential's Authorization ` +
+        `header when constructing that context.`,
+    };
+  }
+
+  if (importsFixture || buildsRawContext) return null;
+
   return {
     relativePath,
     message:
