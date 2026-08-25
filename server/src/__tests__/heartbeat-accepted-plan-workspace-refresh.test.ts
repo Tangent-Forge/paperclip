@@ -51,20 +51,24 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   model: "test-model",
 })));
 
-vi.mock("../adapters/index.js", () => ({
-  getServerAdapter: () => ({
-    type: "codex_local",
-    execute: adapterExecute,
-    supportsLocalAgentJwt: false,
-  }),
-  findActiveServerAdapter: () => ({
-    type: "codex_local",
-    execute: adapterExecute,
-    supportsLocalAgentJwt: false,
-  }),
-  listAdapterModelProfiles: async () => [],
-  runningProcesses: new Map(),
-}));
+vi.mock("../adapters/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../adapters/index.js")>();
+  return {
+    ...actual,
+    getServerAdapter: () => ({
+      type: "codex_local",
+      execute: adapterExecute,
+      supportsLocalAgentJwt: false,
+    }),
+    findActiveServerAdapter: () => ({
+      type: "codex_local",
+      execute: adapterExecute,
+      supportsLocalAgentJwt: false,
+    }),
+    listAdapterModelProfiles: async () => [],
+    runningProcesses: new Map(),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
