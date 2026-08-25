@@ -47,6 +47,10 @@ import {
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
 import {
+  countAutomaticAttemptsTowardCeiling,
+  shouldScheduleProviderQuotaRecoveryMonitor,
+} from "../exact-project-workspace.js";
+import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
@@ -3026,6 +3030,46 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (existing) return existing;
+
+    // B0: do not insert residual scheduled_retry after ceiling/terminal disposition.
+    // Due-time promotion is gated separately; this direct insert must fail closed too.
+    const priorRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.issue.companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+        ),
+      );
+    const automaticAttemptsUsed = countAutomaticAttemptsTowardCeiling(priorRuns);
+    const quotaGate = shouldScheduleProviderQuotaRecoveryMonitor({
+      issueStatus: input.issue.status,
+      executionPolicy: input.issue.executionPolicy,
+      executionState: input.issue.executionState,
+      automaticAttemptsUsed,
+    });
+    if (!quotaGate.allowed) {
+      logger.info(
+        {
+          issueId: input.issue.id,
+          companyId: input.issue.companyId,
+          agentId: input.agentId,
+          reason: quotaGate.reason,
+          retryCeiling: quotaGate.retryCeiling,
+          used: quotaGate.used,
+        },
+        "provider quota recovery monitor skipped by automatic execution gate",
+      );
+      return null;
+    }
 
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);

@@ -257,6 +257,7 @@ export const issueExecutionPolicySchema = z.object({
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),
+  retryCeiling: z.number().int().nonnegative().max(100).optional().nullable().default(null),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
