@@ -216,6 +216,35 @@ describe("run counting + wake source classification", () => {
     ).toBe(true);
   });
 
+  it("uses invocationSource (does not ignore it) when deciding ceiling budget", () => {
+    // Same terminal status — only the source distinguishes operator vs automatic.
+    const automatic = runCountsTowardRetryCeiling({
+      status: "failed",
+      invocationSource: "automation",
+      triggerDetail: "system",
+    });
+    const operatorManual = runCountsTowardRetryCeiling({
+      status: "failed",
+      invocationSource: "manual",
+      triggerDetail: "system",
+    });
+    const boardOnDemandManual = runCountsTowardRetryCeiling({
+      status: "failed",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(automatic).toBe(true);
+    expect(operatorManual).toBe(false);
+    expect(boardOnDemandManual).toBe(false);
+    expect(classifyWakeBudgetSource({ source: "manual" })).toBe("operator");
+    expect(classifyWakeBudgetSource({ source: "on_demand", triggerDetail: "manual" })).toBe(
+      "operator",
+    );
+    expect(classifyWakeBudgetSource({ source: "automation", triggerDetail: "system" })).toBe(
+      "automatic",
+    );
+  });
+
   it("counts only budget-consuming automatic runs", () => {
     const n = countAutomaticAttemptsTowardCeiling([
       { status: "succeeded", invocationSource: "automation" },
@@ -352,6 +381,34 @@ describe("provider-quota direct scheduled_retry insert gate", () => {
       automaticAttemptsUsed: 0,
     });
     expect(r.allowed).toBe(true);
+  });
+
+  it("matches buildCompletedState shape (status completed + lastDecisionOutcome approved)", () => {
+    // Mirrors issue-execution-policy buildCompletedState fields used live.
+    const buildCompletedStateShape = {
+      status: "completed",
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: null,
+      reviewRequest: null,
+      completedStageIds: ["stage-1"],
+      lastDecisionId: "dec-1",
+      lastDecisionOutcome: "approved",
+      monitor: null,
+      changesRequestedCount: 0,
+    };
+    const signals = readCanonicalExecutionContinuationSignals(buildCompletedStateShape);
+    expect(signals.terminalDispositionRecorded).toBe(true);
+    expect(signals.verifierPassed).toBe(true);
+    const gate = shouldScheduleProviderQuotaRecoveryMonitor({
+      issueStatus: "in_progress",
+      executionPolicy: { retryCeiling: 3 },
+      executionState: buildCompletedStateShape,
+      automaticAttemptsUsed: 0,
+    });
+    expect(gate.allowed).toBe(false);
   });
 });
 
