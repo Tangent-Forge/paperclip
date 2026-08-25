@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createAgentHireSchema } from "./validators/agent.js";
 import {
-  assertPathInAllowlist,
-  buildMinimalProcessEnv,
   detectForbiddenEnvSecrets,
-  evaluateCanaryHireConsistency,
   findWritePolicyViolations,
   isSafeRelativeWritePath,
   parseGitPorcelainPaths,
 } from "./execution-constraints.js";
+import { assertPathInAllowlist, buildMinimalProcessEnv, evaluateCanaryHireConsistency } from "./execution-constraints-server.js";
 
 const canaryWorkspace = "/tmp/tan-575-paperclip-canary";
 

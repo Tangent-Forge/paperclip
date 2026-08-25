@@ -1,0 +1,2 @@
+ALTER TABLE "delivery_route_contracts" ADD CONSTRAINT "delivery_route_contracts_auto_retry_limit_check" CHECK ("delivery_route_contracts"."auto_retry_limit" >= 0 and "delivery_route_contracts"."auto_retry_limit" <= 10);--> statement-breakpoint
+ALTER TABLE "delivery_route_contracts" ADD CONSTRAINT "delivery_route_contracts_retry_backoff_seconds_check" CHECK ("delivery_route_contracts"."retry_backoff_seconds" > 0 and "delivery_route_contracts"."retry_backoff_seconds" <= 86400);

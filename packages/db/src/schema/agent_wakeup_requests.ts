@@ -1,5 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -37,10 +37,17 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
-    // At most one active wake per agent+idempotency key. Coalesced/skipped/failed
-    // historical rows may share the key for audit without violating this guard.
+    reviewPathRecoveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_review_path_recovery_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'issue_review_path_lost:%' AND ${table.status} <> 'skipped'`),
+    companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
+      table.companyId,
+      sql`(${table.payload} ->> 'issueId')`,
+    ),
     activeIdempotencyUq: uniqueIndex("agent_wakeup_requests_active_idempotency_uq")
       .on(table.companyId, table.agentId, table.idempotencyKey)
-      .where(sql`${table.idempotencyKey} is not null and ${table.status} in ('queued', 'deferred_issue_execution', 'claimed')`),
+      .where(
+        sql`${table.idempotencyKey} is not null and ${table.status} in ('queued', 'deferred_issue_execution', 'claimed')`,
+      ),
   }),
 );

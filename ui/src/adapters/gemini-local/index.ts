@@ -5,7 +5,7 @@ import { buildGeminiLocalConfig } from "@paperclipai/adapter-gemini-local/ui";
 
 export const geminiLocalUIAdapter: UIAdapterModule = {
   type: "gemini_local",
-  label: "Antigravity CLI (local)",
+  label: "Gemini CLI",
   parseStdoutLine: parseGeminiStdoutLine,
   ConfigFields: GeminiLocalConfigFields,
   buildAdapterConfig: buildGeminiLocalConfig,

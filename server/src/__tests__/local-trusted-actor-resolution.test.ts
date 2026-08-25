@@ -86,14 +86,23 @@ describe("PAP-1975: local_trusted actor resolution", () => {
         .fn()
         // 1st lookup: findBoardApiKeyByToken checks boardApiKeys first — no match.
         .mockImplementationOnce(() => createSelectChain([]))
-        // 2nd lookup: agentApiKeys by keyHash — match.
+        // 2nd lookup: agentApiKeys by keyHash — match. responsibleUserId is
+        // required (post-#104 responsible-user attribution) or resolution
+        // fails closed with 403 RESPONSIBLE_USER_UNAVAILABLE.
         .mockImplementationOnce(() =>
-          createSelectChain([{ id: "key-1", agentId: "agent-42", companyId: "company-1", keyHash }]),
+          createSelectChain([
+            { id: "key-1", agentId: "agent-42", companyId: "company-1", keyHash, responsibleUserId: "user-1" },
+          ]),
         )
         // 3rd lookup: agents by id.
         .mockImplementationOnce(() =>
           createSelectChain([{ id: "agent-42", companyId: "company-1", status: "active" }]),
-        ),
+        )
+        // 4th/5th: loadResponsibleUserMemberships resolves the responsible
+        // user (authUsers) and their active company memberships, in that
+        // Promise.all array order.
+        .mockImplementationOnce(() => createSelectChain([{ id: "user-1" }]))
+        .mockImplementationOnce(() => createSelectChain([])),
       update: vi.fn(() => createUpdateChain()),
     } as any;
 
@@ -106,6 +115,7 @@ describe("PAP-1975: local_trusted actor resolution", () => {
       agentId: "agent-42",
       companyId: "company-1",
       source: "agent_key",
+      onBehalfOfUserId: "user-1",
     });
     // Never the board/admin identity, even though a credential was presented.
     expect(res.body.type).not.toBe("board");
@@ -120,7 +130,9 @@ describe("PAP-1975: local_trusted actor resolution", () => {
         .fn()
         .mockImplementationOnce(() => createSelectChain([]))
         .mockImplementationOnce(() =>
-          createSelectChain([{ id: "key-2", agentId: "agent-99", companyId: "company-1", keyHash }]),
+          createSelectChain([
+            { id: "key-2", agentId: "agent-99", companyId: "company-1", keyHash, responsibleUserId: "user-1" },
+          ]),
         )
         .mockImplementationOnce(() =>
           createSelectChain([{ id: "agent-99", companyId: "company-1", status: "terminated" }]),
@@ -131,7 +143,10 @@ describe("PAP-1975: local_trusted actor resolution", () => {
     const app = buildApp("local_trusted", db);
     const res = await request(app).get("/actor").set("Authorization", `Bearer ${rawToken}`);
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ type: "none", source: "none" });
+    // A terminated agent is now rejected outright (401) rather than falling
+    // through to an anonymous "none" actor — a stricter, correct behavior
+    // that landed on master independently of PAP-1975; this credential
+    // still never resolves to a live agent or board identity either way.
+    expect(res.status).toBe(401);
   });
 });

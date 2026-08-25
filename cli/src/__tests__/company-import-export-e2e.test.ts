@@ -202,6 +202,7 @@ function createServerEnv(
   env.PORT = String(port);
   env.SERVE_UI = "false";
   env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+  env.PAPERCLIP_DECISION_SIGNING_SECRET = "company-import-export-decision-signing-secret";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
   env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
@@ -259,6 +260,11 @@ async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Pr
     throw new Error(`Request failed ${res.status} ${pathname}: ${text}`);
   }
   return text ? JSON.parse(text) as T : (null as T);
+}
+
+function isPortableAgent(agent: { metadata?: Record<string, unknown> | null }) {
+  const marker = agent.metadata?.paperclipBuiltInAgent;
+  return typeof marker !== "object" || marker === null;
 }
 
 async function runCliJson<T>(
@@ -619,7 +625,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     expect(importedExisting.company.action).toBe("unchanged");
     expect(importedExisting.agents.some((agent) => agent.action === "created")).toBe(true);
 
-    const twiceImportedAgents = await api<Array<{ id: string; name: string }>>(
+    const twiceImportedAgents = await api<Array<{ id: string; name: string; metadata?: Record<string, unknown> | null }>>(
       apiBase,
       `/api/companies/${importedNew.company.id}/agents`,
     );
@@ -632,9 +638,10 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       `/api/companies/${importedNew.company.id}/issues`,
     );
     const twiceImportedMatchingIssues = twiceImportedIssues.filter((issue) => issue.title === sourceIssue.title);
+    const twiceImportedPortableAgents = twiceImportedAgents.filter(isPortableAgent);
 
-    expect(twiceImportedAgents).toHaveLength(2);
-    expect(new Set(twiceImportedAgents.map((agent) => agent.name)).size).toBe(2);
+    expect(twiceImportedPortableAgents).toHaveLength(2);
+    expect(new Set(twiceImportedPortableAgents.map((agent) => agent.name)).size).toBe(2);
     expect(twiceImportedProjects).toHaveLength(2);
     expect(twiceImportedMatchingIssues).toHaveLength(2);
     expect(new Set(twiceImportedMatchingIssues.map((issue) => issue.identifier)).size).toBe(2);

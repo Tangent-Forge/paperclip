@@ -43,12 +43,14 @@ import {
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   DEFAULT_GEMINI_LOCAL_MODEL,
+  isGeminiAntigravityCommand,
   resolveGeminiLocalModel,
   sanitizeGeminiLocalExtraArgs,
   SANDBOX_INSTALL_COMMAND,
@@ -62,8 +64,14 @@ import {
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import {
+  createGeminiAcpExecutor,
+  formatGeminiAcpFallbackMessage,
+  resolveGeminiExecutionEngineForRun,
+} from "./acp.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const executeGeminiAcp = createGeminiAcpExecutor();
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -71,10 +79,31 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 }
 
 function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscription" {
-  // Use GOOGLE_API_KEY as canonical key (GEMINI_API_KEY is deprecated)
-  return hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
+  return hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
     ? "api"
     : "subscription";
+}
+
+function buildGeminiHeadlessEnv(env: Record<string, string>): Record<string, string> {
+  const next = { ...env };
+  const term = env.TERM?.trim().toLowerCase();
+  if (!term || term === "dumb" || term === "vt100") {
+    next.TERM = "xterm-256color";
+  }
+  if (!next.COLORTERM?.trim()) {
+    next.COLORTERM = "truecolor";
+  }
+  next.NO_BROWSER = "1";
+  delete next.NO_COLOR;
+  return next;
+}
+
+function buildGeminiRuntimeEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...buildGeminiHeadlessEnv(env) })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -179,6 +208,23 @@ async function buildGeminiSkillsDir(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const engineSelection = await resolveGeminiExecutionEngineForRun(ctx);
+  if (engineSelection.engine === "acp") {
+    try {
+      return await executeGeminiAcp(ctx);
+    } catch (err) {
+      if (engineSelection.explicit) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await ctx.onLog(
+        "stderr",
+        formatGeminiAcpFallbackMessage(`Gemini ACP startup failed: ${reason}`),
+      );
+    }
+  }
+  if (!engineSelection.explicit && engineSelection.fallbackReason) {
+    await ctx.onLog("stderr", formatGeminiAcpFallbackMessage(engineSelection.fallbackReason));
+  }
+
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -211,10 +257,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  // A configured Paperclip workspace is an execution boundary, not a hint.
-  // Never create a missing directory or silently run from the Paperclip server
-  // cwd: that can turn a workspace/configuration error into unrelated work.
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: false });
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const geminiSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
   if (!executionTargetIsRemote) {
@@ -222,8 +265,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
@@ -275,20 +316,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (executionTargetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...process.env, ...env }).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-  const billingType = resolveGeminiBillingType(effectiveEnv);
-  const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv(effectiveEnv)).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const runtimeEnv = buildGeminiRuntimeEnv(env);
+  const billingType = resolveGeminiBillingType(runtimeEnv);
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
@@ -310,18 +342,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
   });
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-  let loggedEnv = buildInvocationEnvForLogs(env, {
-    runtimeEnv,
-    includeRuntimeKeys: ["HOME"],
-    resolvedCommand,
-  });
-
-  const configuredExtraArgs = (() => {
+  const commandIsAntigravity = isGeminiAntigravityCommand(resolvedCommand || command);
+  const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
     return asStringArray(config.args);
   })();
-  const extraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand, configuredExtraArgs);
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
   let remoteSkillsDir: string | null = null;
   let localSkillsDir: string | null = null;
@@ -343,13 +369,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
+        onProgress: (line) => onLog("stdout", line),
+        onRuntimeProgress: ctx.onRuntimeProgress,
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
           followSymlinks: true,
         }],
       });
-      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
+      restoreRemoteWorkspace = () =>
+        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env,
@@ -444,11 +473,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);
-      loggedEnv = buildInvocationEnvForLogs(env, {
-        runtimeEnv: ensurePathInEnv({ ...process.env, ...env }),
-        includeRuntimeKeys: ["HOME"],
-        resolvedCommand,
-      });
     }
   }
 
@@ -491,10 +515,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  const resolvedModel = resolveGeminiLocalModel(resolvedCommand, model);
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to agy via --prompt for non-interactive execution."];
-    notes.push("Using agy-compatible unattended execution flags.");
+    const notes: string[] = [
+      commandIsAntigravity
+        ? "Prompt is passed to Antigravity via --prompt for non-interactive execution."
+        : "Prompt is passed to Gemini via --prompt for non-interactive execution.",
+    ];
+    notes.push(
+      commandIsAntigravity
+        ? "Using Antigravity-compatible unattended execution flags."
+        : "Added --approval-mode yolo for unattended execution.",
+    );
+    notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
+    if (executionTargetIsRemote) {
+      notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
+    }
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
@@ -525,7 +560,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? ""
+    : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
@@ -550,23 +587,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
-    // gemini_local is agy-only; the plain Gemini CLI path was dropped 2026-08-09.
-    // agy exposes no --resume (verified against agy --help): resuming by id is
-    // --conversation. Model ids go through resolveGeminiLocalModel so legacy
-    // gemini-2.5-* config values map onto ids agy actually serves.
-    if (resumeSessionId) args.push("--conversation", resumeSessionId);
+    if (resumeSessionId) args.push(commandIsAntigravity ? "--conversation" : "--resume", resumeSessionId);
+    const resolvedModel = resolveGeminiLocalModel(resolvedCommand || command, model);
     if (resolvedModel) args.push("--model", resolvedModel);
-    args.push("--dangerously-skip-permissions", "--disable-slash-commands");
-    if (sandbox) {
-      args.push("--sandbox");
+    if (commandIsAntigravity) {
+      args.push("--dangerously-skip-permissions", "--disable-slash-commands");
+      if (sandbox) args.push("--sandbox");
+    } else {
+      args.push("--approval-mode", "yolo");
+      if (sandbox) {
+        args.push("--sandbox");
+      } else {
+        args.push("--sandbox=none");
+      }
     }
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    const safeExtraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand || command, extraArgs);
+    if (safeExtraArgs.length > 0) args.push(...safeExtraArgs);
     args.push("--prompt", prompt);
     return args;
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const args = buildArgs(resumeSessionId);
+    const invocationEnv = buildGeminiHeadlessEnv(env);
+    const invocationRuntimeEnv = buildGeminiRuntimeEnv(env);
+    const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
+      runtimeEnv: invocationRuntimeEnv,
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand,
+    });
     if (onMeta) {
       await onMeta({
         adapterType: "gemini_local",
@@ -585,11 +634,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
-      env,
+      env: invocationEnv,
       timeoutSec,
       graceSec,
       onSpawn,
+      onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
+      runLogTail: paperclipBridge?.runLogTail,
     });
     return {
       proc,

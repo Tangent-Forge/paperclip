@@ -99,40 +99,6 @@ export function parseGeminiJsonl(stdout: string) {
     if (foundSessionId) sessionId = foundSessionId;
 
     const type = asString(event.type, "").trim();
-    const eventName = asString(event.event, "").trim();
-
-    if (eventName === "init") {
-      const init = parseObject(event.init);
-      const foundConversationId =
-        asString(event.conversation_id, "").trim() || asString(init.conversation_id, "").trim();
-      if (foundConversationId) sessionId = foundConversationId;
-      continue;
-    }
-
-    if (eventName === "step_update") {
-      const step = parseObject(event.step_update);
-      const textDelta = asString(step.text_delta, "");
-      if (textDelta) messages.push(textDelta);
-      accumulateUsage(usage, step.usage);
-      continue;
-    }
-
-    if (eventName === "result") {
-      const result = parseObject(event.result);
-      const foundConversationId =
-        asString(event.conversation_id, "").trim() || asString(result.conversation_id, "").trim();
-      if (foundConversationId) sessionId = foundConversationId;
-      resultEvent = result;
-      accumulateUsage(usage, result.usage);
-      const response = asString(result.response, "").trim();
-      if (response && messages.length === 0) messages.push(response);
-      const status = asString(result.status, "").toLowerCase();
-      if (status === "error" || status === "failed") {
-        const text = asErrorText(result.error ?? result.message ?? result.response).trim();
-        if (text) errorMessage = text;
-      }
-      continue;
-    }
 
     if (type === "assistant") {
       messages.push(...collectMessageText(event.message));
@@ -297,7 +263,7 @@ export function describeGeminiFailure(parsed: Record<string, unknown>): string |
   return parts.length > 1 ? parts.join(": ") : null;
 }
 
-const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
+const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|manual\s+authorization\s+is\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
 const GEMINI_QUOTA_EXHAUSTED_RE =
   /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
 

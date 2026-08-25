@@ -1,22 +1,17 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
-import type { Approval, Issue } from "@paperclipai/shared";
-import { Link } from "@/lib/router";
+import type { Issue } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
-import { approvalsApi } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
+import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
-  classifyBlockedInboxLane,
-  countBlockedInboxLanes,
   formatStoppedAge,
   groupBlockedInboxRows,
-  orphanApprovalMatchesSearch,
-  selectPendingHumanApprovals,
   sortBlockedInboxRows,
   type BlockedInboxGroupBy,
   type BlockedInboxIssueRow,
@@ -27,8 +22,8 @@ import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "./ApprovalPayload";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -41,11 +36,11 @@ interface BlockedInboxViewProps {
   issueFilters: IssueFilterState;
   currentUserId: string | null;
   liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   workspaceFilterContext: IssueFilterWorkspaceContext;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
-  lane?: "human" | "agent_operations" | "all";
 }
 
 const BLOCKED_LIST_LIMIT = 200;
@@ -61,11 +56,11 @@ export function BlockedInboxView({
   issueFilters,
   currentUserId,
   liveIssueIds,
+  subtreeLiveCounts,
   workspaceFilterContext,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
-  lane = "human",
 }: BlockedInboxViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
@@ -76,57 +71,21 @@ export function BlockedInboxView({
     error,
     refetch,
   } = useQuery({
-    queryKey: queryKeys.issues.listBlockedAttention(companyId),
+    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(companyId, {
         attention: "blocked",
         includeBlockedInboxAttention: true,
         includeBlockedBy: true,
+        includeLiveDescendantSummary: true,
         limit: BLOCKED_LIST_LIMIT,
       }),
   });
 
-  // Board-decision approvals routed from a stale ledger ask or a blocked issue with no
-  // recorded blocker are never linked to a live issue, so they're invisible to the query
-  // above — it only ever surfaces attention rows for real Issue records. Fetch them
-  // separately and merge into the human lane so "Human Decisions" actually reflects every
-  // pending item that needs a person's Approve/Reject, not just the issue-linked subset.
-  const {
-    data: unlinkedApprovals = [] as Approval[],
-    isLoading: isLoadingUnlinkedApprovals,
-  } = useQuery({
-    queryKey: queryKeys.approvals.listUnlinked(companyId),
-    queryFn: () => approvalsApi.listUnlinked(companyId),
-    enabled: lane === "human" || lane === "all",
-  });
-
-  const orphanApprovals = useMemo(
-    () => selectPendingHumanApprovals(unlinkedApprovals),
-    [unlinkedApprovals],
-  );
-  const filteredOrphanApprovals = useMemo(
-    () =>
-      orphanApprovals
-        .filter((approval) => orphanApprovalMatchesSearch(approval, approvalLabel(approval.type, approval.payload), searchQuery))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
-    [orphanApprovals, searchQuery],
-  );
-
   const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
-  const laneCounts = useMemo(() => countBlockedInboxLanes(issues), [issues]);
-  const laneRows = useMemo(
-    () => allRows.filter((row) => {
-      if (lane === "all") return true;
-      const rowLane = classifyBlockedInboxLane(row.attention);
-      return lane === "human"
-        ? rowLane === "human"
-        : rowLane === "agent_operations" || rowLane === "external";
-    }),
-    [allRows, lane],
-  );
   const filteredRows = useMemo(
-    () => laneRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
-    [laneRows, searchQuery],
+    () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
+    [allRows, searchQuery],
   );
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(
@@ -156,9 +115,7 @@ export function BlockedInboxView({
     });
   };
 
-  const isLoadingHumanLane = isLoading || ((lane === "human" || lane === "all") && isLoadingUnlinkedApprovals);
-
-  if (isLoadingHumanLane) {
+  if (isLoading) {
     return (
       <div data-testid="blocked-inbox-loading" className="space-y-3" aria-busy="true">
         {Array.from({ length: 3 }).map((_, groupIdx) => (
@@ -214,63 +171,40 @@ export function BlockedInboxView({
     );
   }
 
-  if (laneRows.length === 0 && orphanApprovals.length === 0) {
+  if (allRows.length === 0) {
     return (
-      <div
+      <Card
         data-testid="blocked-inbox-empty"
-        className="flex flex-col items-center gap-3 rounded-lg border border-border/70 bg-card/40 px-6 py-10 text-center"
+        className="items-center gap-3 border-border/70 bg-card/40 px-6 py-10 text-center"
       >
         <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">
-            {lane === "human" ? "No human decisions are waiting." : "Agent Operations is clear."}
-          </p>
+          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
           <p className="text-xs text-muted-foreground">
-            {lane === "human"
-              ? "Only questions and approvals that require a person appear here."
-              : "Agent-owned recovery, stalled chains, failed dispositions, and external waits appear here."}
+            Tasks that need a decision, recovery, or external action will appear here.
           </p>
         </div>
-      </div>
+      </Card>
     );
   }
 
-  if (groups.length === 0 && filteredOrphanApprovals.length === 0) {
+  if (groups.length === 0) {
     return (
       <div className="space-y-3">
-        <div
+        <Card
           data-testid="blocked-inbox-no-search-results"
-          className="rounded-lg border border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
+          className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
           No stopped items match your search.
-        </div>
+        </Card>
       </div>
     );
   }
 
   return (
     <div data-testid="blocked-inbox" className="space-y-3">
-      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground" data-testid="blocked-inbox-lane-counts">
-        <span>Human Decisions {laneCounts.human + orphanApprovals.length}</span>
-        <span aria-hidden="true">·</span>
-        <span>Agent Operations {laneCounts.agentOperations}</span>
-        <span aria-hidden="true">·</span>
-        <span>External Waits {laneCounts.external}</span>
-      </div>
-      {filteredOrphanApprovals.length > 0 && (
-        <div className="overflow-hidden rounded-xl" data-testid="blocked-inbox-orphan-approvals">
-          <div className="px-3 sm:px-4">
-            <IssueGroupHeader label={`Needs decision · ${filteredOrphanApprovals.length}`} />
-          </div>
-          <div>
-            {filteredOrphanApprovals.map((approval) => (
-              <OrphanApprovalRow key={approval.id} approval={approval} />
-            ))}
-          </div>
-        </div>
-      )}
       <div className="overflow-hidden rounded-xl">
         {groupBy === "none" ? (
           sortedRows.map((row) => (
@@ -280,6 +214,8 @@ export function BlockedInboxView({
               issueLinkState={issueLinkState}
               agentNameById={agentNameById}
               userLabelById={userLabelById}
+              liveIssueIds={liveIssueIds}
+              subtreeLiveCounts={subtreeLiveCounts}
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
@@ -307,6 +243,8 @@ export function BlockedInboxView({
                         issueLinkState={issueLinkState}
                         agentNameById={agentNameById}
                         userLabelById={userLabelById}
+                        liveIssueIds={liveIssueIds}
+                        subtreeLiveCounts={subtreeLiveCounts}
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
@@ -323,40 +261,13 @@ export function BlockedInboxView({
   );
 }
 
-// A pending approval with no linked issue — see the `unlinkedApprovals` query above.
-// Renders as a lightweight row (not IssueRow, which requires a real Issue to link to)
-// pointing at the approval's own detail page, where it can be approved or rejected.
-function OrphanApprovalRow({ approval }: { approval: Approval }) {
-  const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload);
-  // `createdAt` arrives as an ISO string over the wire despite the `Date` type; normalize
-  // through `new Date(...)` the same way Approvals.tsx does before formatting.
-  const stoppedAge = formatStoppedAge(new Date(approval.createdAt).toISOString());
-
-  return (
-    <Link
-      to={`/approvals/${approval.id}`}
-      className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 last:border-b-0 hover:bg-accent/40 sm:px-4"
-      data-testid="blocked-inbox-orphan-approval-row"
-    >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
-      <span className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
-        <BlockedReasonChip reason="pending_board_decision" severity="medium" className="hidden sm:inline-flex" />
-        <span className="hidden w-[150px] min-w-0 items-center sm:inline-flex">
-          <Identity name="Board" size="xs" />
-        </span>
-        <span className="hidden w-[5.75rem] text-right sm:inline">{stoppedAge}</span>
-      </span>
-    </Link>
-  );
-}
-
 interface BlockedInboxRowProps {
   row: BlockedInboxIssueRow;
   issueLinkState: unknown;
   agentNameById: ReadonlyMap<string, string>;
   userLabelById?: ReadonlyMap<string, string>;
+  liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
@@ -383,17 +294,23 @@ function BlockedInboxRow({
   issueLinkState,
   agentNameById,
   userLabelById,
+  liveIssueIds,
+  subtreeLiveCounts,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
+    isLive: liveIssueIds.has(row.issue.id),
+    loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
+  });
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
       <span
-        className="hidden w-[10.5rem] shrink-0 justify-start sm:inline-flex"
+        className="hidden w-(--sz-10_5rem) shrink-0 justify-start sm:inline-flex"
         data-testid="blocked-row-reason-column"
       >
         <BlockedReasonChip
@@ -403,7 +320,7 @@ function BlockedInboxRow({
         />
       </span>
       {ownerName ? (
-        <span className="hidden w-[150px] min-w-0 items-center text-muted-foreground sm:inline-flex">
+        <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
           <Identity
             name={ownerName}
             size="xs"
@@ -411,10 +328,10 @@ function BlockedInboxRow({
           />
         </span>
       ) : (
-        <span className="hidden w-[150px] shrink-0 sm:inline-flex" aria-hidden="true" />
+        <span className="hidden w-(--sz-150px) shrink-0 sm:inline-flex" aria-hidden="true" />
       )}
       {showUpdatedColumn ? (
-        <span className="hidden w-[5.75rem] text-right text-muted-foreground sm:inline" data-testid="blocked-row-age">
+        <span className="hidden w-(--sz-5_75rem) text-right text-muted-foreground sm:inline" data-testid="blocked-row-age">
           {stoppedAge}
         </span>
       ) : null}
@@ -442,23 +359,25 @@ function BlockedInboxRow({
     <IssueRow
       issue={row.issue}
       issueLinkState={issueLinkState}
+      showDivider
       desktopMetaLeading={
         <BlockedRowDesktopMeta
           row={row}
+          blockerAttention={blockerAttention}
           showStatusColumn={showStatusColumn}
           showIdentifierColumn={showIdentifierColumn}
         />
       }
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} />
+          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
         </span>
       }
       titleSuffix={
         <BlockedReasonChip
           reason={row.attention.reason}
           severity={row.attention.severity}
-          className="ml-2 max-w-[12rem] align-middle sm:hidden"
+          className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
         />
       }
       mobileMeta={mobileMeta}
@@ -469,17 +388,19 @@ function BlockedInboxRow({
 
 function BlockedRowDesktopMeta({
   row,
+  blockerAttention,
   showStatusColumn,
   showIdentifierColumn,
 }: {
   row: BlockedInboxIssueRow;
+  blockerAttention: Issue["blockerAttention"] | null;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );

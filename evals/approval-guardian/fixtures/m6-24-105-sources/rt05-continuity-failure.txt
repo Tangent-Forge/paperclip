@@ -1,9 +1,0 @@
-24-105 RT-05 continuity finding excerpt.
-
-RT-05 checks that previously_billed + work_this_period + material_stored equals
-completed_to_date. Sixteen rows from NPC - APRIL.BA.xlsx violate that relation.
-The rows show completed_to_date equal to previously_billed while
-work_this_period contains a nonzero amount.
-
-The finding is not sufficient to decide which April workbook is authoritative,
-alter pay-app records, or add RT-05 to the exception register.

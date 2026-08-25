@@ -1,6 +1,0 @@
-24-105 canonical write request excerpt.
-
-The issue constraints state that canonical DB writes, migrations, secret/auth
-changes, and runtime config changes are blocked until TF Risk Auditor signs off.
-The M6 pilot must run in dry-run shadow mode only and must not enable autonomous
-canonical DB writes.

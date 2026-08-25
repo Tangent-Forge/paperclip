@@ -62,7 +62,7 @@ export function choosePrimaryRuntimeApiUrl(input: {
   }
 
   const bindHost = normalizeHost(input.bindHost);
-  if (bindHost && isLoopbackHost(bindHost)) {
+  if (bindHost && !isWildcardHost(bindHost) && isLoopbackHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }
 

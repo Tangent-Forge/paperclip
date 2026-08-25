@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals, issueApprovals } from "@paperclipai/db";
+import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -22,6 +22,13 @@ export function approvalService(db: Db) {
       ...comment,
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
     };
+  }
+
+  async function reconcileApprovedBuiltInAgent(companyId: string, payload: Record<string, unknown>) {
+    const sourceBuiltInAgentKey = typeof payload.sourceBuiltInAgentKey === "string" ? payload.sourceBuiltInAgentKey : null;
+    if (!sourceBuiltInAgentKey) return;
+    const { builtInAgentService } = await import("./built-in-agents.js");
+    await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
   }
 
   async function getExistingApproval(id: string) {
@@ -79,22 +86,9 @@ export function approvalService(db: Db) {
   }
 
   return {
-    // `unlinkedOnly` selects approvals with no row in `issue_approvals` — i.e. approvals
-    // that were never tied to a live issue (e.g. board-decision approvals routed from a
-    // stale ledger ask or a blocked-with-no-blocker issue by scripts/route_decisions.py).
-    // These can never surface through the Issue-driven blocked-inbox attention computation
-    // in issues.ts, since that pipeline only ever iterates real Issue rows.
-    list: (companyId: string, status?: string, options?: { unlinkedOnly?: boolean }) => {
+    list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
-      if (options?.unlinkedOnly) {
-        conditions.push(sql`
-          NOT EXISTS (
-            SELECT 1 FROM ${issueApprovals}
-            WHERE ${issueApprovals.approvalId} = ${approvals.id}
-          )
-        `);
-      }
       return db.select().from(approvals).where(and(...conditions));
     },
 
@@ -105,12 +99,46 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .then((rows) => rows[0] ?? null),
 
+    findOpenHireApprovalForAgent: async (companyId: string, agentId: string) => {
+      const rows = await db
+        .select()
+        .from(approvals)
+        .where(
+          and(
+            eq(approvals.companyId, companyId),
+            eq(approvals.type, "hire_agent"),
+            inArray(approvals.status, resolvableStatuses),
+            sql`${approvals.payload} ->> 'agentId' = ${agentId}`,
+          ),
+        );
+      return rows[0] ?? null;
+    },
+
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
       db
         .insert(approvals)
         .values({ ...data, companyId })
         .returning()
         .then((rows) => rows[0]),
+
+    // Cancel an open (pending/revision_requested) approval without a board
+    // decision — e.g. when its paired agent is terminated during duplicate
+    // cleanup. Idempotent: a no-op on already-resolved approvals.
+    cancel: async (id: string, reason?: string | null) => {
+      const now = new Date();
+      const updated = await db
+        .update(approvals)
+        .set({
+          status: "cancelled",
+          decisionNote: reason ?? null,
+          decidedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated;
+    },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
@@ -126,7 +154,8 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId);
+          await agentsSvc.activatePendingApproval(payloadAgentId, payload);
+          await reconcileApprovedBuiltInAgent(updated.companyId, payload);
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {

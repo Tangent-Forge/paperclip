@@ -4,8 +4,7 @@ import {
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
-// agy-only as of 2026-08-09; the plain Gemini CLI path was dropped.
-export const label = "Antigravity CLI (local)";
+export const label = "Gemini CLI / Antigravity";
 
 export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
 
@@ -20,22 +19,19 @@ const AGY_MODEL_ALIASES: Record<string, string> = {
   "gemini-3.1-flash-lite": "gemini-3.5-flash-low",
 };
 
-export function resolveGeminiLocalModel(command: string, model: string): string | null {
+export function isGeminiAntigravityCommand(command: string): boolean {
   const commandName = command.replace(/\\/g, "/").split("/").pop()?.toLowerCase().replace(/\.(cmd|exe)$/, "");
-  if (commandName !== "agy") return model && model !== DEFAULT_GEMINI_LOCAL_MODEL ? model : null;
+  return commandName === "agy";
+}
 
+export function resolveGeminiLocalModel(command: string, model: string): string | null {
+  if (!isGeminiAntigravityCommand(command)) return model && model !== DEFAULT_GEMINI_LOCAL_MODEL ? model : null;
   const normalized = model.trim().replace(/^google\//i, "");
   if (!normalized || normalized === DEFAULT_GEMINI_LOCAL_MODEL) return null;
   return AGY_MODEL_ALIASES[normalized] ?? normalized;
 }
 
-// Flags the adapter itself resolves and owns -- a config-supplied extraArgs
-// value must never be able to smuggle in a different model, prompt, or
-// session id than what the adapter already computed, or flip a safety flag
-// (sandbox, skip-trust, dangerously-skip-permissions) the adapter didn't ask
-// for. Matched by flag name only (arg.split("=", 1)[0]) so both "--model X"
-// and "--model=X" forms are caught.
-const GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS = new Set([
+const AGY_VALUE_TAKING_OWNED_FLAGS = new Set([
   "--approval-mode",
   "--conversation",
   "--model",
@@ -43,7 +39,7 @@ const GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS = new Set([
   "--prompt",
   "--resume",
 ]);
-const GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS = new Set([
+const AGY_BOOLEAN_OWNED_FLAGS = new Set([
   "--dangerously-skip-permissions",
   "--sandbox",
   "--sandbox=none",
@@ -51,23 +47,19 @@ const GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS = new Set([
 ]);
 
 export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): string[] {
-  const commandName = command.replace(/\\/g, "/").split("/").pop()?.toLowerCase().replace(/\.(cmd|exe)$/, "");
-  if (commandName !== "agy") return args;
-
+  if (!isGeminiAntigravityCommand(command)) return args;
   const sanitized: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const flag = arg.split("=", 1)[0];
-    if (GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS.has(arg)) {
+    if (AGY_VALUE_TAKING_OWNED_FLAGS.has(arg)) {
       const nextArg = args[index + 1];
       if (nextArg && !nextArg.startsWith("-")) index += 1;
       continue;
     }
-    if (
-      GEMINI_LOCAL_VALUE_TAKING_OWNED_FLAGS.has(flag)
-      || GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS.has(arg)
-      || GEMINI_LOCAL_BOOLEAN_OWNED_FLAGS.has(flag)
-    ) continue;
+    if (AGY_VALUE_TAKING_OWNED_FLAGS.has(flag) || AGY_BOOLEAN_OWNED_FLAGS.has(arg) || AGY_BOOLEAN_OWNED_FLAGS.has(flag)) {
+      continue;
+    }
     sanitized.push(arg);
   }
   return sanitized;
@@ -75,12 +67,13 @@ export function sanitizeGeminiLocalExtraArgs(command: string, args: string[]): s
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" },
-  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (Preview)" },
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
@@ -101,7 +94,7 @@ Adapter: gemini_local
 
 Use when:
 - You want Paperclip to run the Gemini CLI locally on the host machine
-- You want Gemini chat sessions resumed across heartbeats (Gemini CLI uses --resume; agy uses --conversation)
+- You want Gemini chat sessions resumed across heartbeats (--resume for Gemini CLI, --conversation for Antigravity)
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:
@@ -110,22 +103,30 @@ Don't use when:
 - Gemini CLI is not installed on the machine that runs Paperclip
 
 Core fields:
-- cwd (string, optional): default absolute working directory fallback for the agent process; it must already exist
+- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- sandbox (boolean, optional): run in sandbox mode (default: false; agy passes --sandbox only when enabled)
-- command (string, optional): defaults to "gemini"
+- engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
+- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
+- command (string, optional): defaults to "gemini"; set to "agy" for Antigravity OAuth/subscription execution
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to gemini --acp
+- mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
+- nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
+- stateDir (string, optional): ACP state directory override when engine="acp"
+- warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use positional prompt arguments, not stdin.
-- Sessions resume with --resume for Gemini CLI or --conversation for agy when stored session cwd matches the current cwd.
+- Gemini ACP is the preferred auto lane when Node >=20 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Auto selection falls back to the CLI lane when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
+- Runs use --prompt for non-interactive execution, not stdin.
+- The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
+- Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
-- Authentication can use GOOGLE_API_KEY, Gemini CLI login, or Antigravity OAuth stored by agy. (GEMINI_API_KEY is deprecated.)
+- Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY, local Gemini CLI login, or Antigravity OAuth stored by agy.
 `;

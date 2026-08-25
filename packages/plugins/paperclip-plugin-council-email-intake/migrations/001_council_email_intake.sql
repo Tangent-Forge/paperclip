@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS email_links (
+CREATE TABLE IF NOT EXISTS plugin_council_email_intake_f6365ccdd0.email_links (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   source_message_id text NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS email_links (
   UNIQUE (company_id, source_message_id)
 );
 
-CREATE TABLE IF NOT EXISTS intake_runs (
+CREATE TABLE IF NOT EXISTS plugin_council_email_intake_f6365ccdd0.intake_runs (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL,
   trigger_kind text NOT NULL,

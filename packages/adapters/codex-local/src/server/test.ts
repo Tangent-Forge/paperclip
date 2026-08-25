@@ -25,6 +25,8 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
+import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -79,11 +81,15 @@ async function prepareCodexHelloProbe(input: {
 }> {
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
+  let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
     await preparedRuntime?.restoreWorkspace().catch(() => {});
     if (preparedRuntimeWorkspaceLocalDir) {
       await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (probeHomeLocalDir) {
+      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
     }
   };
 
@@ -91,6 +97,39 @@ async function prepareCodexHelloProbe(input: {
     const managedHome = await prepareManagedCodexHome(process.env, async () => {}, input.companyId, {
       apiKey: null,
     });
+
+    // Upload only the credential/config files the login probe needs, not the
+    // entire managed CODEX_HOME. A real managed home accumulates hundreds of MB
+    // of session/state history (`sessions/`, `state_*.sqlite`, …); tarring and
+    // streaming all of it into the sandbox made the environment Test probe take
+    // many minutes and look like it hung. The hello probe only needs auth.
+    probeHomeLocalDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
+    );
+    let seededAuth = false;
+    for (const file of ["auth.json", "config.toml"]) {
+      // `fs.readFile` follows the managed home's `auth.json` symlink into the
+      // host's `~/.codex`, so we copy the resolved bytes as a plain file.
+      const contents = await fs.readFile(path.join(managedHome, file)).catch(() => null);
+      if (contents) {
+        await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
+        if (file === "auth.json") seededAuth = true;
+      }
+    }
+
+    // When the host has no Codex credentials to seed, don't override CODEX_HOME.
+    // Pointing Codex at an empty uploaded home would mask any login already
+    // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
+    // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
+    if (!seededAuth) {
+      return {
+        command: input.command,
+        args: input.args,
+        env: { ...input.env },
+        cleanup,
+      };
+    }
+
     preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
@@ -109,7 +148,7 @@ async function prepareCodexHelloProbe(input: {
       assets: [
         {
           key: "home",
-          localDir: managedHome,
+          localDir: probeHomeLocalDir,
           followSymlinks: true,
         },
       ],
@@ -157,7 +196,24 @@ async function prepareCodexHelloProbe(input: {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const engineSelection = await resolveCodexExecutionEngineForRun({
+    config: parseObject(ctx.config),
+    executionTarget: ctx.executionTarget,
+  });
+  if (engineSelection.engine === "acp") {
+    return testCodexAcpEnvironment(ctx);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
+  if (!engineSelection.explicit && engineSelection.fallbackReason) {
+    checks.push({
+      code: "codex_acp_default_fallback",
+      level: "warn",
+      message: "Codex ACP default is unavailable; testing the Codex CLI fallback lane.",
+      detail: engineSelection.fallbackReason,
+      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
+    });
+  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
@@ -230,51 +286,34 @@ export async function testEnvironment(
 
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  // Local-only auth file check. On remote targets, the probe will surface any
-  // missing-auth errors directly from the remote `codex` invocation.
-  //
-  // Native auth.json (ChatGPT-subscription mode, or a previously seeded
-  // API-key mode) takes precedence over an ambient server-wide
-  // OPENAI_API_KEY: Paperclip injects OPENAI_API_KEY into every service
-  // process via the shared tf-secrets/runtime.env pipeline, so its mere
-  // presence in process.env does not mean this agent is meant to
-  // authenticate with it — most agents run on a seeded ChatGPT-mode
-  // auth.json instead, which `readCodexAuthInfo` below already detects
-  // correctly for real executions. Checking native auth first here avoids a
-  // false "auth required" probe failure for agents that are actually
-  // working, and avoids masking a working chatgpt-mode credential behind an
-  // org-wide API key that may not even be entitled to the Responses API
-  // codex actually calls.
-  const codexHomeOverride = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
-  const codexAuth = targetIsRemote ? null : await readCodexAuthInfo(codexHomeOverride).catch(() => null);
-  if (isNonEmpty(configOpenAiKey)) {
+  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
+    const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: "Detected in adapter config env.",
-    });
-  } else if (codexAuth) {
-    checks.push({
-      code: "codex_native_auth_present",
-      level: "info",
-      message: "Codex is authenticated via its own auth configuration.",
-      detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHomeOverride ?? codexHomeDir(), "auth.json")}.`,
-    });
-  } else if (isNonEmpty(hostOpenAiKey)) {
-    checks.push({
-      code: "codex_openai_api_key_present",
-      level: "info",
-      message: "OPENAI_API_KEY is set for Codex authentication.",
-      detail: "Detected in server environment.",
+      detail: `Detected in ${source}.`,
     });
   } else if (!targetIsRemote) {
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
-    });
+    // Local-only auth file check. On remote targets, the probe will surface
+    // any missing-auth errors directly from the remote `codex` invocation.
+    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
+    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
+    if (codexAuth) {
+      checks.push({
+        code: "codex_native_auth_present",
+        level: "info",
+        message: "Codex is authenticated via its own auth configuration.",
+        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+      });
+    } else {
+      checks.push({
+        code: "codex_openai_api_key_missing",
+        level: "warn",
+        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+      });
+    }
   }
 
   const canRunProbe =
@@ -316,19 +355,11 @@ export async function testEnvironment(
       // wrap the probe with a shell that materializes a per-run auth.json so
       // the CLI can authenticate. The key content is passed via env (not on
       // the command line) to avoid leaking it into process listings.
-      //
-      // Skip that wrapping when native auth.json already exists (codexAuth):
-      // let the probe run against the agent's real, already-seeded home
-      // instead of shadowing a working chatgpt-mode credential with an
-      // ambient server-wide OPENAI_API_KEY that was never configured for
-      // this agent specifically.
       const probeApiKey = isNonEmpty(configOpenAiKey)
         ? configOpenAiKey
-        : codexAuth
-          ? null
-          : isNonEmpty(hostOpenAiKey)
-            ? hostOpenAiKey
-            : null;
+        : isNonEmpty(hostOpenAiKey)
+          ? hostOpenAiKey
+          : null;
       const preparedProbe = await prepareCodexHelloProbe({
         runId,
         companyId: ctx.companyId,
@@ -392,6 +423,18 @@ export async function testEnvironment(
               ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
               : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
           });
+          if (targetIsSandbox) {
+            // Emit the neutral canonical check so the user interface can decide
+            // login eligibility from a stable code. The user interface does not
+            // read the message text or the top-level status.
+            checks.push({
+              code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+              level: "warn",
+              message: "The sandbox has no ready authentication for this adapter.",
+              ...(detail ? { detail } : {}),
+              hint: "Provide credentials for this adapter, or start login in the sandbox.",
+            });
+          }
         } else {
           checks.push({
             code: "codex_hello_probe_failed",

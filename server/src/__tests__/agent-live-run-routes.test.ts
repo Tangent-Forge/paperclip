@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
@@ -25,6 +26,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getExperimental: vi.fn(),
   getGeneral: vi.fn(),
   listCompanyIds: vi.fn(),
+}));
+
+const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
@@ -48,6 +53,10 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/run-secret-redaction.js", () => ({
+    createRunSecretRedactionRegistry: () => mockRunSecretRedactionRegistry,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
@@ -62,6 +71,7 @@ function registerModuleMocks() {
       hasPermission: vi.fn(async () => true),
     }),
     approvalService: () => ({}),
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
@@ -194,6 +204,11 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
+    }));
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -221,7 +236,6 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
-      logStatus: "ok",
     });
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
@@ -257,6 +271,8 @@ describe("agent live run routes", () => {
       agentName: "Builder",
       adapterType: "codex_local",
       outputSilence: null,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
@@ -304,6 +320,35 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("includes ephemeral current status fields on active run polling", async () => {
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: new Date("2026-04-10T09:30:05.000Z"),
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: new Date("2026-04-10T09:30:06.000Z"),
+    }));
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
+      { companyId: "company-1", issueId: "issue-1" },
+    );
+    expect(res.body).toMatchObject({
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: "2026-04-10T09:30:06.000Z",
+    });
+  });
+
   it("uses narrow run log metadata lookups for log polling", async () => {
     const res = await requestApp(
       await createApp(),
@@ -327,57 +372,7 @@ describe("agent live run routes", () => {
       logRef: "logs/run-1.ndjson",
       content: "chunk",
       nextOffset: 5,
-      logStatus: "ok",
     });
-  });
-
-  it("returns a graceful unavailable response when a run has no log metadata", async () => {
-    mockHeartbeatService.getRunLogAccess.mockResolvedValueOnce({
-      id: "run-lost",
-      companyId: "company-1",
-      logStore: null,
-      logRef: null,
-    });
-
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-lost/log"),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({
-      runId: "run-lost",
-      store: null,
-      logRef: null,
-      content: "",
-      logStatus: "unavailable",
-      note: "Run log not available (process may have been lost before logging started)",
-    });
-    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
-  });
-
-  it("passes through an unavailable response when the referenced log cannot be read", async () => {
-    mockHeartbeatService.readLog.mockResolvedValueOnce({
-      runId: "run-missing-log",
-      store: "local_file",
-      logRef: "logs/run-missing-log.ndjson",
-      content: "",
-      logStatus: "unavailable",
-      note: "Run log read failed",
-    });
-
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-missing-log/log"),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toMatchObject({
-      runId: "run-missing-log",
-      logStatus: "unavailable",
-      note: "Run log read failed",
-    });
-    expect(mockHeartbeatService.readLog).toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {

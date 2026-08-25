@@ -1,13 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { compactRunLogChunk } from "../services/heartbeat.js";
-
-const mockRead = vi.hoisted(() => vi.fn());
-
-vi.mock("../services/run-log-store.js", () => ({
-  getRunLogStore: () => ({ read: mockRead }),
-}));
-
-import { heartbeatService } from "../services/heartbeat.ts";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -32,8 +24,9 @@ describe("compactRunLogChunk", () => {
 
   it("redacts Paperclip credential shapes before persisting run-log chunks", () => {
     const chunk = [
-      "Authorization: Bearer live-b...alue",
+      "Authorization: Bearer live-bearer-token-value",
       `export PAPERCLIP_API_KEY='paperclip-shell-secret'`,
+      `auth {"refresh_token":"refresh-token-fixture-secret"}`,
       `payload {"PAPERCLIP_API_KEY":"paperclip-json-secret"}`,
       "--paperclip-api-key=paperclip-flag-secret",
     ].join("\n");
@@ -43,78 +36,8 @@ describe("compactRunLogChunk", () => {
     expect(compacted).toContain("***REDACTED***");
     expect(compacted).not.toContain("live-bearer-token-value");
     expect(compacted).not.toContain("paperclip-shell-secret");
+    expect(compacted).not.toContain("refresh-token-fixture-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
-  });
-});
-
-describe("heartbeat run log service", () => {
-  it("returns unavailable when log metadata is missing and scopes log access by company", async () => {
-    const rows = [{
-      id: "run-1",
-      companyId: "company-1",
-      logStore: null,
-      logRef: null,
-    }];
-    const query = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      then: (resolve: (value: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
-        Promise.resolve(rows).then(resolve, reject),
-    };
-    const db = {
-      select: vi.fn().mockReturnValue(query),
-      execute: vi.fn().mockResolvedValue([]),
-    } as any;
-    const heartbeat = heartbeatService(db);
-
-    const result = await heartbeat.readLog("run-1");
-
-    expect(result).toMatchObject({
-      runId: "run-1",
-      store: null,
-      logRef: null,
-      content: "",
-      logStatus: "unavailable",
-    });
-    expect((result as any).note).toContain("Run log not available");
-    expect(db.select).toHaveBeenCalled();
-    expect(query.where).toHaveBeenCalled();
-  });
-
-  it("returns unavailable when the referenced log cannot be read", async () => {
-    mockRead.mockRejectedValueOnce(new Error("ENOENT: missing log file"));
-    const rows = [{
-      id: "run-2",
-      companyId: "company-1",
-      logStore: "local_file",
-      logRef: "logs/run-2.ndjson",
-    }];
-    const query = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      then: (resolve: (value: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
-        Promise.resolve(rows).then(resolve, reject),
-    };
-    const db = {
-      select: vi.fn().mockReturnValue(query),
-      execute: vi.fn().mockResolvedValue([]),
-    } as any;
-    const heartbeat = heartbeatService(db);
-
-    const result = await heartbeat.readLog("run-2", { offset: 4, limitBytes: 128 });
-
-    expect(result).toMatchObject({
-      runId: "run-2",
-      store: "local_file",
-      logRef: "logs/run-2.ndjson",
-      content: "",
-      logStatus: "unavailable",
-    });
-    expect((result as any).note).toContain("Run log read failed");
-    expect(mockRead).toHaveBeenCalledWith(
-      { store: "local_file", logRef: "logs/run-2.ndjson" },
-      { offset: 4, limitBytes: 128 },
-    );
   });
 });

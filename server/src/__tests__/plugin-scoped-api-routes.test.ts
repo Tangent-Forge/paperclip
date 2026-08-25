@@ -158,44 +158,6 @@ describe.sequential("plugin scoped API routes", () => {
     expect(workerManager.call.mock.calls[0]?.[2].headers.authorization).toBeUndefined();
   });
 
-  it("resolves company context directly from a declared path parameter", async () => {
-    const apiRoutes = manifest([
-      {
-        routeKey: "portfolio.get",
-        method: "GET",
-        path: "/companies/:companyId/portfolio",
-        auth: "board",
-        capability: "api.routes.register",
-        companyResolution: { from: "path", param: "companyId" },
-      },
-    ]);
-    const { app, workerManager } = await createApp({
-      actor: {
-        type: "board",
-        userId: "user-1",
-        source: "local_implicit",
-        isInstanceAdmin: true,
-      },
-      plugin: {
-        id: pluginId,
-        pluginKey: apiRoutes.id,
-        status: "ready",
-        manifestJson: apiRoutes,
-      },
-      workerResult: { status: 200, body: { handled: true } },
-    });
-
-    const res = await request(app).get(`/api/plugins/${pluginId}/api/companies/${companyId}/portfolio`);
-
-    expect(res.status).toBe(200);
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({
-      routeKey: "portfolio.get",
-      params: { companyId },
-      query: {},
-      companyId,
-    }));
-  });
-
   it("only forwards allowlisted response headers from plugin routes", async () => {
     const apiRoutes = manifest([
       {

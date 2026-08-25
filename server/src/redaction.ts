@@ -1,9 +1,14 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
 const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+// Authorization reasons are policy decision codes, not credentials. They must
+// remain visible in audit receipts even though the field name contains
+// "authorization". JWT-shaped values are still caught by the value guard below.
+const AUDIT_REASON_PAYLOAD_KEY_RE = /^authorizationReason$/;
+const AUDIT_SURFACE_PAYLOAD_KEY_RE = /^surface$/;
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
@@ -17,7 +22,6 @@ const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
-const SECRET_ADJACENT_CONFIG_KEYS = new Set(["adapterConfig", "runtimeConfig"]);
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -37,9 +41,6 @@ const SECRET_TEXT_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
-  "adapterconfig",
-  "runtimeconfig",
-  "secret_ref",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
@@ -54,51 +55,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-function sanitizeJsonValueForText(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sanitizeJsonValueForText);
-  if (isSecretRefBinding(value)) return REDACTED_EVENT_VALUE;
-  if (!isPlainObject(value)) return value;
-
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (SECRET_ADJACENT_CONFIG_KEYS.has(key)) {
-      sanitized._redacted = REDACTED_EVENT_VALUE;
-      continue;
-    }
-    sanitized[key] = sanitizeJsonValueForText(entry);
-  }
-  return sanitizeRecord(sanitized);
-}
-
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) return value;
+  if (isUserSecretRefBinding(value)) return value;
   if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
 
-function redactRetainedValue(value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") return redactSensitiveText(value);
-  if (Array.isArray(value)) return value.map(redactRetainedValue);
-  if (!isPlainObject(value)) return value;
-
-  const redacted: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (SECRET_PAYLOAD_KEY_RE.test(key) && !isSecretRefBinding(entry)) {
-      redacted[key] = REDACTED_EVENT_VALUE;
-      continue;
-    }
-    redacted[key] = redactRetainedValue(entry);
-  }
-  return redacted;
-}
-
 function isSecretRefBinding(value: unknown): value is { type: "secret_ref"; secretId: string; version?: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "secret_ref" && typeof value.secretId === "string";
+}
+
+function isUserSecretRefBinding(value: unknown): value is { type: "user_secret_ref"; key: string; version?: unknown } {
+  if (!isPlainObject(value)) return false;
+  return value.type === "user_secret_ref" && typeof value.key === "string";
 }
 
 function isPlainBinding(value: unknown): value is { type: "plain"; value: unknown } {
@@ -133,8 +107,12 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = redactSensitiveText(value);
       continue;
     }
-    if (SECRET_PAYLOAD_KEY_RE.test(key)) {
+    if (SECRET_PAYLOAD_KEY_RE.test(key) && !AUDIT_REASON_PAYLOAD_KEY_RE.test(key)) {
       if (isSecretRefBinding(value)) {
+        redacted[key] = sanitizeValue(value);
+        continue;
+      }
+      if (isUserSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
         continue;
       }
@@ -145,7 +123,7 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    if (typeof value === "string" && JWT_VALUE_RE.test(value)) {
+    if (typeof value === "string" && JWT_VALUE_RE.test(value) && !AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key)) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
@@ -162,28 +140,10 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
 
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
-  const structurallyRedacted = input
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return line;
-      try {
-        return JSON.stringify(sanitizeJsonValueForText(JSON.parse(line)));
-      } catch {
-        return line;
-      }
-    })
-    .join(input.includes("\r\n") ? "\r\n" : "\n");
   return redactCommandText(
-    structurallyRedacted
+    input
       .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,
   );
-}
-
-export function redactRetainedRunPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!payload) return null;
-  const redacted = redactRetainedValue(payload);
-  return isPlainObject(redacted) ? redacted : payload;
 }

@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Issue } from "@paperclipai/plugin-sdk";
+import type { EnvSecretRefBinding, Issue } from "@paperclipai/plugin-sdk";
 import { ORIGIN_KIND_EMAIL, PLUGIN_ID } from "./constants.js";
 
 export type CouncilEmailIntakeConfig = {
@@ -11,7 +11,7 @@ export type CouncilEmailIntakeConfig = {
   allowedSenderDomains: string[];
   allowedRecipientPatterns: string[];
   subjectIncludePatterns: string[];
-  gmailWebhookSigningSecretRef: string | null;
+  gmailWebhookSigningSecretRef: EnvSecretRefBinding | null;
   maxMessagesPerWebhook: number;
 };
 
@@ -85,6 +85,16 @@ export type IntakeHost = {
 
 export function readConfig(raw: Record<string, unknown>): CouncilEmailIntakeConfig {
   const str = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  const secretRef = (value: unknown): EnvSecretRefBinding | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const binding = value as Record<string, unknown>;
+    const secretId = str(binding.secretId);
+    const version = binding.version === "latest" || (typeof binding.version === "number" && Number.isInteger(binding.version) && binding.version > 0)
+      ? binding.version
+      : undefined;
+    if (binding.type !== "secret_ref" || !secretId) return null;
+    return { type: "secret_ref", secretId, ...(version !== undefined ? { version } : {}) };
+  };
   const strings = (value: unknown): string[] => Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
     : [];
@@ -103,7 +113,7 @@ export function readConfig(raw: Record<string, unknown>): CouncilEmailIntakeConf
     allowedSenderDomains: strings(raw.allowedSenderDomains).map((domain) => domain.toLowerCase()),
     allowedRecipientPatterns: strings(raw.allowedRecipientPatterns).length > 0 ? strings(raw.allowedRecipientPatterns) : ["council"],
     subjectIncludePatterns: strings(raw.subjectIncludePatterns),
-    gmailWebhookSigningSecretRef: str(raw.gmailWebhookSigningSecretRef),
+    gmailWebhookSigningSecretRef: secretRef(raw.gmailWebhookSigningSecretRef),
     maxMessagesPerWebhook: int(raw.maxMessagesPerWebhook, 25, 1, 100),
   };
 }

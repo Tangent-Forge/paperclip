@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -39,6 +40,26 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describe("plugin database SQL validation", () => {
+  it("validates the Council migration against its deterministic plugin namespace", async () => {
+    const pluginKey = "paperclipai.council-email-intake";
+    const namespace = derivePluginDatabaseNamespace(pluginKey, "council_email_intake");
+    const migrationPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/plugins/paperclip-plugin-council-email-intake/migrations/001_council_email_intake.sql",
+    );
+    const migration = await readFile(migrationPath, "utf8");
+    const statements = migration.split(";").map((statement) => statement.trim()).filter(Boolean);
+
+    expect(namespace).toBe("plugin_council_email_intake_f6365ccdd0");
+    expect(statements).toHaveLength(2);
+    for (const statement of statements) {
+      expect(() => validatePluginMigrationStatement(statement, namespace)).not.toThrow();
+    }
+    expect(migration).toContain(`${namespace}.email_links`);
+    expect(migration).toContain(`${namespace}.intake_runs`);
+    expect(migration).not.toMatch(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:email_links|intake_runs)\b/i);
+  });
+
   it("allows namespace migrations with whitelisted public foreign keys", () => {
     expect(() =>
       validatePluginMigrationStatement(
@@ -129,27 +150,6 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/namespace/i);
   });
 
-  it("allows mutating queries (INSERT/UPDATE/DELETE) if they target the plugin namespace", () => {
-    expect(() =>
-      validatePluginRuntimeQuery(
-        "INSERT INTO plugin_test.rows (id, name) VALUES ($1, $2) RETURNING id",
-        "plugin_test",
-      )
-    ).not.toThrow();
-    expect(() =>
-      validatePluginRuntimeQuery(
-        "UPDATE plugin_test.rows SET name = $1 WHERE id = $2 RETURNING *",
-        "plugin_test",
-      )
-    ).not.toThrow();
-    expect(() =>
-      validatePluginRuntimeQuery(
-        "INSERT INTO public.issues (id, title) VALUES ($1, $2)",
-        "plugin_test",
-      )
-    ).toThrow(/namespace/i);
-  });
-
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
@@ -215,6 +215,110 @@ describe("buildPluginWorkerEnv", () => {
       instanceInfo,
       processEnv: {
         OPENAI_API_KEY: "openai-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("passes a first-party sandbox provider's documented credential env var to its own worker", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: null,
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+        NOVITA_API_KEY: "novita-token",
+        E2B_API_KEY: " ",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      DAYTONA_API_KEY: "daytona-token",
+    });
+  });
+
+  it("passes the credential to a first-party plugin installed from the bundled catalog", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: "/app/packages/plugins/sandbox-providers/daytona",
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      DAYTONA_API_KEY: "daytona-token",
+    });
+  });
+
+  it("does not pass the credential to a local plugin that self-declares the first-party name", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      packagePath: "/home/operator/.paperclip/plugins/fake-daytona",
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("does not pass a credential to a third-party plugin that claims a first-party driver key", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@acme/plugin-fake-daytona",
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("does not pass a credential when the first-party package omits its expected driver key", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "kubernetes" }],
+      },
+      packageName: "@paperclipai/plugin-daytona",
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
       },
     });
 

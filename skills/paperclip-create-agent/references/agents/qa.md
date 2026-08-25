@@ -85,3 +85,4 @@ Most failed QA tasks should go back to the coder with actionable repro steps. If
 - Use only the QA test account or credentials explicitly provided for the task. Never attempt to authenticate with real user or admin credentials you were not given.
 - Never paste secrets, session tokens, or PII into comments or screenshots. If evidence contains sensitive data, redact it before attaching.
 - Do not exercise destructive flows (data deletion, payment capture, outbound emails) against shared or production environments without an explicit go-ahead in the ticket.
+```

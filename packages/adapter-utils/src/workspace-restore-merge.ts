@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { shouldExcludePath } from "./exclude-patterns.js";
 
 type SnapshotEntry =
   | { kind: "dir" }
@@ -11,14 +12,6 @@ type SnapshotEntry =
 export interface DirectorySnapshot {
   exclude: string[];
   entries: Map<string, SnapshotEntry>;
-}
-
-function isRelativePathOrDescendant(relative: string, candidate: string): boolean {
-  return relative === candidate || relative.startsWith(`${candidate}/`);
-}
-
-function shouldExclude(relative: string, exclude: readonly string[]): boolean {
-  return exclude.some((candidate) => isRelativePathOrDescendant(relative, candidate));
 }
 
 async function hashFile(filePath: string): Promise<string> {
@@ -43,7 +36,7 @@ async function walkDirectory(
 
   for (const entry of entries) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (shouldExclude(nextRelative, exclude)) continue;
+    if (shouldExcludePath(nextRelative, exclude)) continue;
 
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
@@ -113,9 +106,9 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
   return false;
 }
 
-async function isHolderAlive(lockFile: string): Promise<boolean> {
+async function isHolderAlive(lockDir: string): Promise<boolean> {
   try {
-    const raw = await fs.readFile(lockFile, "utf8");
+    const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
     const owner = JSON.parse(raw) as { pid?: unknown };
     const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
     if (pid === null) {
@@ -129,35 +122,36 @@ async function isHolderAlive(lockFile: string): Promise<boolean> {
       return false;
     }
   } catch {
-    // lockFile missing or unreadable — treat as stale.
+    // owner.json missing or unreadable — treat as stale.
     return false;
   }
 }
 
-async function acquireDirectoryMergeLock(lockFile: string): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
   const deadline = Date.now() + 30_000;
   while (true) {
     try {
+      await fs.mkdir(lockDir);
       await fs.writeFile(
-        lockFile,
+        path.join(lockDir, "owner.json"),
         `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
-        { flag: "wx", encoding: "utf8" },
+        "utf8",
       );
       return async () => {
-        await fs.rm(lockFile, { force: true }).catch(() => undefined);
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
       };
     } catch (error) {
       const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
       if (code !== "EEXIST") throw error;
       // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
-      // the lockFile would otherwise persist forever and stall restores. Mirror
+      // the lockDir would otherwise persist forever and stall restores. Mirror
       // the materializePaperclipSkillCopy lock pattern — remove and retry.
-      if (!(await isHolderAlive(lockFile))) {
-        await fs.rm(lockFile, { force: true }).catch(() => undefined);
+      if (!(await isHolderAlive(lockDir))) {
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for workspace restore lock at ${lockFile}`);
+        throw new Error(`Timed out waiting for workspace restore lock at ${lockDir}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -221,6 +215,7 @@ export async function mergeDirectoryWithBaseline(input: {
   sourceDir: string;
   targetDir: string;
   beforeApply?: () => Promise<void>;
+  afterApply?: () => Promise<void>;
 }): Promise<void> {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async () => {
@@ -250,6 +245,8 @@ export async function mergeDirectoryWithBaseline(input: {
     for (const [relative, entry] of changedSourceEntries) {
       await copySnapshotEntry(input.sourceDir, input.targetDir, relative, entry);
     }
+
+    await input.afterApply?.();
   });
 }
 

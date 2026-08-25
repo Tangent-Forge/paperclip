@@ -11,6 +11,7 @@ import {
   defaultIssueFilterState,
   normalizeIssueFilterState,
   type IssueFilterState,
+  type IssueFilterWorkspaceContext,
 } from "./issue-filters";
 import { formatAssigneeUserLabel } from "./assignees";
 
@@ -25,7 +26,8 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "operations" | "all";
+export const INBOX_COLLAPSED_PARENTS_KEY_PREFIX = "paperclip:inbox:collapsed-parents";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -39,6 +41,7 @@ export const inboxIssueColumns = [
   "status",
   "id",
   "assignee",
+  "kickedOffBy",
   "project",
   "workspace",
   "parent",
@@ -78,7 +81,6 @@ export interface InboxBadgeData {
   inbox: number;
   approvals: number;
   failedRuns: number;
-  agentOperations: number;
   joinRequests: number;
   mineIssues: number;
   alerts: number;
@@ -186,6 +188,11 @@ function getInboxCollapsedGroupsStorageKey(companyId: string | null | undefined)
   return `${INBOX_COLLAPSED_GROUPS_KEY_PREFIX}:${companyId}`;
 }
 
+function getInboxCollapsedParentsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_COLLAPSED_PARENTS_KEY_PREFIX}:${companyId}`;
+}
+
 export function loadInboxFilterPreferences(
   companyId: string | null | undefined,
 ): InboxFilterPreferences {
@@ -265,6 +272,36 @@ export function saveCollapsedInboxGroupKeys(
 
   try {
     localStorage.setItem(storageKey, JSON.stringify([...groupKeys]));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function loadCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+): Set<string> {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return new Set();
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+  parentIds: ReadonlySet<string>,
+) {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify([...parentIds]));
   } catch {
     // Ignore localStorage failures.
   }
@@ -463,6 +500,7 @@ export function getInboxSearchSupplementIssues({
   currentUserId,
   enableRoutineVisibilityFilter = false,
   liveIssueIds,
+  issueFilterContext = {},
 }: {
   query: string;
   filteredWorkItems: InboxWorkItem[];
@@ -472,6 +510,7 @@ export function getInboxSearchSupplementIssues({
   currentUserId?: string | null;
   enableRoutineVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
+  issueFilterContext?: IssueFilterWorkspaceContext;
 }): Issue[] {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
@@ -481,7 +520,14 @@ export function getInboxSearchSupplementIssues({
       .map((item) => item.issue.id),
     ...archivedSearchIssues.map((issue) => issue.id),
   ]);
-  return applyIssueFilters(remoteIssues, issueFilters, currentUserId, enableRoutineVisibilityFilter, liveIssueIds)
+  return applyIssueFilters(
+    remoteIssues,
+    issueFilters,
+    currentUserId,
+    enableRoutineVisibilityFilter,
+    liveIssueIds,
+    issueFilterContext,
+  )
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
@@ -637,7 +683,6 @@ export function loadLastInboxTab(): InboxTab {
       || raw === "recent"
       || raw === "mine"
       || raw === "blocked"
-      || raw === "operations"
     ) return raw;
     if (raw === "new") return "mine";
     return "mine";
@@ -659,7 +704,7 @@ export function isMineInboxTab(tab: InboxTab): boolean {
 }
 
 export function shouldShowCompanyAlerts(tab: InboxTab): boolean {
-  return tab === "operations" || tab === "all";
+  return tab === "all";
 }
 
 export function resolveInboxSelectionIndex(
@@ -1117,6 +1162,9 @@ export function buildGroupedInboxSections(
   const keyPrefix = options?.keyPrefix ?? "";
   const searchSection = options?.searchSection ?? "none";
   const nestingEnabled = options?.nestingEnabled ?? false;
+  if (searchSection !== "none" && items.length === 0) {
+    return [];
+  }
 
   return groupInboxWorkItems(items, groupBy, workspaceGrouping).map((group) => {
     const nestedGroup = nestingEnabled && group.items.some((item) => item.kind === "issue")
@@ -1260,13 +1308,9 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
-    // Keep this API-compatible with server/sidebar-badges.ts. Alerts remain
-    // visible in Agent Operations and All, but are informational rather than
-    // actionable badge work.
-    agentOperations: failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,

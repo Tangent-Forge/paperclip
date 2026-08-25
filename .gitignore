@@ -3,24 +3,16 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
-server/ui-dist/
 ui/storybook-static/
 .env
-.env.backup*
-.env.backup-*
-.env.local
-.env.*.local
-.env*.bak*
-*.key
-*.pem
-*.p12
-*.pfx
-secrets.env
 *.tsbuildinfo
 drizzle/meta/
 .vite/
 coverage/
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
 data/
 .paperclip/
 .pnpm-store/
@@ -56,6 +48,7 @@ diagnostics/
 .vscode/
 .claude/settings.local.json
 .paperclip-local/
+.paperclip-runtime/
 /.idea/
 /.agents/
 
@@ -67,16 +60,13 @@ tests/e2e/test-results/
 tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
+test-results/issue-detail-perf/
+tests/storybook-visual/.cache/
+tests/storybook-visual/.snapshots/
+tests/storybook-visual/baseline-review/
+tests/storybook-visual/test-results/
+tests/storybook-visual/playwright-report/
 .superset/
 .superpowers/
 .claude/worktrees/
-
-# local runtime artifacts
-paperclip.db
-.sources/
-10_references/
 .herenow
-
-# Janitor audit reports — may contain secrets from scanned workspaces (TAN-102)
-.janitor/
-**/.janitor/reports/

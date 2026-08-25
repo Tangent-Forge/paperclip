@@ -1,5 +1,4 @@
 import type {
-  Approval,
   Issue,
   IssueBlockedInboxAttention,
   IssueBlockedInboxReason,
@@ -105,34 +104,6 @@ export interface BlockedInboxIssueRow {
   variant: BlockedReasonVariant;
   reasonLabel: string;
   stoppedAtMs: number | null;
-}
-
-export type BlockedInboxLane = "human" | "agent_operations" | "external";
-
-export interface BlockedInboxLaneCounts {
-  human: number;
-  agentOperations: number;
-  external: number;
-}
-
-export function classifyBlockedInboxLane(attention: Pick<IssueBlockedInboxAttention, "owner" | "reason">): BlockedInboxLane {
-  const ownerType = attention.owner.type;
-  if (ownerType === "user" || ownerType === "board") return "human";
-  if (ownerType === "external") return "external";
-  return "agent_operations";
-}
-
-export function countBlockedInboxLanes(issues: readonly Issue[]): BlockedInboxLaneCounts {
-  const counts: BlockedInboxLaneCounts = { human: 0, agentOperations: 0, external: 0 };
-  for (const issue of issues) {
-    const attention = issue.blockedInboxAttention;
-    if (!attention) continue;
-    const lane = classifyBlockedInboxLane(attention);
-    if (lane === "human") counts.human += 1;
-    else if (lane === "external") counts.external += 1;
-    else counts.agentOperations += 1;
-  }
-  return counts;
 }
 
 export type BlockedInboxGroupBy = "blocker_type" | "none";
@@ -301,37 +272,4 @@ export function formatStoppedAge(stoppedSinceAt: string | null, now: number = Da
   }
   const mo = Math.floor(seconds / (86_400 * 30));
   return `stopped ${mo}mo`;
-}
-
-// ─── Orphan (issue-unlinked) approvals ─────────────────────────────────────
-//
-// A pending approval only surfaces through the Issue-driven rows above when it's linked
-// to a live issue via issue_approvals — see listIssueBlockedInboxAttentionMap on the
-// server. Board-decision approvals routed from a stale ledger ask or a blocked issue
-// with no recorded blocker are created with no such link, so they need a separate path
-// into the Human Decisions lane. Every approval status still awaiting a person's
-// Approve/Reject/Revision decision counts here.
-export const PENDING_HUMAN_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
-
-export function isPendingHumanApproval(approval: Pick<Approval, "status">): boolean {
-  return (PENDING_HUMAN_APPROVAL_STATUSES as readonly string[]).includes(approval.status);
-}
-
-export function selectPendingHumanApprovals(approvals: readonly Approval[]): Approval[] {
-  return approvals.filter(isPendingHumanApproval);
-}
-
-export function orphanApprovalMatchesSearch(approval: Approval, label: string, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  const payload = approval.payload ?? {};
-  const haystack = [
-    label,
-    typeof payload.title === "string" ? payload.title : "",
-    typeof payload.summary === "string" ? payload.summary : "",
-    typeof payload.source_id === "string" ? payload.source_id : "",
-  ]
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(q);
 }
