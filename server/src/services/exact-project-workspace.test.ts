@@ -4,9 +4,11 @@ import {
   countAutomaticAttemptsTowardCeiling,
   evaluateAutomaticExecutionGate,
   evaluateRetryCeiling,
+  readCanonicalExecutionContinuationSignals,
   readRetryCeilingFromExecutionPolicy,
   resolveExactProjectWorkspace,
   runCountsTowardRetryCeiling,
+  shouldScheduleProviderQuotaRecoveryMonitor,
   shouldSuppressAutomaticContinuation,
 } from "./exact-project-workspace.js";
 
@@ -170,24 +172,74 @@ describe("run counting + wake source classification", () => {
     expect(
       runCountsTowardRetryCeiling({ status: "cancelled", errorCode: "workspace_busy" }),
     ).toBe(false);
-    expect(runCountsTowardRetryCeiling({ status: "succeeded" })).toBe(true);
-    expect(runCountsTowardRetryCeiling({ status: "failed" })).toBe(true);
-    expect(runCountsTowardRetryCeiling({ status: "queued" })).toBe(true);
+    expect(runCountsTowardRetryCeiling({ status: "succeeded", invocationSource: "automation" })).toBe(
+      true,
+    );
+    expect(runCountsTowardRetryCeiling({ status: "failed", invocationSource: "assignment" })).toBe(
+      true,
+    );
+    expect(runCountsTowardRetryCeiling({ status: "queued", invocationSource: "automation" })).toBe(
+      true,
+    );
   });
 
-  it("counts only budget-consuming runs", () => {
+  it("does not count operator/manual epoch runs toward the automatic ceiling", () => {
+    expect(
+      runCountsTowardRetryCeiling({
+        status: "succeeded",
+        invocationSource: "manual",
+        triggerDetail: "manual",
+      }),
+    ).toBe(false);
+    expect(
+      runCountsTowardRetryCeiling({
+        status: "failed",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        requestedByActorType: "user",
+      }),
+    ).toBe(false);
+    expect(
+      runCountsTowardRetryCeiling({
+        status: "succeeded",
+        invocationSource: "on_demand",
+        triggerDetail: "ping",
+      }),
+    ).toBe(false);
+    // Automatic epochs still count even when mixed with operator history.
+    expect(
+      runCountsTowardRetryCeiling({
+        status: "failed",
+        invocationSource: "automation",
+        triggerDetail: "system",
+      }),
+    ).toBe(true);
+  });
+
+  it("counts only budget-consuming automatic runs", () => {
     const n = countAutomaticAttemptsTowardCeiling([
-      { status: "succeeded" },
-      { status: "cancelled", errorCode: "workspace_busy" },
-      { status: "failed" },
-      { status: "cancelled", errorCode: "issue_reassigned" },
+      { status: "succeeded", invocationSource: "automation" },
+      { status: "cancelled", errorCode: "workspace_busy", invocationSource: "automation" },
+      { status: "failed", invocationSource: "assignment" },
+      { status: "cancelled", errorCode: "issue_reassigned", invocationSource: "automation" },
+      { status: "succeeded", invocationSource: "manual", triggerDetail: "manual" },
+      {
+        status: "failed",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        requestedByActorType: "user",
+      },
     ]);
     expect(n).toBe(2);
   });
 
   it("classifies manual/user wakes as operator", () => {
     expect(
-      classifyWakeBudgetSource({ source: "on_demand", triggerDetail: "manual", requestedByActorType: "user" }),
+      classifyWakeBudgetSource({
+        source: "on_demand",
+        triggerDetail: "manual",
+        requestedByActorType: "user",
+      }),
     ).toBe("operator");
     expect(classifyWakeBudgetSource({ source: "automation", triggerDetail: "system" })).toBe(
       "automatic",
@@ -201,6 +253,105 @@ describe("run counting + wake source classification", () => {
     expect(readRetryCeilingFromExecutionPolicy({ retryCeiling: 1 })).toBe(1);
     expect(readRetryCeilingFromExecutionPolicy({ retryCeiling: 1.9 })).toBe(1);
     expect(readRetryCeilingFromExecutionPolicy(null)).toBe(null);
+  });
+});
+
+describe("canonical executionState terminal/verifier signals", () => {
+  it("maps status completed + lastDecisionOutcome approved to terminal+verifier", () => {
+    const signals = readCanonicalExecutionContinuationSignals({
+      status: "completed",
+      currentStageId: null,
+      lastDecisionOutcome: "approved",
+      completedStageIds: ["stage-1"],
+    });
+    expect(signals.terminalDispositionRecorded).toBe(true);
+    expect(signals.verifierPassed).toBe(true);
+    expect(signals.status).toBe("completed");
+    expect(signals.lastDecisionOutcome).toBe("approved");
+  });
+
+  it("treats completed without outcome as terminal disposition", () => {
+    const signals = readCanonicalExecutionContinuationSignals({
+      status: "completed",
+      lastDecisionOutcome: null,
+    });
+    expect(signals.terminalDispositionRecorded).toBe(true);
+    expect(signals.verifierPassed).toBe(true);
+  });
+
+  it("does not suppress pending stages that merely retain a prior approved outcome", () => {
+    const signals = readCanonicalExecutionContinuationSignals({
+      status: "pending",
+      currentStageId: "stage-2",
+      lastDecisionOutcome: "approved",
+    });
+    expect(signals.terminalDispositionRecorded).toBe(false);
+    expect(signals.verifierPassed).toBe(false);
+  });
+
+  it("still accepts legacy synthetic terminal/verifier fields", () => {
+    expect(
+      readCanonicalExecutionContinuationSignals({
+        status: "terminal",
+        verifierPassed: true,
+      }),
+    ).toMatchObject({ terminalDispositionRecorded: true, verifierPassed: true });
+  });
+
+  it("feeds evaluateAutomaticExecutionGate with canonical completed/approved", () => {
+    const signals = readCanonicalExecutionContinuationSignals({
+      status: "completed",
+      lastDecisionOutcome: "approved",
+    });
+    const r = evaluateAutomaticExecutionGate({
+      issueStatus: "in_progress",
+      executionPolicy: { retryCeiling: 3 },
+      automaticAttemptsUsed: 0,
+      wakeBudgetSource: "automatic",
+      terminalDispositionRecorded: signals.terminalDispositionRecorded,
+      verifierPassed: signals.verifierPassed,
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.reason === "terminal_disposition_recorded" || r.reason === "verifier_passed").toBe(
+      true,
+    );
+  });
+});
+
+describe("provider-quota direct scheduled_retry insert gate", () => {
+  it("blocks residual provider-quota scheduled_retry after ceiling exhaustion", () => {
+    const r = shouldScheduleProviderQuotaRecoveryMonitor({
+      issueStatus: "blocked",
+      executionPolicy: { retryCeiling: 1 },
+      executionState: { status: "pending", lastDecisionOutcome: null },
+      automaticAttemptsUsed: 1,
+    });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toBe("retry_ceiling_exhausted");
+  });
+
+  it("blocks provider-quota residual after canonical completed/approved disposition", () => {
+    const r = shouldScheduleProviderQuotaRecoveryMonitor({
+      issueStatus: "in_progress",
+      executionPolicy: { retryCeiling: 5 },
+      executionState: {
+        status: "completed",
+        lastDecisionOutcome: "approved",
+        completedStageIds: ["review"],
+      },
+      automaticAttemptsUsed: 0,
+    });
+    expect(r.allowed).toBe(false);
+  });
+
+  it("allows first automatic provider-quota monitor under budget", () => {
+    const r = shouldScheduleProviderQuotaRecoveryMonitor({
+      issueStatus: "blocked",
+      executionPolicy: { retryCeiling: 1 },
+      executionState: { status: "pending", lastDecisionOutcome: null },
+      automaticAttemptsUsed: 0,
+    });
+    expect(r.allowed).toBe(true);
   });
 });
 

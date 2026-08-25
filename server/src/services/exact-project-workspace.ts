@@ -151,15 +151,30 @@ export function classifyWakeBudgetSource(input: {
 /**
  * Whether a historical/in-flight heartbeat run counts toward executionPolicy.retryCeiling.
  * Pure workspace-busy cancel-before-execute rows do not consume budget (same attempt deferred).
+ * Operator/manual epochs do not consume the automatic ceiling — they open a new epoch.
  */
 export function runCountsTowardRetryCeiling(run: {
   status?: string | null;
   errorCode?: string | null;
   invocationSource?: string | null;
+  triggerDetail?: string | null;
+  requestedByActorType?: string | null;
   scheduledRetryReason?: string | null;
 }): boolean {
   const status = (run.status ?? "").toLowerCase();
   if (!status) return false;
+
+  // Operator/manual wakes open a new epoch and must not burn the automatic budget.
+  // invocationSource "manual" is always operator; other sources use classifyWakeBudgetSource
+  // (on_demand + manual/ping/user, board_wakeup, etc.). Bare automation/assignment still count.
+  const invocation = (run.invocationSource ?? "").toLowerCase();
+  if (invocation === "manual") return false;
+  const budgetSource = classifyWakeBudgetSource({
+    source: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    requestedByActorType: run.requestedByActorType,
+  });
+  if (budgetSource === "operator") return false;
 
   // Pure contention deferral cancelled before real execution does not consume budget.
   if (status === "cancelled") {
@@ -170,7 +185,7 @@ export function runCountsTowardRetryCeiling(run: {
     return false;
   }
 
-  // Live path and terminal outcomes count.
+  // Live path and terminal outcomes count only for automatic epochs.
   if (
     status === "queued" ||
     status === "running" ||
@@ -190,6 +205,8 @@ export function countAutomaticAttemptsTowardCeiling(
     status?: string | null;
     errorCode?: string | null;
     invocationSource?: string | null;
+    triggerDetail?: string | null;
+    requestedByActorType?: string | null;
     scheduledRetryReason?: string | null;
   }>,
 ): number {
@@ -198,6 +215,81 @@ export function countAutomaticAttemptsTowardCeiling(
     if (runCountsTowardRetryCeiling(run)) n += 1;
   }
   return n;
+}
+
+/**
+ * Canonical Paperclip executionState terminal/verifier signals.
+ * Live schema uses status: "completed" and lastDecisionOutcome: "approved"
+ * (see issue-execution-policy buildCompletedState). Synthetic/legacy fields
+ * remain accepted for forward-compat fixtures.
+ */
+export function readCanonicalExecutionContinuationSignals(executionState: unknown): {
+  terminalDispositionRecorded: boolean;
+  verifierPassed: boolean;
+  status: string | null;
+  lastDecisionOutcome: string | null;
+} {
+  if (!executionState || typeof executionState !== "object" || Array.isArray(executionState)) {
+    return {
+      terminalDispositionRecorded: false,
+      verifierPassed: false,
+      status: null,
+      lastDecisionOutcome: null,
+    };
+  }
+  const state = executionState as Record<string, unknown>;
+  const status = typeof state.status === "string" ? state.status.trim().toLowerCase() : null;
+  const lastDecisionOutcome =
+    typeof state.lastDecisionOutcome === "string"
+      ? state.lastDecisionOutcome.trim().toLowerCase()
+      : null;
+
+  const legacyTerminal =
+    status === "terminal" ||
+    state.terminalDisposition === true ||
+    state.disposition === "terminal";
+  const canonicalTerminal = status === "completed";
+  const terminalDispositionRecorded = Boolean(canonicalTerminal || legacyTerminal);
+
+  const legacyVerifier =
+    state.verifierPassed === true ||
+    state.verifierStatus === "pass" ||
+    state.verifierStatus === "passed";
+  // Canonical success disposition: execution policy completed with approved outcome
+  // (buildCompletedState). completed alone is terminal; approved on completed is verifier pass.
+  const verifierPassed = Boolean(
+    legacyVerifier ||
+      (canonicalTerminal && (lastDecisionOutcome === "approved" || lastDecisionOutcome == null)),
+  );
+
+  return {
+    terminalDispositionRecorded,
+    verifierPassed,
+    status,
+    lastDecisionOutcome,
+  };
+}
+
+/**
+ * Whether provider-quota wait recovery may insert a new scheduled_retry.
+ * Direct insert path must honor the same automatic gate as heartbeat promotion.
+ */
+export function shouldScheduleProviderQuotaRecoveryMonitor(input: {
+  issueStatus?: string | null;
+  executionPolicy?: unknown;
+  executionState?: unknown;
+  automaticAttemptsUsed: number;
+}): { allowed: boolean; reason: string | null; retryCeiling: number | null; used: number } {
+  const signals = readCanonicalExecutionContinuationSignals(input.executionState);
+  return evaluateAutomaticExecutionGate({
+    issueStatus: input.issueStatus,
+    executionPolicy: input.executionPolicy,
+    automaticAttemptsUsed: input.automaticAttemptsUsed,
+    wakeBudgetSource: "automatic",
+    kind: "new_attempt",
+    terminalDispositionRecorded: signals.terminalDispositionRecorded,
+    verifierPassed: signals.verifierPassed,
+  });
 }
 
 /**

@@ -166,6 +166,7 @@ import {
 import {
   classifyWakeBudgetSource,
   countAutomaticAttemptsTowardCeiling,
+  readCanonicalExecutionContinuationSignals,
   evaluateAutomaticExecutionGate,
 } from "./exact-project-workspace.js";
 import {
@@ -7245,6 +7246,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       })
       .from(heartbeatRuns)
@@ -7265,20 +7267,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryReason: input.retryReason,
     });
 
-    // Verifier/terminal disposition: treat executionState terminal-like statuses
-    // and done children as suppressible. Also honor execution policy monitor cleared.
-    const executionState =
-      issue.executionState && typeof issue.executionState === "object"
-        ? (issue.executionState as Record<string, unknown>)
-        : null;
-    const terminalDispositionRecorded =
-      executionState?.status === "terminal" ||
-      executionState?.terminalDisposition === true ||
-      executionState?.disposition === "terminal";
-    const verifierPassed =
-      executionState?.verifierPassed === true ||
-      executionState?.verifierStatus === "pass" ||
-      executionState?.verifierStatus === "passed";
+    // Canonical executionState uses status "completed" + lastDecisionOutcome "approved".
+    // Legacy synthetic terminal/verifier fields remain accepted.
+    const continuationSignals = readCanonicalExecutionContinuationSignals(issue.executionState);
 
     const gate = evaluateAutomaticExecutionGate({
       issueStatus: issue.status,
@@ -7286,8 +7277,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       automaticAttemptsUsed,
       wakeBudgetSource,
       kind: input.kind ?? "new_attempt",
-      terminalDispositionRecorded: Boolean(terminalDispositionRecorded),
-      verifierPassed: Boolean(verifierPassed),
+      terminalDispositionRecorded: continuationSignals.terminalDispositionRecorded,
+      verifierPassed: continuationSignals.verifierPassed,
     });
 
     return {
