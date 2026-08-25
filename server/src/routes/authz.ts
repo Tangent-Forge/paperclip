@@ -21,14 +21,21 @@ function unauthenticatedBoardAccessMessage(req: Request, fallback: string): stri
   if (req.actor.type !== "none") return fallback;
   const deploymentMode = (req.app?.locals as { deploymentMode?: DeploymentMode } | undefined)?.deploymentMode;
   if (deploymentMode !== "local_trusted") return fallback;
+  // Deliberately does not inline the exact CLI reconfigure invocation here:
+  // cli-invocation-safety.test.ts only trusts a literal CLI command in
+  // source files when it's the whole value of a `command:` property (e.g. a
+  // webServer config) — a prose mention like this one is correctly
+  // untrusted, by design, since the guard can't prove no dangerous suffix
+  // survived string concatenation. The exact invocation already lives in
+  // docs/deploy/deployment-modes.md, in proper Markdown code-span form the
+  // guard does trust; point there instead of duplicating (and risking
+  // drifting from) the real command.
   return (
     "Board access required. This instance is running in local_trusted mode, which has no " +
     "login and grants no implicit board identity to loopback requests (PAP-1975) — any agent " +
     "on this host could otherwise reach the same port. For a durable, per-actor human board " +
-    "identity, switch this instance to `authenticated` + `private` mode " +
-    "(`pnpm paperclipai configure --section server`), which supports real sign-in over " +
-    "Tailscale/VPN/LAN. Agents and scripts should use an explicit board or agent API key " +
-    "instead. See docs/deploy/deployment-modes.md."
+    "identity, switch this instance to authenticated + private mode. Agents and scripts should " +
+    "use an explicit board or agent API key instead. See docs/deploy/deployment-modes.md."
   );
 }
 

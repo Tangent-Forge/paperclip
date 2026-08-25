@@ -356,12 +356,19 @@ async function gatewayFetch(request: APIRequestContext, path: string, token: str
 }
 
 test.describe.serial("Smoke Lab scenario catalog mirror", () => {
-  // Bumped from 240s: with 30s-budgeted, retry-polling assertions now on
-  // every one of the ~60 navigations across all 7 scenarios (see the goto
-  // helpers above), a few genuinely slow-but-correct renders under load can
-  // legitimately push the cumulative total past the old ceiling even when
-  // no single step is actually stuck.
-  test.setTimeout(360_000);
+  // Bumped from 240s to 360s, then to 600s: with 30s-budgeted, retry-polling
+  // assertions now on every one of the ~60 navigations across all 7
+  // scenarios (see the goto helpers above), a few genuinely slow-but-correct
+  // renders under load can legitimately push the cumulative total past the
+  // old ceiling even when no single step is actually stuck. An independent
+  // review measured 270s to complete cleanly at moderate host load, but two
+  // runs under heavier contention were still only 91-95% through the
+  // scenario list at the 360s mark (a ~380-395s actual requirement) — 360s
+  // left under ~25% margin, which moderate load erased. 600s restores a
+  // real safety margin without masking a genuine hang: a truly stuck step
+  // still fails its own 30s per-assertion timeout long before the suite
+  // timeout would ever be reached.
+  test.setTimeout(600_000);
 
   test("records the P1-P7 CI-safe Smoke Lab lifecycle into the results API @smoke-lab", async ({ page, request }) => {
     const seed = await newCompany(request, "catalog");

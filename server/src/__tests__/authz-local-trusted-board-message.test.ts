@@ -32,7 +32,7 @@ describe("board access denial message in local_trusted mode", () => {
       expect((err as Error).message).toContain("authenticated");
       expect((err as Error).message).toContain("private");
       expect((err as Error).message).toContain("PAP-1975");
-      expect((err as Error).message).toContain("configure --section server");
+      expect((err as Error).message).toContain("docs/deploy/deployment-modes.md");
     }
   });
 
