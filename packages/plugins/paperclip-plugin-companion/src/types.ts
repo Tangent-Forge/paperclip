@@ -2,6 +2,7 @@
 // interface (mirroring the paperclip-plugin-linear-sync pattern) so the
 // service logic is testable against an in-memory fake host without a live
 // Paperclip instance, while worker.ts wires the real `ctx.*` clients in.
+import type { EnvSecretRefBinding } from "@paperclipai/plugin-sdk";
 
 export interface CompanionIssueSummary {
   id: string;
@@ -82,7 +83,13 @@ export interface CompanionHost {
     }): Promise<void>;
   };
   secrets: {
-    resolve(secretRef: string, opts: { companyId: string }): Promise<string | null>;
+    /**
+     * secretRef must be the resolved `{ type: "secret_ref", secretId,
+     * version? }` binding object — see config-validation.ts's
+     * parseSecretRefBinding. A raw string is accepted here only for
+     * flexibility in tests; the real host's resolve() throws on one.
+     */
+    resolve(secretRef: string | EnvSecretRefBinding, opts: { companyId: string }): Promise<string | null>;
   };
   http: {
     fetch(

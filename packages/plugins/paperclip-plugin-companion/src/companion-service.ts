@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { COMPANION_ACTOR_ID, COMPANION_ISSUE_TITLE, DEFAULT_HEALTH_CHECK_URL, EVIDENCE_SOURCES, LOCAL_FOLDER_KEYS } from "./constants.js";
-import { validateGithubRepo, validateHealthCheckUrl } from "./config-validation.js";
+import { parseSecretRefBinding, validateGithubRepo, validateHealthCheckUrl } from "./config-validation.js";
 import type {
   CompanionActionProposalRow,
   CompanionEvidenceRef,
@@ -260,7 +260,12 @@ export async function getDeploymentHealthEvidence(host: CompanionHost, companyId
 export async function getGithubEvidence(host: CompanionHost, companyId: string): Promise<CompanionEvidenceRef> {
   const config = await host.config.get(companyId);
   const rawRepo = typeof config.githubRepo === "string" ? config.githubRepo : null;
-  const tokenRef = typeof config.githubTokenSecretRef === "string" ? config.githubTokenSecretRef : null;
+  // config.githubTokenSecretRef arrives from ctx.config.get() as the host's
+  // resolved { type: "secret_ref", secretId, version? } binding object, not
+  // the plain string the manifest's JSON-Schema declares for input
+  // validation purposes — see config-validation.ts's parseSecretRefBinding
+  // for why. Passing a raw string to host.secrets.resolve() would throw.
+  const tokenRef = parseSecretRefBinding(config.githubTokenSecretRef);
   if (!rawRepo || !tokenRef) {
     return {
       source: EVIDENCE_SOURCES.github,
@@ -500,12 +505,29 @@ export async function callCompanionModel(
   history: CompanionMessageRow[],
 ): Promise<CompanionLlmResult> {
   const config = await host.config.get(companyId);
-  const secretRef = typeof config.anthropicApiKeySecretRef === "string" ? config.anthropicApiKeySecretRef : null;
+  // config.anthropicApiKeySecretRef arrives from ctx.config.get() as the
+  // host's resolved { type: "secret_ref", secretId, version? } binding
+  // object, not the plain string the manifest's JSON-Schema declares for
+  // input-validation purposes — see config-validation.ts's
+  // parseSecretRefBinding for why.
+  const secretRef = parseSecretRefBinding(config.anthropicApiKeySecretRef);
   const model = typeof config.model === "string" && config.model ? config.model : "claude-sonnet-5";
   if (!secretRef) {
     return { text: "", error: "Companion's LLM API key is not configured for this company (anthropicApiKeySecretRef)." };
   }
-  const apiKey = await host.secrets.resolve(secretRef, { companyId });
+  let apiKey: string | null;
+  try {
+    apiKey = await host.secrets.resolve(secretRef, { companyId });
+  } catch (err) {
+    // host.secrets.resolve() throws (rather than returning null) on a
+    // malformed binding, an unbound secretId, an ambiguous binding, or a
+    // rate limit — never let that propagate uncaught out of the send-message
+    // flow (that would surface as an "interrupted" UI state with no
+    // persisted reply, rather than the deterministic, tested
+    // "couldn't complete that request" reply this function is supposed to
+    // produce on every provider/config failure).
+    return { text: "", error: `Companion's LLM API key could not be resolved: ${redactError(err)}` };
+  }
   if (!apiKey) {
     return { text: "", error: "Companion's configured API key secret reference did not resolve to a value." };
   }

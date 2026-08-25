@@ -1,12 +1,41 @@
 // Validation for operator-configured outbound-reaching plugin config values
-// (`githubRepo`, `healthCheckUrl`). Both are interpolated into outbound HTTP
-// requests, so an unvalidated value is a URL/path-injection surface even
-// though the values are operator-set plugin config, not end-user input.
+// (`githubRepo`, `healthCheckUrl`) and secret-ref config bindings
+// (`anthropicApiKeySecretRef`, `githubTokenSecretRef`). All are interpolated
+// into outbound HTTP requests or passed to `ctx.secrets.resolve()`, so an
+// unvalidated value is an injection/misuse surface even though these are
+// operator-set plugin config, not end-user input.
 //
-// Both functions are pure and return `null` on anything invalid — callers
-// must treat `null` as "refuse to use this value" (report a distinct
+// All functions here are pure and return `null` on anything invalid —
+// callers must treat `null` as "refuse to use this value" (report a distinct
 // "not configured" / "invalid" evidence state), never fall back to guessing
 // or silently using the raw unvalidated input.
+import type { EnvSecretRefBinding } from "@paperclipai/plugin-sdk";
+
+// `format: "secret-ref"` config fields are declared `type: "string"` in the
+// manifest (the shape a secret-picker submits, and the only shape AJV's
+// no-op "secret-ref" format check enforces via that declared type) — but the
+// host resolves/serves the STORED value back to the worker as the full
+// `{ type: "secret_ref", secretId, version? }` binding object, and
+// `ctx.secrets.resolve()` throws on a raw string (deliberately: "legacy
+// string UUID references fail closed", per PluginSecretsClient.resolve()'s
+// own contract). Every plugin's worker must read these config fields as
+// binding objects, not strings — mirrors paperclip-plugin-linear-sync's own
+// `readConfig()` secretRef() helper, which does the same parse for the same
+// reason.
+export function parseSecretRefBinding(value: unknown): EnvSecretRefBinding | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "secret_ref") return null;
+  const secretId = typeof record.secretId === "string" ? record.secretId.trim() : "";
+  if (!secretId) return null;
+  const version = record.version;
+  if (version === undefined || version === null) return { type: "secret_ref", secretId };
+  if (version === "latest") return { type: "secret_ref", secretId, version: "latest" };
+  if (typeof version === "number" && Number.isInteger(version) && version > 0) {
+    return { type: "secret_ref", secretId, version };
+  }
+  return null;
+}
 
 // GitHub owner/repo names: alphanumeric plus `.`, `_`, `-`; no leading/trailing
 // separator; exactly one `/`. Mirrors GitHub's own naming rules closely enough

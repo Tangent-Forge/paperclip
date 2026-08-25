@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateGithubRepo, validateHealthCheckUrl } from "../src/config-validation.js";
+import { parseSecretRefBinding, validateGithubRepo, validateHealthCheckUrl } from "../src/config-validation.js";
 
 describe("validateGithubRepo", () => {
   it("accepts a well-formed owner/repo", () => {
@@ -60,5 +60,49 @@ describe("validateHealthCheckUrl", () => {
   it("rejects malformed URLs and empty values", () => {
     expect(validateHealthCheckUrl("not a url")).toBeNull();
     expect(validateHealthCheckUrl("")).toBeNull();
+  });
+});
+
+describe("parseSecretRefBinding", () => {
+  // config.<x>SecretRef arrives from ctx.config.get() as the host's resolved
+  // { type: "secret_ref", secretId, version? } binding object — the manifest's
+  // `type: "string"` only describes what a secret picker POSTs, not what the
+  // worker reads back. See companion-service.ts's comments at both call sites.
+  it("accepts a well-formed binding object with no version (defaults to latest at resolve time)", () => {
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc-123" })).toEqual({
+      type: "secret_ref",
+      secretId: "abc-123",
+    });
+  });
+
+  it("accepts an explicit \"latest\" or numeric version", () => {
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc-123", version: "latest" })).toEqual({
+      type: "secret_ref",
+      secretId: "abc-123",
+      version: "latest",
+    });
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc-123", version: 3 })).toEqual({
+      type: "secret_ref",
+      secretId: "abc-123",
+      version: 3,
+    });
+  });
+
+  it("rejects a raw string — the deliberately unsupported legacy shape that the real host fails closed on", () => {
+    expect(parseSecretRefBinding("abc-123")).toBeNull();
+    expect(parseSecretRefBinding("")).toBeNull();
+  });
+
+  it("rejects malformed or wrong-shape objects", () => {
+    expect(parseSecretRefBinding(null)).toBeNull();
+    expect(parseSecretRefBinding(undefined)).toBeNull();
+    expect(parseSecretRefBinding([])).toBeNull();
+    expect(parseSecretRefBinding({})).toBeNull();
+    expect(parseSecretRefBinding({ type: "plain", value: "x" })).toBeNull();
+    expect(parseSecretRefBinding({ type: "secret_ref" })).toBeNull(); // missing secretId
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "" })).toBeNull();
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc", version: 0 })).toBeNull();
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc", version: -1 })).toBeNull();
+    expect(parseSecretRefBinding({ type: "secret_ref", secretId: "abc", version: "not-latest" })).toBeNull();
   });
 });

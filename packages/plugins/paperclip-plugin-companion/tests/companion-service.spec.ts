@@ -227,7 +227,14 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
     },
     secrets: {
       async resolve(ref, opts) {
-        return state.secrets[`${opts.companyId}:${ref}`] ?? null;
+        // Mirrors the real host: a raw string secretRef is rejected outright
+        // (see config-validation.ts's parseSecretRefBinding comment) — only
+        // the { type: "secret_ref", secretId, version? } binding object
+        // resolves, keyed by secretId.
+        if (typeof ref === "string") {
+          throw new Error(`fakeHost.secrets.resolve: raw string secretRef is rejected (got "${ref}")`);
+        }
+        return state.secrets[`${opts.companyId}:${ref.secretId}`] ?? null;
       },
     },
     http: {
@@ -321,7 +328,7 @@ describe("companion-service — actor attribution", () => {
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "The answer is 42." }] }) },
       ],
       secrets: { [`${companyId}:anthropic-key-ref`]: "sk-fake" },
-      config: { [companyId]: { anthropicApiKeySecretRef: "anthropic-key-ref" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "anthropic-key-ref" } } },
     });
     const thread = await createThread(host, companyId, "user-1", "Q&A");
     await sendMessage(host, companyId, thread.id, "user-1", "What's the answer?");
@@ -344,7 +351,7 @@ describe("companion-service — direct-agent/session separation", () => {
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "ok" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
-      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" }} },
     });
     // The fake host object above has no `agentSessions`/`agents.sessions` field
     // at all — companion-service.ts's CompanionHost type doesn't declare one.
@@ -530,7 +537,7 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "answer" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
-      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" }} },
     });
     const thread = await createThread(host, companyId, "user-1", "t");
     const clientRequestId = randomUUID();
@@ -555,7 +562,7 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "a2" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
-      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" }} },
     });
     const thread = await createThread(host, companyId, "user-1", "t");
     await sendMessage(host, companyId, thread.id, "user-1", "hello", randomUUID());
@@ -601,7 +608,7 @@ describe("companion-service — outbound config hardening", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId, {
       secrets: { [`${companyId}:tok`]: "gh-fake" },
-      config: { [companyId]: { githubRepo: "not-a-valid-repo-string", githubTokenSecretRef: "tok" } },
+      config: { [companyId]: { githubRepo: "not-a-valid-repo-string", githubTokenSecretRef: { type: "secret_ref", secretId: "tok" } } },
     });
     // No http response is queued — if getGithubEvidence attempted the fetch
     // anyway, the fake host.http.fetch would throw "no fake http response
@@ -654,7 +661,7 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
   it("never persists, logs, or throws the resolved API key even when the provider call fails", async () => {
     const { host, state } = fakeHost(companyId, {
       secrets: { [`${companyId}:key`]: SECRET_MARKER },
-      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" }} },
     });
     host.http.fetch = async (url) => {
       if (typeof url === "string" && url.includes("anthropic.com")) {
@@ -670,6 +677,27 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
     expect(result.companionMessage.body).not.toContain(SECRET_MARKER);
   });
 
+  it("never lets a throwing secrets.resolve() propagate uncaught out of sendMessage — persists a reply instead of an interrupted state", async () => {
+    // Reproduces the real host's actual failure mode found during disposable
+    // e2e validation: host.secrets.resolve() throws (e.g. binding_missing,
+    // binding_ambiguous, rate limit) rather than returning null. Before this
+    // fix, that throw propagated straight out of sendMessage() with no
+    // persisted companion reply — surfacing in the UI as the interrupted
+    // state instead of the deterministic "couldn't complete that request"
+    // reply this path is supposed to produce.
+    const { host, state } = fakeHost(companyId, {
+      httpResponses: [{ status: 200, body: JSON.stringify({ status: "ok" }) }],
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" } } },
+    });
+    host.secrets.resolve = async () => {
+      throw new Error("Secret is not bound to plugin:paperclipai.companion");
+    };
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const result = await sendMessage(host, companyId, thread.id, "user-1", "hello");
+    expect(result.companionMessage.body).toContain("couldn't complete that request");
+    expect(state.messages.filter((m) => m.thread_id === thread.id)).toHaveLength(2);
+  });
+
   it("reports a generic, non-leaking error to the human when the provider returns a non-2xx status", async () => {
     const { host } = fakeHost(companyId, {
       httpResponses: [
@@ -677,7 +705,7 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
         { status: 401, body: JSON.stringify({ error: { message: `invalid key ${SECRET_MARKER}` } }) },
       ],
       secrets: { [`${companyId}:key`]: SECRET_MARKER },
-      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" }} },
     });
     const thread = await createThread(host, companyId, "user-1", "t");
     const result = await sendMessage(host, companyId, thread.id, "user-1", "hello");
