@@ -23,6 +23,20 @@ test("COMPANY_CREATE_POST_PATTERN ignores company sub-resource POSTs", () => {
   assert.ok(!COMPANY_CREATE_POST_PATTERN.test('await request.get("/api/companies")'));
 });
 
+// Regression: found by an independent review — a spec building its own
+// APIRequestContext commonly prefixes the path with `${BASE_URL}` or a bare
+// origin, which the original pattern (requiring the path to start
+// immediately after the opening quote) silently missed entirely, in real
+// files this repo already ships (signoff-policy.spec.ts, sidebar-takeover.spec.ts).
+test("COMPANY_CREATE_POST_PATTERN matches a leading ${BASE_URL} or bare-origin interpolation", () => {
+  assert.ok(COMPANY_CREATE_POST_PATTERN.test("await board.post(`${BASE_URL}/api/companies`, {"));
+  assert.ok(COMPANY_CREATE_POST_PATTERN.test('await request.post("http://127.0.0.1:3199/api/companies", {'));
+});
+
+test("COMPANY_CREATE_POST_PATTERN still ignores a ${BASE_URL}-prefixed sub-resource POST", () => {
+  assert.ok(!COMPANY_CREATE_POST_PATTERN.test("await board.post(`${BASE_URL}/api/companies/${companyId}/agents`, {"));
+});
+
 test("BOARD_AUTH_IMPORT_PATTERN matches both quote styles and the .js suffix", () => {
   assert.ok(BOARD_AUTH_IMPORT_PATTERN.test('import { test, expect } from "./fixtures/board-auth.js";'));
   assert.ok(BOARD_AUTH_IMPORT_PATTERN.test("import { test, expect } from './fixtures/board-auth';"));
@@ -98,6 +112,35 @@ test("runCheck scans a real directory and fails on an unguarded spec", () => {
     rmSync(repoRoot, { recursive: true, force: true });
   }
   assert.equal(exitCode, 1);
+});
+
+test("runCheck excludes a spec run through a harness that provisions no credential", () => {
+  const repoRoot = mkdtempSync(path.join(os.tmpdir(), "board-auth-coverage-"));
+  const e2eDir = path.join(repoRoot, "tests", "e2e");
+  mkdirSync(e2eDir, { recursive: true });
+  writeFileSync(
+    path.join(e2eDir, "multi-user.spec.ts"),
+    [
+      'import { expect, test } from "@playwright/test";',
+      'test("x", async ({ request }) => {',
+      '  await request.post("/api/companies", { data: {} });',
+      "});",
+    ].join("\n"),
+  );
+
+  const originalError = console.error;
+  const originalLog = console.log;
+  console.error = () => {};
+  console.log = () => {};
+  let exitCode;
+  try {
+    exitCode = runCheck({ repoRoot });
+  } finally {
+    console.error = originalError;
+    console.log = originalLog;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+  assert.equal(exitCode, 0);
 });
 
 test("runCheck passes when every company-creating spec is guarded", () => {

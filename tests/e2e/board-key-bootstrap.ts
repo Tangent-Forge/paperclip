@@ -28,7 +28,8 @@
  * by PAPERCLIP_INSTANCE_ID below.
  */
 import { randomBytes, createHash } from "node:crypto";
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import postgres from "postgres";
 
 const E2E_INSTANCE_ID = "playwright-e2e";
@@ -78,6 +79,60 @@ function connect() {
   });
 }
 
+/**
+ * `resolveEmbeddedPostgresPort()` falls back to the same default port
+ * (54329) that a real, non-e2e instance also defaults to, and
+ * `assertE2eContext()` above only checks `PAPERCLIP_INSTANCE_ID` — neither
+ * one actually confirms *which* database this is about to write an
+ * instance-admin credential into. If a real instance's embedded Postgres
+ * happens to be reachable on the resolved port (a real scenario: the
+ * server's own port-collision fallback in server/src/index.ts corrects its
+ * *in-memory* config on a collision but only persists that correction back
+ * to disk when `PAPERCLIP_IN_WORKTREE=true`, which this harness never
+ * sets — so the on-disk config this file reads can name the wrong,
+ * real-instance port), this would silently mint a live instance-admin board
+ * API key in that real database.
+ *
+ * Mirrors the exact same defense server/src/index.ts already uses before
+ * touching a reachable Postgres it didn't start: confirm its
+ * `data_directory` resolves under *this run's own* `PAPERCLIP_HOME` before
+ * writing anything. Fails closed — a missing/mismatched data directory
+ * aborts provisioning rather than falling through to a guess.
+ */
+export async function assertConnectedToThisRunsIsolatedDatabase(sql: ReturnType<typeof postgres>): Promise<void> {
+  const home = process.env.PAPERCLIP_HOME;
+  if (!home) {
+    throw new Error("board-key-bootstrap: PAPERCLIP_HOME is not set; refusing to provision a board credential.");
+  }
+  let dataDirectory: string | null = null;
+  try {
+    const rows = await sql<{ data_directory: string | null }[]>`
+      SELECT current_setting('data_directory', true) AS data_directory
+    `;
+    dataDirectory = rows[0]?.data_directory ?? null;
+  } catch {
+    dataDirectory = null;
+  }
+  const homeResolved = realpathSyncOrSelf(home);
+  const dataDirResolved = dataDirectory ? realpathSyncOrSelf(dataDirectory) : null;
+  if (!dataDirResolved || !dataDirResolved.startsWith(`${homeResolved}${sep}`)) {
+    throw new Error(
+      "board-key-bootstrap: refusing to provision a board credential — the reachable Postgres's " +
+        `data_directory (${dataDirectory ?? "<unreadable>"}) does not resolve under this run's ` +
+        `PAPERCLIP_HOME (${home}). This is not this e2e run's own isolated database; it may be a ` +
+        "real instance sharing the same port. Aborting rather than guessing.",
+    );
+  }
+}
+
+function realpathSyncOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 function credentialFilePath(): string {
   const home = process.env.PAPERCLIP_HOME;
   if (!home) {
@@ -94,6 +149,7 @@ export async function provisionE2eBoardCredential(): Promise<E2eBoardCredential>
   assertE2eContext();
   const sql = connect();
   try {
+    await assertConnectedToThisRunsIsolatedDatabase(sql);
     const userId = `e2e-board-${randomBytes(6).toString("hex")}`;
     const now = new Date();
 
@@ -148,6 +204,12 @@ export async function revokeE2eBoardCredential(): Promise<void> {
 
   const sql = connect();
   try {
+    // Same defense as provisioning, and just as necessary here: this issues
+    // real DELETEs keyed only on a userId string. If port resolution ever
+    // diverges between provisioning and teardown (a stale on-disk config
+    // changing mid-run, a real instance answering on the resolved port),
+    // this would otherwise delete rows in a database this run doesn't own.
+    await assertConnectedToThisRunsIsolatedDatabase(sql);
     // Explicit deletes in FK-safe order rather than relying solely on
     // board_api_keys' ON DELETE CASCADE from "user" — instance_user_roles
     // has no FK to "user" at all, so it needs its own explicit delete.

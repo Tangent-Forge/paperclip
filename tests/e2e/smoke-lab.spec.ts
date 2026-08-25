@@ -148,28 +148,42 @@ async function screenshot(page: Page, scenario: SmokeLabScenario, step: string) 
   return path;
 }
 
+// This suite loops over multiple scenarios (P1-P7) whose evidence-capture
+// steps repeatedly navigate between a handful of URLs (notably
+// `/apps/connections`, hit from both navigateForEvidence's "attention" case
+// and the schemaChangeQuarantine step below) — an earlier scenario's step
+// can easily leave the browser already sitting on the exact URL a later
+// scenario's step navigates to next. Root-caused via a captured Playwright
+// trace: the default `waitUntil: "load"` genuinely hung indefinitely on
+// exactly that "already there" case (this SPA's client-side router doesn't
+// always trigger a fresh `load` event for a same-URL `page.goto`), the one
+// code path this suite could never previously reach — every prior CI run
+// 403'd at company-creation, step 1, before PAP-1975's board-credential fix.
+// `waitUntil: "commit"` (fires once navigation is committed, not on full
+// load) sidesteps that hang; the real correctness guarantee here is each
+// call's own `expect(...).toBeVisible()` right after, not the goto itself.
 async function navigateForEvidence(page: Page, seed: Seed, connectionId: string, scenario: SmokeLabScenario) {
   if (scenario.uiEntryPath === "advanced") {
-    await page.goto(`/${seed.prefix}/apps/advanced`);
+    await page.goto(`/${seed.prefix}/apps/advanced`, { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
     return;
   }
   if (scenario.uiEntryPath === "review") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/review`, { waitUntil: "commit" });
     await expect(page.getByText(/Nothing is waiting for your OK|new actions? (need|to) review/i).first()).toBeVisible({ timeout: 20_000 });
     return;
   }
   if (scenario.uiEntryPath === "activity") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`, { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "Recent activity" })).toBeVisible({ timeout: 20_000 });
     return;
   }
   if (scenario.uiEntryPath === "attention") {
-    await page.goto(`/${seed.prefix}/apps/connections`);
+    await page.goto(`/${seed.prefix}/apps/connections`, { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 20_000 });
     return;
   }
-  await page.goto(`/${seed.prefix}/apps/${connectionId}`);
+  await page.goto(`/${seed.prefix}/apps/${connectionId}`, { waitUntil: "commit" });
   await expect(page.getByRole("heading", { name: /Smoke Lab/i }).first()).toBeVisible({ timeout: 30_000 });
 }
 
@@ -337,7 +351,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`, { waitUntil: "commit" });
           return `Allowed read ${scenario.lifecycle.allowedRead.name}`;
         });
 
@@ -351,7 +365,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const pending = await testCall(request, connection.id, scout, scenario.lifecycle.askFirstWrite);
           expect(pending.decision).toBe("ask_first");
           expect(pending.actionRequestId).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`, { waitUntil: "commit" });
           await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
           await pollTestCall(request, connection.id, pending.actionRequestId!, "done");
           return `Approved ask-first call ${scenario.lifecycle.askFirstWrite.name}`;
@@ -367,13 +381,13 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const denied = await testCall(request, connection.id, scout, scenario.lifecycle.deniedCall);
           expect(denied.decision).toBe("off");
           expect(denied.error?.reasonCode).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`, { waitUntil: "commit" });
           return `Blocked call ${scenario.lifecycle.deniedCall.name}: ${denied.error?.reasonCode}`;
         });
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "schema-change-quarantine", async () => {
           if (connection.transport !== "mcp_remote") {
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`, { waitUntil: "commit" });
             return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
           }
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -392,7 +406,11 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             await request.post(`/api/tool-connections/${connection.id}/catalog/refresh`),
           );
           expect(refresh.quarantinedCount).toBeGreaterThan(0);
-          await page.goto(`/${seed.prefix}/apps/connections`);
+          // See navigateForEvidence's comment above: `waitUntil: "commit"`
+          // avoids a same-URL-navigation hang when a prior scenario already
+          // left the browser on this exact page.
+          await page.goto(`/${seed.prefix}/apps/connections`, { waitUntil: "commit" });
+          await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 20_000 });
           return `Catalog refresh quarantined ${refresh.quarantinedCount} changed entries.`;
         });
 
@@ -405,14 +423,14 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
               data: { companyId: seed.companyId },
             }));
             await expectError(await gatewayFetch(request, session.toolsUrl, session.token), 401);
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`, { waitUntil: "commit" });
             return scenario.lifecycle.revoke;
           }
           const disabled = await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
             data: { enabled: false },
           }));
           expect(disabled.enabled).toBe(false);
-          await page.goto(`/${seed.prefix}/apps/${connection.id}`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}`, { waitUntil: "commit" });
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
             data: { enabled: true },
           }));
@@ -425,7 +443,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`, { waitUntil: "commit" });
           return scenario.lifecycle.auditEvidence;
         });
       }
