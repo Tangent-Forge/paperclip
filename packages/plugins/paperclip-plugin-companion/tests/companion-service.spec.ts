@@ -638,6 +638,54 @@ describe("companion-service — outbound config hardening", () => {
   });
 });
 
+describe("companion-service — Anthropic provider contract (secret hygiene)", () => {
+  // Direct Anthropic call is a deliberate MVP choice, not an oversight: see
+  // doc/plans/2026-08-25-paperclip-companion-design.md §1. Independently
+  // reverified here (not just asserted in the design doc): ctx.agents.sessions
+  // (packages/plugins/sdk/src/types.ts PluginAgentSessionsClient.create) takes
+  // a required `agentId` naming a real, existing organizational agent — there
+  // is no Paperclip-provided model/runtime service that can make this call
+  // without either impersonating or creating an organizational agent, which
+  // this feature must not do. These tests cover the resulting secret-hygiene
+  // contract for the direct call.
+  const companyId = "company-a";
+  const SECRET_MARKER = "sk-super-secret-marker-should-never-leak-ANYWHERE";
+
+  it("never persists, logs, or throws the resolved API key even when the provider call fails", async () => {
+    const { host, state } = fakeHost(companyId, {
+      secrets: { [`${companyId}:key`]: SECRET_MARKER },
+      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+    });
+    host.http.fetch = async (url) => {
+      if (typeof url === "string" && url.includes("anthropic.com")) {
+        throw new Error(`network failure while using key ${SECRET_MARKER}`);
+      }
+      return { status: 200, ok: true, async text() { return JSON.stringify({ status: "ok" }); } };
+    };
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const result = await sendMessage(host, companyId, thread.id, "user-1", "hello");
+
+    const serialized = JSON.stringify({ messages: state.messages, activity: state.activity, result });
+    expect(serialized).not.toContain(SECRET_MARKER);
+    expect(result.companionMessage.body).not.toContain(SECRET_MARKER);
+  });
+
+  it("reports a generic, non-leaking error to the human when the provider returns a non-2xx status", async () => {
+    const { host } = fakeHost(companyId, {
+      httpResponses: [
+        { status: 200, body: JSON.stringify({ status: "ok" }) },
+        { status: 401, body: JSON.stringify({ error: { message: `invalid key ${SECRET_MARKER}` } }) },
+      ],
+      secrets: { [`${companyId}:key`]: SECRET_MARKER },
+      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+    });
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const result = await sendMessage(host, companyId, thread.id, "user-1", "hello");
+    expect(result.companionMessage.body).toContain("HTTP 401");
+    expect(result.companionMessage.body).not.toContain(SECRET_MARKER);
+  });
+});
+
 describe("companion-service — repo-aware evidence: reading a specific allowlisted file", () => {
   it("reads a file that is present in the directory listing", async () => {
     const companyId = "company-a";
