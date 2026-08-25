@@ -41,7 +41,7 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          COMMITPERCLIP_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
 
       - name: Run quality gates
         id: quality
