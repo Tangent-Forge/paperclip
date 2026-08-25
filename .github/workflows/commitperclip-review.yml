@@ -41,7 +41,14 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY }}
+          # Accept either secret name: this fork stores the App key as
+          # REVIEW_APP_PRIVATE_KEY; upstream/local scripts use COMMITPERCLIP_KEY.
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
+          # Authenticate as the App this org owns (tfrm-review). Without these
+          # the script signs JWT iss=3718661 (upstream commitperclip), whose
+          # private key is never available to fork installers.
+          REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
+          REVIEW_APP_SLUG: ${{ vars.REVIEW_APP_SLUG }}
 
       - name: Run quality gates
         id: quality

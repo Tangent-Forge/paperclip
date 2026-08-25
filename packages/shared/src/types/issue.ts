@@ -693,6 +693,12 @@ export interface IssueExecutionPolicy {
    * default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  /**
+   * Aggregate automatic execution attempt budget for this issue across recovery,
+   * handoffs, requeues, and continuation. Operator/manual wakes open a new epoch.
+   * `1` means at most one total automatic attempt (TAN-861 B0 canary contract).
+   */
+  retryCeiling?: number | null;
 }
 
 export interface IssueExecutionMonitorState {

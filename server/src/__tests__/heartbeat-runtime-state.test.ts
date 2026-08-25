@@ -20,15 +20,19 @@ import {
   getHeartbeatRunRuntimeStatus,
 } from "../services/heartbeat-run-runtime-status.ts";
 
-vi.doMock("../adapters/index.js", () => ({
-  getServerAdapter: vi.fn(() => ({
-    type: "process",
-    execute: vi.fn(),
-    testEnvironment: vi.fn(),
-  })),
-  listAdapterModelProfiles: vi.fn(() => []),
-  runningProcesses: new Map(),
-}));
+vi.doMock("../adapters/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../adapters/index.js")>();
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      type: "process",
+      execute: vi.fn(),
+      testEnvironment: vi.fn(),
+    })),
+    listAdapterModelProfiles: vi.fn(() => []),
+    runningProcesses: new Map(),
+  };
+});
 
 const { heartbeatService } = await import("../services/heartbeat.ts");
 

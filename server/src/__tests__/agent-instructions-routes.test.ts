@@ -67,10 +67,14 @@ vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));
 
-vi.mock("../adapters/index.js", () => ({
-  findServerAdapter: mockFindServerAdapter,
-  listAdapterModels: vi.fn(),
-}));
+vi.mock("../adapters/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../adapters/index.js")>();
+  return {
+    ...actual,
+    findServerAdapter: mockFindServerAdapter,
+    listAdapterModels: vi.fn(),
+  };
+});
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -98,10 +102,14 @@ function registerModuleMocks() {
     environmentService: () => mockEnvironmentService,
   }));
 
-  vi.doMock("../adapters/index.js", () => ({
-    findServerAdapter: mockFindServerAdapter,
-    listAdapterModels: vi.fn(),
-  }));
+  vi.doMock("../adapters/index.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../adapters/index.js")>();
+    return {
+      ...actual,
+      findServerAdapter: mockFindServerAdapter,
+      listAdapterModels: vi.fn(),
+    };
+  });
 }
 
 function boardActor() {
