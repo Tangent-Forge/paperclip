@@ -75,6 +75,10 @@ import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
+import { deliveryControllerRoutes } from "./routes/delivery-controller.js";
+import { RealGitClient, RealGitHubClient } from "./services/delivery-publisher-adapters.js";
+import { RealSourceArtifactCapturer } from "./services/delivery-source-artifact.js";
+import { startDeliveryControllerWorker } from "./services/delivery-controller-worker.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -544,6 +548,39 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
+  // Real adapters are constructed here (source only) but this route is never
+  // exercised against a live remote in this session — see
+  // delivery-publisher-adapters.ts's own header comment. Neither client is
+  // given a credential unless GITHUB_TOKEN/GH_TOKEN is actually set in this
+  // process's environment. sourceArtifact's intakeRoot constrains every
+  // submitted sourceWorktreePath to a location this server itself manages —
+  // see delivery-source-artifact.ts's own comment for why that boundary
+  // exists (arbitrary host paths + git hooks = arbitrary code execution).
+  const deliveryControllerDeps = {
+    gitClient: new RealGitClient(),
+    githubClient: new RealGitHubClient(),
+    sourceArtifact: new RealSourceArtifactCapturer({
+      artifactsRoot: process.env.PAPERCLIP_DELIVERY_ARTIFACTS_DIR ?? "/var/lib/paperclip/delivery-artifacts",
+      intakeRoot: process.env.PAPERCLIP_DELIVERY_INTAKE_ROOT ?? "/var/lib/paperclip/delivery-intake",
+    }),
+  };
+  api.use(deliveryControllerRoutes(db, deliveryControllerDeps));
+  // The normal transition path — not a person or agent calling /publish, see
+  // that route's own comment and delivery-controller-worker.ts.
+  //
+  // Two independent, both-default-off layers gate this from ever touching a
+  // real remote just because this process started:
+  //   1. PAPERCLIP_DELIVERY_WORKER_ENABLED=true is required for the
+  //      scheduler timer below to run AT ALL — unset/false (the default)
+  //      means start() below is never called, same as before this pass.
+  //   2. Even with the timer running, every tick calls isWorkerActivated()
+  //      first and does nothing unless an instance admin has separately
+  //      created an active row via POST /delivery-worker-activation — see
+  //      delivery_worker_activation.ts and runWorkerTick()'s own comment.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _deliveryControllerWorker = startDeliveryControllerWorker(db, deliveryControllerDeps, {
+    autoStart: process.env.PAPERCLIP_DELIVERY_WORKER_ENABLED === "true",
+  });
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
