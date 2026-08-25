@@ -5,10 +5,11 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-// Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
-// bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
-// Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
+// Use the concrete `gpt-5.6-luna` slug (a curated 5.6-family entry with real OpenAI-published
+// metadata) rather than the bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare
+// slug, so passing it makes the Codex CLI warn ("Model metadata for `gpt-5.6` not found") and
+// fall back to generic context limits.
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-luna";
 // Default OFF. `--dangerously-bypass-approvals-and-sandbox` disables the sandbox
 // *and* every approval prompt; Codex documents it as "intended solely for running
 // in environments that are externally sandboxed". A default of `true` also made
@@ -54,6 +55,10 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
   return Boolean(normalizedModel) && !isCodexLocalKnownModel(normalizedModel);
 }
 
+export function resolveCodexLocalModel(model: string | null | undefined): string {
+  return normalizeCodexModel(model) || DEFAULT_CODEX_LOCAL_MODEL;
+}
+
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
@@ -68,12 +73,11 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
-  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, so it doubles as the first (default) 5.6 entry.
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
-  { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
+  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-luna, so it doubles as the first (default) entry.
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+  { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+  { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.4", label: "gpt-5.4" },
-  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -140,6 +144,7 @@ Notes:
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Workload routing policy: use \`gpt-5.6-luna\` (the pinned default) for routine Paperclip work; retain \`gpt-5.3-codex-spark\` as a manually configured interactive low-latency choice only. Spark is intentionally not added to the curated model picker.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 `;

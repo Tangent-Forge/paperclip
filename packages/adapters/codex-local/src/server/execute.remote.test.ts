@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
+
 const {
   runChildProcess,
   ensureCommandResolvable,

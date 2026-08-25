@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
@@ -62,24 +63,22 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides for manual models", () => {
+  it("ignores fast mode for manual models until support is proven", () => {
     const result = buildCodexExecArgs({
       model: "future-codex-model",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.5, gpt-5.4",
+    );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
       "future-codex-model",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
       "-",
     ]);
   });
