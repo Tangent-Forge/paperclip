@@ -447,6 +447,14 @@ export type {
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
+export type {
+  ExecutionQueueMode,
+  ExecutionQueueBucket,
+  ExecutionQueueReason,
+  ExecutionQueueEntry,
+  ExecutionQueueSummary,
+  ExecutionQueueDispatchResult,
+} from "./execution-queue.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,

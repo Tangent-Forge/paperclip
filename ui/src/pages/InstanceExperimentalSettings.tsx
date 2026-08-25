@@ -220,6 +220,7 @@ export function InstanceExperimentalSettings() {
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
+  const executionQueueControlled = experimentalQuery.data?.executionQueueMode === "controlled";
   const lookbackHours =
     experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours ?? 24;
   const parsedLookbackHours = Number.parseInt(lookbackHoursDraft, 10);
@@ -288,6 +289,23 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle environments experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Controlled execution queue</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              In observe mode, Paperclip shows the five highest-priority runnable issues and why other work is waiting. In controlled mode, generic wakes are suppressed and the board dispatches one issue-scoped run at a time per agent.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={executionQueueControlled}
+            onCheckedChange={() => toggleMutation.mutate({ executionQueueMode: executionQueueControlled ? "observe" : "controlled" })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle controlled execution queue"
           />
         </div>
       </section>

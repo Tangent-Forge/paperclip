@@ -55,6 +55,8 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  executionQueueMode: "observe" | "controlled";
+  executionQueueMaxActiveRunsPerAgent: number;
 }
 
 export interface InstanceSettings {

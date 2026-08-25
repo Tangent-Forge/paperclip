@@ -348,4 +348,43 @@ describe("instance settings routes", () => {
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
+
+  // The execution-queue mode toggle is the single switch that changes agent
+  // dispatch behavior instance-wide. It rides the pre-existing experimental
+  // settings PATCH and its pre-existing assertCanManageInstanceSettings guard —
+  // no separate check was added for it — so these prove that shared guard
+  // actually rejects an attempt to flip it, the same way it already does for
+  // general settings above, rather than assuming the inheritance holds.
+  it("rejects non-admin board users from enabling controlled execution mode", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ executionQueueMode: "controlled" });
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers from enabling controlled execution mode", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ executionQueueMode: "controlled" });
+
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+  });
 });

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
+import { executionQueueApi } from "../api/executionQueue";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
@@ -20,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, ListOrdered, PauseCircle, Play } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -39,6 +40,7 @@ export function Dashboard() {
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const queryClient = useQueryClient();
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -57,6 +59,23 @@ export function Dashboard() {
     queryKey: queryKeys.dashboard(selectedCompanyId!),
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const executionQueueQuery = useQuery({
+    queryKey: queryKeys.executionQueue(selectedCompanyId!),
+    queryFn: () => executionQueueApi.summary(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const dispatchNextMutation = useMutation({
+    mutationFn: () => executionQueueApi.dispatchNext(selectedCompanyId!),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.executionQueue(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) }),
+      ]);
+    },
   });
 
   const { data: activity } = useQuery({
@@ -290,6 +309,79 @@ export function Dashboard() {
               }
             />
           </div>
+
+          {executionQueueQuery.data && (
+            <section className="rounded-xl border border-border bg-card p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <ListOrdered className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                  <div>
+                    <h2 className="text-sm font-semibold">Execution queue</h2>
+                    <p className="text-xs text-muted-foreground">
+                      {executionQueueQuery.data.mode === "controlled"
+                        ? `Controlled: at most ${executionQueueQuery.data.maxActiveRunsPerAgent} active run per agent.`
+                        : "Observe mode: inspect the next safe work before enabling dispatch."}
+                    </p>
+                  </div>
+                </div>
+                {executionQueueQuery.data.mode === "controlled" && (
+                  <button
+                    type="button"
+                    onClick={() => dispatchNextMutation.mutate()}
+                    disabled={dispatchNextMutation.isPending || executionQueueQuery.data.runnable.length === 0}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    Dispatch next
+                  </button>
+                )}
+              </div>
+
+              {executionQueueQuery.data.runnable.length === 0 ? (
+                <p className="mt-4 text-sm text-muted-foreground">No runnable work. Review the visible waiting, blocked, and held counts below.</p>
+              ) : (
+                <div className="mt-4 divide-y divide-border rounded-md border border-border">
+                  {executionQueueQuery.data.runnable.map((item) => (
+                    <Link
+                      key={item.issueId}
+                      to={`/issues/${item.identifier ?? item.issueId}`}
+                      className="block px-3 py-2 text-sm hover:bg-accent/50"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="min-w-0 truncate font-medium">{item.title}</span>
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">{item.identifier ?? item.issueId.slice(0, 8)}</span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{item.assigneeName ?? "Unassigned"} · {item.detail}</p>
+                    </Link>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>{executionQueueQuery.data.counts.waiting} waiting</span>
+                <span>{executionQueueQuery.data.counts.blocked} blocked</span>
+                <span>{executionQueueQuery.data.counts.held} held</span>
+              </div>
+              {dispatchNextMutation.error && (
+                <p className="mt-2 text-xs text-destructive">
+                  {dispatchNextMutation.error instanceof Error ? dispatchNextMutation.error.message : "Unable to dispatch the next issue."}
+                </p>
+              )}
+              {/* selection_incomplete is a 200 response, not an error — the scan hit its
+                  bound before finding a dispatchable issue or exhausting the queue. It is
+                  retryable and distinct from both "queued" (success) and "not_dispatched"
+                  (genuinely nothing runnable), so it needs its own visible affordance rather
+                  than silently looking identical to a successful no-op dispatch. Clears
+                  itself automatically once a later dispatch returns a different disposition,
+                  since dispatchNextMutation.data always holds only the most recent result. */}
+              {dispatchNextMutation.data?.disposition === "selection_incomplete" && (
+                <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-300">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>Selection incomplete: {dispatchNextMutation.data.reason}</span>
+                </p>
+              )}
+            </section>
+          )}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">

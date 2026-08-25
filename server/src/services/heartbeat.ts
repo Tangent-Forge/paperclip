@@ -3122,6 +3122,15 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  // A successful enqueueWakeup() normally starts the queued run's execution
+  // immediately (fire-and-forget) as its very last step. Set this to false to
+  // suppress that one side effect while keeping every other part of wakeup() —
+  // policy gates, the controlled-execution-queue checks, the WIP row lock —
+  // fully real. Exists for tests that need to assert on dispatch/lock
+  // correctness deterministically, without a real (and here, adapter-less)
+  // execution attempt racing the test process's own teardown. Defaults to true
+  // (unchanged production behavior) everywhere this option isn't passed.
+  autoStartQueuedRuns?: boolean;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -10356,9 +10365,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const policy = parseHeartbeatPolicy(agent);
+    const executionQueueSettings = await instanceSettings.getExperimental();
+    const controlledExecutionQueue = executionQueueSettings.executionQueueMode === "controlled";
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
+      return null;
+    }
+
+    // Controlled mode makes issue-scoped queue selection the only entry point
+    // for new work. A generic heartbeat has no selected work item, so it cannot
+    // prove that it is within the board-visible WIP limit.
+    if (controlledExecutionQueue && !issueId) {
+      await writeSkippedRequest("execution_control.generic_wake_suppressed", {
+        error: "Controlled execution requires an issue-scoped queue dispatch.",
+      });
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
@@ -10450,6 +10471,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        const isExecutionQueueDispatch =
+          reason === "execution_queue_dispatch" && enrichedContextSnapshot.executionQueueDispatch === true;
+        if (controlledExecutionQueue && issue.status === "todo" && !isExecutionQueueDispatch) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "execution_control.queue_required",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+            error: "Controlled execution requires a dispatch from the board-visible runnable queue.",
           });
           return { kind: "skipped" as const };
         }
@@ -10878,6 +10919,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        // Serialize new issue work per agent before checking the control-plane
+        // WIP limit. The agent-row lock means simultaneous dispatches for two
+        // different issues cannot both observe spare capacity and start.
+        if (controlledExecutionQueue) {
+          await tx.execute(
+            sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
+          );
+          const activeCount = await tx
+            .select({ count: sql<number>`count(*)::int` })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              ),
+            )
+            .then((rows) => Number(rows[0]?.count ?? 0));
+          if (activeCount >= executionQueueSettings.executionQueueMaxActiveRunsPerAgent) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "execution_control.wip_limit",
+              payload,
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+              error: `Controlled execution limit reached (${executionQueueSettings.executionQueueMaxActiveRunsPerAgent} active run per agent).`,
+            });
+            return { kind: "skipped" as const };
+          }
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -10928,7 +11006,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        if (options.autoStartQueuedRuns !== false) await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
       }
 
@@ -10945,7 +11023,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      if (options.autoStartQueuedRuns !== false) await startNextQueuedRunForAgent(agent.id);
       return newRun;
     }
 
@@ -11586,6 +11664,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }),
 
     wakeup: enqueueWakeup,
+
+    // Claims and starts whatever's already queued for this agent. Exposed for
+    // callers that create a run with autoStartQueuedRuns: false (so the create
+    // happens inside their own transaction, isolated from a concurrent
+    // fire-and-forget execution attempt racing that transaction's own commit)
+    // and need to trigger the start step separately, once their transaction
+    // has actually committed and the row is visible outside it.
+    startNextQueuedRunForAgent,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
