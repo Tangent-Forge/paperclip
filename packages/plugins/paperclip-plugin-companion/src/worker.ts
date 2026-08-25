@@ -18,11 +18,21 @@ function requireCompanyId(value: unknown): string {
   return value;
 }
 
-function requireString(value: unknown, field: string): string {
+function requireString(value: unknown, field: string, maxLength = 20_000): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${field} is required`);
   }
-  return value;
+  const trimmed = value.trim();
+  if (trimmed.length > maxLength) throw new Error(`${field} must be at most ${maxLength} characters`);
+  return trimmed;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function requireUuid(value: unknown, field: string): string {
+  const text = requireString(value, field, 36);
+  if (!UUID_PATTERN.test(text)) throw new Error(`${field} must be a UUID`);
+  return text;
 }
 
 /** Maps the real ctx.* clients onto the narrow CompanionHost interface companion-service.ts consumes. */
@@ -70,7 +80,12 @@ export const plugin = definePlugin({
 
     ctx.data.register(DATA_KEYS.thread, async (params) => {
       const companyId = requireCompanyId(params.companyId);
-      const threadId = requireString(params.threadId, "threadId");
+      // The UI hook is unconditional to preserve React hook ordering. Before
+      // the thread list resolves there is intentionally no selected id; return
+      // an empty result instead of turning that normal loading phase into a
+      // noisy 502.
+      if (params.threadId === undefined || params.threadId === null || params.threadId === "") return null;
+      const threadId = requireUuid(params.threadId, "threadId");
       return getThreadWithMessages(host, companyId, threadId);
     });
 
@@ -78,7 +93,7 @@ export const plugin = definePlugin({
       const companyId = requireCompanyId(context.companyId ?? params.companyId);
       const actorUserId = humanActorUserId(context);
       if (!actorUserId) throw new Error("createThread requires an authenticated human actor");
-      const title = typeof params.title === "string" ? params.title : "New conversation";
+      const title = typeof params.title === "string" ? requireString(params.title, "title", 200) : "New conversation";
       return createThread(host, companyId, actorUserId, title);
     });
 
@@ -86,9 +101,11 @@ export const plugin = definePlugin({
       const companyId = requireCompanyId(context.companyId ?? params.companyId);
       const actorUserId = humanActorUserId(context);
       if (!actorUserId) throw new Error("sendMessage requires an authenticated human actor");
-      const threadId = requireString(params.threadId, "threadId");
+      const threadId = requireUuid(params.threadId, "threadId");
       const body = requireString(params.body, "body");
-      const clientRequestId = typeof params.clientRequestId === "string" && params.clientRequestId ? params.clientRequestId : null;
+      const clientRequestId = params.clientRequestId === undefined || params.clientRequestId === null
+        ? null
+        : requireUuid(params.clientRequestId, "clientRequestId");
       const result = await sendMessage(host, companyId, threadId, actorUserId, body, clientRequestId);
       // Known MVP limitation (see design record §6): this is a single buffered
       // emit, not token-level streaming — the full reply is already computed
@@ -103,16 +120,18 @@ export const plugin = definePlugin({
 
     ctx.actions.register(ACTION_KEYS.proposeAction, async (params, context) => {
       const companyId = requireCompanyId(context.companyId ?? params.companyId);
-      const threadId = requireString(params.threadId, "threadId");
-      const messageId = requireString(params.messageId, "messageId");
-      const summary = requireString(params.summary, "summary");
+      const actorUserId = humanActorUserId(context);
+      if (!actorUserId) throw new Error("proposeAction requires an authenticated human actor");
+      const threadId = requireUuid(params.threadId, "threadId");
+      const messageId = requireUuid(params.messageId, "messageId");
+      const summary = requireString(params.summary, "summary", 2_000);
       const detailsMarkdown = typeof params.detailsMarkdown === "string" ? params.detailsMarkdown : undefined;
       return proposeAction(host, companyId, threadId, messageId, summary, detailsMarkdown);
     });
 
     ctx.actions.register(ACTION_KEYS.decideProposal, async (params, context) => {
       const companyId = requireCompanyId(context.companyId ?? params.companyId);
-      const proposalId = requireString(params.proposalId, "proposalId");
+      const proposalId = requireUuid(params.proposalId, "proposalId");
       const action = params.action === "accept" || params.action === "reject" ? params.action : null;
       if (!action) throw new Error('action must be "accept" or "reject"');
       // Deliberately do NOT fall back to any plugin-supplied identity here.

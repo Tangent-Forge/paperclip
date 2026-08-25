@@ -1,7 +1,7 @@
 # Paperclip Companion — Design Record
 
 Date: 2026-08-25
-Status: Phase 1 design record (per required implementation order). Implementation follows in the same branch/PR.
+Status: Implemented on draft PR #109; updated after disposable-instance remediation and validation.
 Anchor commit at time of writing: `f41568cd37295efba47cf8c9c1b4de667d076cc5` (current `master`, re-verified before this record was written; see "Baseline re-check" below).
 
 ## Baseline re-check (required safety step)
@@ -76,10 +76,14 @@ CREATE TABLE companion_messages (
   actor_user_id text, -- set only for role = 'human'; never for role = 'companion'
   body text NOT NULL,
   evidence jsonb, -- structured evidence references (see §7)
+  client_request_id uuid, -- durable client send/reply idempotency key
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX companion_messages_thread_created_idx ON companion_messages (thread_id, created_at);
 CREATE INDEX companion_messages_company_created_idx ON companion_messages (company_id, created_at DESC);
+CREATE UNIQUE INDEX companion_messages_dedup_idx
+  ON companion_messages (thread_id, role, client_request_id)
+  WHERE client_request_id IS NOT NULL;
 
 CREATE TABLE companion_action_proposals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -95,6 +99,13 @@ CREATE TABLE companion_action_proposals (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX companion_action_proposals_interaction_idx ON companion_action_proposals (company_id, interaction_id);
+CREATE UNIQUE INDEX companion_action_proposals_message_idx ON companion_action_proposals (company_id, message_id);
+
+CREATE TABLE companion_company_state (
+  company_id uuid PRIMARY KEY,
+  companion_issue_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 ```
 
 Every table's `company_id` is `NOT NULL` and every query the worker issues against this schema includes an explicit `company_id = $1` predicate — enforced in code (see §3), not merely by convention, and covered by the company-isolation tests in Phase 5.
@@ -115,7 +126,9 @@ Companion never approves its own proposals. The mechanism, evidenced from the SD
 - `ctx.approvals` (`PluginApprovalsClient`) has **no `create` method** — only `list`, `get`, `decide`. A plugin cannot create a formal `approvals` table row. This was verified by reading the interface directly, not assumed.
 - The correct, already-existing lighter-weight mechanism is **`ctx.issues.requestConfirmation`** (creates an `issue_thread_interaction` of kind `request_confirmation`) paired with **`ctx.issues.respondInteraction`**. Both require an `issueId`.
 - Companion therefore finds-or-creates one standing, company-scoped issue per company (e.g. titled `"Paperclip Companion"`), the same pattern Board Chat already uses for its own standing `"Board Operations"` issue (`server/src/routes/board-chat.ts`). This issue is never shown as a "task" in the normal sense to the user — it exists purely as the attachment point `request_confirmation` interactions require.
+- Standing issue creation uses the core issue service's durable company-scoped `idempotencyKey`, exposed through the SDK's existing `issues.create` transport. The core service serializes concurrent creators and returns the winner. `companion_company_state.company_id` is a plugin-local cache/backstop, not the sole race-control mechanism.
 - **Propose:** worker calls `ctx.issues.requestConfirmation(companionIssueId, { title, summary, payload }, companyId)`. The returned interaction id is stored in `companion_action_proposals`.
+- Proposal creation has two durable dedup layers: one proposal per `(company_id, message_id)` in plugin storage, and one deterministic interaction idempotency key per company/message in the core interaction service. Duplicate action delivery cannot create a second proposal or confirmation interaction.
 - **Approve:** the UI's "Approve"/"Reject" button triggers a `ctx.actions` handler. That handler receives a host-supplied, immutable `PluginPerformActionActorContext` (`{ type: "user", userId, companyId, ... }` — the plugin never authors this). The handler calls:
   ```ts
   ctx.issues.respondInteraction(companionIssueId, interactionId, { action, actorUserId: context.actor.userId }, companyId)
@@ -129,18 +142,32 @@ Read-only "evidence tools" the worker exposes to its own message-answering logic
 
 | Tool | Mechanism | New host contract? |
 |---|---|---|
-| Current deployment/runtime identity | `ctx.http.fetch(<configured health URL>)`, parsing the **already-shipped** `/api/health` response shape (`serverInfo.git.{fullSha,shortSha,subject,committedAt,localChanges}`, `version`, `databaseBackup`) | **No** — reuses existing `http.outbound` capability against an endpoint the app already serves |
-| Target baseline / PR / CI status | `ctx.http.fetch` to the GitHub REST API, using a company-configured token resolved via `ctx.secrets.resolve` | **No** — reuses existing `http.outbound` + `secrets.read-ref`; degrades to an explicit "not configured" result, never fabricated, when no token is set |
+| Current deployment/runtime identity | `ctx.http.fetch(<configured health URL>)`, parsing the **already-shipped** `/api/health` response shape (`serverInfo.git.{fullSha,shortSha,subject,committedAt,localChanges}`, `version`, `databaseBackup`) | **No new Companion-specific host service.** The URL is optional, must be the exact `/api/health` path on an explicitly allowlisted public hostname, and remains subject to the host's private/reserved-address SSRF rejection. No localhost exception exists. |
+| Target baseline / PR / CI status | `ctx.http.fetch` to GitHub's REST API, using a company-configured token resolved via `ctx.secrets.resolve`; reads target `master`, optional configured PR exact head, and that head's check runs | **No** — reuses existing `http.outbound` + `secrets.read-ref`; degrades to explicit unavailable/not-configured results, never fabricated |
 | Durable artifact/build-receipt references | `ctx.localFolders` read access to one operator-declared evidence directory | **No** — reuses the existing `PluginLocalFolderDeclaration` mechanism (`access: "read"`), not raw filesystem access |
 | Active agents / work | `ctx.agents.list`, `ctx.issues.list` | **No** — existing read capabilities |
 
-**No new core/SDK contract was required for the tool layer.** This is the direct result of the SDK inventory (Phase 1 discovery): the gap this task anticipated ("if a safe repo/runtime host service does not exist…") turned out not to exist once `/api/health`'s existing response shape and `ctx.localFolders`' existing declaration model were checked against the actual requirement. This is reported as a finding, not assumed going in — the discovery agents were dispatched precisely to test this assumption.
+**No new Companion-specific evidence host service was required.** The first disposable run demonstrated that the generic plugin HTTP client correctly rejects loopback/private destinations, so the initial localhost default was removed rather than weakening the SSRF boundary. Runtime identity now fails closed as `not_configured` until an operator supplies an exact public health URL and explicit hostname allowlist.
+
+The GitHub evidence source separately records target `master`, optional configured PR head, and exact-head check counts. This deliberately prevents the running runtime SHA from being confused with the desired source SHA.
 
 Every tool call returns a structured envelope (see §7/§8) — none returns raw shell output, raw HTTP bodies, or unredacted errors.
 
 ## 6. Streaming model
 
 `ctx.streams.open/emit/close` (worker) + `usePluginStream` (UI) — the SDK's documented, already-demoed pattern (SDK README "Real-time streaming" section; `plugin-kitchen-sink-example`'s `ask-agent` action). **Known MVP limitation, stated explicitly rather than glossed over:** Companion's own LLM call (see §1 — direct Anthropic Messages API call via `ctx.http`, not `ctx.agents.sessions`) is implemented as a single buffered request/response in this MVP, not a token-by-token pass-through. The full response is emitted as one `ctx.streams.emit` event over the same channel a future incremental version would use. This is a real, disclosed limitation, not a claim of true token streaming.
+
+Disposable installation exposed a pre-existing server integration omission: the SDK and routes implemented streams, but the application composition did not instantiate/pass the `PluginStreamBus` or connect worker notifications to it. PR #109 supplies that narrow wiring; the disposable browser test verifies the stream route returns 200 and receives worker events rather than the former 501.
+
+### Direct provider contract
+
+The current SDK has no plugin model/LLM client: `ctx.agents.sessions` is an organizational-agent session API (rejected for Companion identity in §1), while the server's `llmRoutes` expose configuration guidance rather than a model-inference service. For this MVP the direct Anthropic Messages call is therefore deliberate and bounded:
+
+- provider: Anthropic only;
+- model id: required to match the bounded `claude-*` contract before any secret resolution or request;
+- credential: company-scoped `secret-ref` resolved only at request time;
+- failure: missing/invalid binding, resolution failure, HTTP failure, malformed response, and empty response all become persisted redacted Companion replies;
+- secret value: never logged, persisted, included in evidence, or returned to the UI.
 
 ## 7. Evidence model
 
@@ -169,7 +196,12 @@ This directly satisfies the acceptance scenario's "grounded answer containing �
 
 ## 9. Minimum host/SDK additions
 
-**None required.** Every capability needed by this MVP already exists in the SDK: `ctx.db` (`database.namespace.*`), `ctx.state`, `ctx.http`, `ctx.secrets`, `ctx.localFolders`, `ctx.activity`, `ctx.agents` (read-only), `ctx.issues` (including `requestConfirmation`/`respondInteraction`), `ctx.streams`, `ctx.data`/`ctx.actions`. This is stated plainly because the task explicitly asked for proof, not assumption, before adding anything — and the proof came back negative (no addition needed) once `/api/health` and `ctx.localFolders` were checked against the actual requirement.
+No new capability family or Companion-specific host service was added. Two evidenced integration gaps required narrow changes to existing contracts:
+
+1. The core issue service already supported durable `idempotencyKey`/`allowDuplicate` inputs, but the plugin SDK transport omitted those two fields. The SDK type, protocol, and worker forwarding now expose the existing semantics so standing-issue creation is race-safe.
+2. The stream SDK, worker notifications, stream bus, and SSE route already existed, but server composition did not connect them. The app now creates one stream bus, passes it to plugin routes/loader, and the loader maps each worker open/message/close notification onto the existing bus.
+
+All other surfaces remain existing SDK capabilities: `ctx.db`, `ctx.http`, `ctx.secrets`, `ctx.localFolders`, `ctx.activity`, `ctx.agents` (read-only), `ctx.issues`, `ctx.streams`, and `ctx.data`/`ctx.actions`.
 
 ## 10. Security threats and mitigations
 
@@ -177,6 +209,8 @@ This directly satisfies the acceptance scenario's "grounded answer containing �
 |---|---|
 | Companion approves its own action proposal | Structurally impossible: `respondInteraction`'s `actorUserId` is host-verified against active company membership; the plugin action handler only ever receives a real human actor from the host, never authors one itself. Covered by an explicit "no self-approval" test that asserts a call without a valid human actor is rejected. |
 | Cross-company data leakage | Double-enforced: host-side invocation scope (`requireInvocationCompanyScope`) + explicit `company_id` predicate on every plugin-owned-schema query. Covered by company-isolation tests modeled on `plugin-tenant-isolation.test.ts`. |
+| Duplicate send/event/action delivery | Durable message client-request UUID plus partial unique index; proposal message unique index plus core interaction idempotency key; standing issue core idempotency key plus plugin-local company-state primary key. Concurrent duplicate tests assert one provider call, one message pair, one issue, one interaction, and one proposal. |
+| Outbound URL/repository injection | `githubRepo` must be one strict `owner/repo`; health URL must use http(s), exact `/api/health`, no credentials/query/fragment, and an exact explicit hostname allowlist. The host independently rejects private/reserved resolved addresses and pins the safe DNS result. |
 | Companion impersonating a human or organizational agent | `companion_messages.role = 'companion'` rows never carry an `actor_user_id`; UI renders Companion's identity with a distinct, non-human, non-agent visual treatment and label ("Paperclip Companion — system assistant"), never "CEO"/"CoS"/an agent name. |
 | Secret leakage via evidence tools or LLM prompt | `ctx.secrets.resolve` values are used only inline for the outbound HTTP call that needs them and are never persisted into `companion_messages`/`companion_action_proposals`/logs; evidence summaries are pre-redacted before storage. |
 | Plugin performing unreviewed mutations | The plugin's own manifest capabilities are read-mostly (`issues.read`, `issue.interactions.create/respond`, `agents.read`, `activity.log.write`, `plugin.state.*`, `database.namespace.*`, `http.outbound`, `secrets.read-ref`, `local.folders`) — no `issues.create`/`update` beyond the one standing-issue bootstrap, no `agents.pause/resume/invoke`, no `approvals.respond` (uses `issue.interactions.respond` instead, which carries the same host-verification guarantee). |

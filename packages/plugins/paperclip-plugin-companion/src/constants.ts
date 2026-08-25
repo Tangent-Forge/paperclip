@@ -32,8 +32,6 @@ export const COMPANION_ISSUE_TITLE = "Paperclip Companion (system)";
 /** Sentinel author id for Companion's own persisted messages/audit entries — never a real user or agent id. */
 export const COMPANION_ACTOR_ID = "companion";
 
-export const DEFAULT_HEALTH_CHECK_URL = "http://127.0.0.1:3100/api/health";
-
 export const EVIDENCE_SOURCES = {
   deploymentHealth: "deployment_health",
   github: "github",

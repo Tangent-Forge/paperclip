@@ -57,7 +57,8 @@ const manifest: PaperclipPluginManifestV1 = {
       model: {
         type: "string",
         default: "claude-sonnet-5",
-        description: "Anthropic model id Companion calls for answers.",
+        pattern: "^claude-[a-z0-9][a-z0-9._-]{0,119}$",
+        description: "Validated Anthropic Claude model id Companion calls for answers.",
       },
       githubRepo: {
         type: "string",
@@ -70,17 +71,22 @@ const manifest: PaperclipPluginManifestV1 = {
         format: "secret-ref",
         description: "Optional secret reference for a GitHub token used for PR/CI lookups. Without it, Companion reports those lookups as not configured rather than guessing.",
       },
+      githubPullRequestNumber: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Optional pull request number whose exact head and check-run state Companion should report alongside target master.",
+      },
       healthCheckUrl: {
         type: "string",
-        default: "http://127.0.0.1:3100/api/health",
         description:
-          "URL Companion polls for current deployment/runtime identity (reuses the existing /api/health response shape). Must be http(s) and resolve to a loopback host (127.0.0.1/localhost/::1) unless its host is added to healthCheckHostAllowlist — any other value is refused rather than fetched.",
+          "Optional exact /api/health endpoint Companion polls for current deployment/runtime identity. Its public hostname must also be explicitly listed in healthCheckHostAllowlist. Private/reserved targets are rejected by the host HTTP boundary.",
       },
       healthCheckHostAllowlist: {
         type: "array",
         items: { type: "string" },
         description:
-          "Additional hostnames healthCheckUrl is permitted to point at, beyond the loopback default (127.0.0.1/localhost/::1). Optional; leave empty unless Companion needs to poll a non-loopback deployment health endpoint.",
+          "Exact public hostnames healthCheckUrl may use. No host, including loopback, is allowed implicitly. Optional; leave empty to report deployment health as not configured.",
       },
     },
   },

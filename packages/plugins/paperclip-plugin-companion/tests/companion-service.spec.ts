@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CompanionAuthorizationError,
   CompanionNotFoundError,
+  callCompanionModel,
   createThread,
   decideProposal,
   findOrCreateCompanionIssue,
@@ -34,13 +35,14 @@ interface FakeState {
   messages: CompanionMessageRow[];
   proposals: CompanionActionProposalRow[];
   issues: Array<{ id: string; company_id: string; title: string; status: string }>;
-  interactions: Array<{ id: string; issueId: string; companyId: string; status: string }>;
+  interactions: Array<{ id: string; issueId: string; companyId: string; status: string; idempotencyKey: string | null }>;
   activity: Array<{ companyId: string; message: string; entityType?: string; entityId?: string }>;
   config: Record<string, Record<string, unknown>>;
   httpResponses: Array<{ status: number; body: string }>;
   secrets: Record<string, string>;
   /** company_id -> companion_issue_id, mirrors companion_company_state's PK-uniqueness. */
   companyState: Record<string, string>;
+  issueCreateKeys: Record<string, string>;
 }
 
 function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
@@ -55,6 +57,7 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
     httpResponses: [],
     secrets: {},
     companyState: {},
+    issueCreateKeys: {},
     ...overrides,
   };
 
@@ -224,13 +227,23 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
           .map((i) => ({ id: i.id, title: i.title, status: i.status }));
       },
       async create(input) {
+        if (input.idempotencyKey) {
+          const existingId = state.issueCreateKeys[`${input.companyId}:${input.idempotencyKey}`];
+          const existing = state.issues.find((issue) => issue.id === existingId);
+          if (existing) return { id: existing.id, title: existing.title, status: existing.status };
+        }
         const row = { id: randomUUID(), company_id: input.companyId, title: input.title, status: "todo" };
         state.issues.push(row);
+        if (input.idempotencyKey) state.issueCreateKeys[`${input.companyId}:${input.idempotencyKey}`] = row.id;
         return { id: row.id, title: row.title, status: row.status };
       },
-      async requestConfirmation(issueId, _interaction, companyId): Promise<CompanionInteractionResult> {
+      async requestConfirmation(issueId, interaction, companyId): Promise<CompanionInteractionResult> {
+        const existing = state.interactions.find(
+          (item) => item.issueId === issueId && item.companyId === companyId && item.idempotencyKey === interaction.idempotencyKey,
+        );
+        if (existing) return { id: existing.id };
         const id = randomUUID();
-        state.interactions.push({ id, issueId, companyId, status: "pending" });
+        state.interactions.push({ id, issueId, companyId, status: "pending", idempotencyKey: interaction.idempotencyKey });
         return { id };
       },
       async respondInteraction(_issueId, interactionId, input, companyId) {
@@ -305,25 +318,24 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
 }
 
 /**
- * Test-only helper for seeding a human message directly (bypassing
+ * Test-only helper for seeding a Companion reply directly (bypassing
  * sendMessage()'s evidence-gathering/LLM-call machinery) in tests that only
  * need a message row to exist so proposeAction()/decideProposal() have
  * something to attach to. Mirrors real ctx.db usage: execute() to insert
  * (no RETURNING — the real host doesn't support it), then query() to read
  * the row back. Returns a 1-element array to match host.db.query()'s
- * shape, since call sites index it as `humanMsg[0]`.
+ * shape, since call sites index it as `companionMsg[0]`.
  */
-async function insertTestHumanMessage(
+async function insertTestCompanionMessage(
   host: CompanionHost,
   companyId: string,
   threadId: string,
-  actorUserId: string,
   body: string,
 ): Promise<CompanionMessageRow[]> {
   const id = randomUUID();
   await host.db.execute(
     `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id, companyId, threadId, "human", actorUserId, body, null],
+    [id, companyId, threadId, "companion", null, body, null],
   );
   return host.db.query<CompanionMessageRow>(`SELECT * FROM companion_messages WHERE id = $1`, [id]);
 }
@@ -400,10 +412,7 @@ describe("companion-service — direct-agent/session separation", () => {
   it("performs the full send-message flow using only db/issues/agents/http/secrets/localFolders/activity/config — never an agents-session client", async () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId, {
-      // First response is consumed by the deployment-health evidence tool's
-      // fetch (part of gatherEvidence), the second by the actual LLM call.
       httpResponses: [
-        { status: 200, body: JSON.stringify({ status: "ok" }) },
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "ok" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
@@ -424,8 +433,8 @@ describe("companion-service — no Companion self-approval", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    const proposal = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
 
     await expect(decideProposal(host, companyId, proposal.id, "accept", undefined)).rejects.toThrow(
       CompanionAuthorizationError,
@@ -437,8 +446,8 @@ describe("companion-service — no Companion self-approval", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    const proposal = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
 
     const decided = await decideProposal(host, companyId, proposal.id, "accept", "user-1");
     expect(decided.status).toBe("accepted");
@@ -451,8 +460,8 @@ describe("companion-service — idempotency / duplicate resolution", () => {
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    const proposal = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
 
     const respondSpy = vi.spyOn(host.issues, "respondInteraction");
     const first = await decideProposal(host, companyId, proposal.id, "accept", "user-1");
@@ -468,7 +477,9 @@ describe("companion-service — idempotency / duplicate resolution", () => {
 describe("companion-service — evidence tool failure paths", () => {
   it("reports a redacted, non-leaking failure when the health endpoint is unreachable", async () => {
     const companyId = "company-a";
-    const { host } = fakeHost(companyId);
+    const { host } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "https://health.example.com/api/health", healthCheckHostAllowlist: ["health.example.com"] } },
+    });
     host.http.fetch = async () => {
       throw new Error("ECONNREFUSED 127.0.0.1:9999 secret-looking-detail=abc123");
     };
@@ -480,7 +491,9 @@ describe("companion-service — evidence tool failure paths", () => {
 
   it("reports missing runtime distinctly (non-2xx) rather than crashing", async () => {
     const companyId = "company-a";
-    const { host, state } = fakeHost(companyId);
+    const { host, state } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "https://health.example.com/api/health", healthCheckHostAllowlist: ["health.example.com"] } },
+    });
     state.httpResponses.push({ status: 503, body: "" });
     const evidence = await getDeploymentHealthEvidence(host, companyId);
     expect(evidence.success).toBe(false);
@@ -489,7 +502,9 @@ describe("companion-service — evidence tool failure paths", () => {
 
   it("reports missing repository distinctly when health responds but has no git identity", async () => {
     const companyId = "company-a";
-    const { host, state } = fakeHost(companyId);
+    const { host, state } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "https://health.example.com/api/health", healthCheckHostAllowlist: ["health.example.com"] } },
+    });
     state.httpResponses.push({ status: 200, body: JSON.stringify({ status: "ok" }) });
     const evidence = await getDeploymentHealthEvidence(host, companyId);
     expect(evidence.success).toBe(true);
@@ -506,8 +521,7 @@ describe("companion-service — evidence tool failure paths", () => {
 
   it("gatherEvidence collects all four sources even when some fail", async () => {
     const companyId = "company-a";
-    const { host, state } = fakeHost(companyId);
-    state.httpResponses.push({ status: 200, body: JSON.stringify({ status: "ok" }) });
+    const { host } = fakeHost(companyId);
     const evidence = await gatherEvidence(host, companyId);
     expect(evidence).toHaveLength(4);
     expect(evidence.map((e) => e.source).sort()).toEqual(
@@ -528,15 +542,15 @@ describe("companion-service — standing issue reuse (find-or-create)", () => {
 
   it("resolves concurrent first-time calls to a single issue, not one each (race safety)", async () => {
     const companyId = "company-a";
-    const { host } = fakeHost(companyId);
+    const { host, state } = fakeHost(companyId);
     // Ten concurrent callers, none of whom have seen a winner yet.
     const results = await Promise.all(Array.from({ length: 10 }, () => findOrCreateCompanionIssue(host, companyId)));
     const distinctIds = new Set(results);
-    // Every caller must agree on exactly one issue id, even though several of
-    // them may have each created their own candidate issue along the way
-    // (companion_company_state.company_id's PK uniqueness is the single
-    // atomic decision point — see findOrCreateCompanionIssue).
+    // Both the returned identity and the external issue side effect must be
+    // singular. Returning one claimed id while orphaning nine issues is not
+    // race safety.
     expect(distinctIds.size).toBe(1);
+    expect(state.issues.filter((issue) => issue.company_id === companyId)).toHaveLength(1);
   });
 });
 
@@ -545,8 +559,8 @@ describe("companion-service — proposal hydration (persisted-proposal-visibilit
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    const proposal = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
     await decideProposal(host, companyId, proposal.id, "accept", "user-1");
 
     // Simulate a fresh page load: nothing but the persisted DB state is
@@ -562,8 +576,8 @@ describe("companion-service — proposal hydration (persisted-proposal-visibilit
     const companyId = "company-a";
     const { host } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
 
     await expect(getThreadWithMessages(host, "company-b", thread.id)).rejects.toThrow(CompanionNotFoundError);
   });
@@ -574,7 +588,6 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId, {
       httpResponses: [
-        { status: 200, body: JSON.stringify({ status: "ok" }) },
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "answer" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
@@ -593,13 +606,34 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
     expect(state.messages.filter((m) => m.thread_id === thread.id)).toHaveLength(2);
   });
 
+  it("concurrent duplicate sends create one persisted pair, one provider call, and one activity record", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId, {
+      httpResponses: [
+        { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "answer" }] }) },
+      ],
+      secrets: { [`${companyId}:key`]: "test-provider-secret" },
+      config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" } } },
+    });
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const clientRequestId = randomUUID();
+    const [first, second] = await Promise.all([
+      sendMessage(host, companyId, thread.id, "user-1", "hello", clientRequestId),
+      sendMessage(host, companyId, thread.id, "user-1", "hello", clientRequestId),
+    ]);
+
+    expect(second.humanMessage.id).toBe(first.humanMessage.id);
+    expect(second.companionMessage.id).toBe(first.companionMessage.id);
+    expect(state.messages.filter((message) => message.thread_id === thread.id)).toHaveLength(2);
+    expect(state.httpResponses).toHaveLength(0);
+    expect(state.activity.filter((entry) => entry.message === "companion.message_sent")).toHaveLength(1);
+  });
+
   it("a different clientRequestId in the same thread creates a distinct pair", async () => {
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId, {
       httpResponses: [
-        { status: 200, body: JSON.stringify({ status: "ok" }) },
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "a1" }] }) },
-        { status: 200, body: JSON.stringify({ status: "ok" }) },
         { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "a2" }] }) },
       ],
       secrets: { [`${companyId}:key`]: "sk-fake" },
@@ -615,26 +649,55 @@ describe("companion-service — idempotency (durable keys, not just in-memory UI
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
-    const first = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
-    const second = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do a different thing");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
+    const first = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing");
+    const second = await proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do a different thing");
 
     expect(second.id).toBe(first.id);
     expect(second.summary).toBe("Do the thing"); // the first proposal's summary wins, not the duplicate call's
-    expect(state.proposals.filter((p) => p.message_id === humanMsg[0].id)).toHaveLength(1);
+    expect(state.proposals.filter((p) => p.message_id === companionMsg[0].id)).toHaveLength(1);
   });
 
   it("concurrent duplicate proposeAction calls for the same message resolve to one persisted proposal (race safety)", async () => {
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId);
     const thread = await createThread(host, companyId, "user-1", "t");
-    const humanMsg = await insertTestHumanMessage(host, companyId, thread.id, "user-1", "hi");
+    const companionMsg = await insertTestCompanionMessage(host, companyId, thread.id, "reply");
     const results = await Promise.all(
-      Array.from({ length: 5 }, () => proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing")),
+      Array.from({ length: 5 }, () => proposeAction(host, companyId, thread.id, companionMsg[0].id, "Do the thing")),
     );
     const distinctIds = new Set(results.map((r) => r.id));
     expect(distinctIds.size).toBe(1);
-    expect(state.proposals.filter((p) => p.message_id === humanMsg[0].id)).toHaveLength(1);
+    expect(state.proposals.filter((p) => p.message_id === companionMsg[0].id)).toHaveLength(1);
+    expect(state.interactions).toHaveLength(1);
+  });
+
+  it("rejects a proposal whose message is not a Companion reply in the scoped thread", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId);
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const otherThread = await createThread(host, companyId, "user-1", "other");
+    const otherMessage = await insertTestCompanionMessage(host, companyId, otherThread.id, "other reply");
+
+    await expect(proposeAction(host, companyId, thread.id, otherMessage[0].id, "tampered")).rejects.toThrow(
+      CompanionNotFoundError,
+    );
+    expect(state.interactions).toHaveLength(0);
+    expect(state.proposals).toHaveLength(0);
+  });
+
+  it("rejects a proposal that references another company's message before any side effect", async () => {
+    const { host, state } = fakeHost("company-a");
+    const threadA = await createThread(host, "company-a", "user-a", "A");
+    const threadB = await createThread(host, "company-b", "user-b", "B");
+    const messageB = await insertTestCompanionMessage(host, "company-b", threadB.id, "B reply");
+
+    await expect(proposeAction(host, "company-a", threadA.id, messageB[0].id, "tampered")).rejects.toThrow(
+      CompanionNotFoundError,
+    );
+    expect(state.issues).toHaveLength(0);
+    expect(state.interactions).toHaveLength(0);
+    expect(state.proposals).toHaveLength(0);
   });
 });
 
@@ -664,7 +727,7 @@ describe("companion-service — outbound config hardening", () => {
     expect(evidence.redactedError).toBe("invalid_or_disallowed_url");
   });
 
-  it("allows a non-loopback healthCheckUrl once explicitly allowlisted", async () => {
+  it("allows a public healthCheckUrl once explicitly allowlisted", async () => {
     const companyId = "company-a";
     const { host, state } = fakeHost(companyId, {
       config: {
@@ -677,6 +740,68 @@ describe("companion-service — outbound config hardening", () => {
     state.httpResponses.push({ status: 200, body: JSON.stringify({ status: "ok" }) });
     const evidence = await getDeploymentHealthEvidence(host, companyId);
     expect(evidence.success).toBe(true);
+  });
+
+  it("reports deployment health as not configured when no endpoint is supplied", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    const evidence = await getDeploymentHealthEvidence(host, companyId);
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("not_configured");
+  });
+
+  it("does not allow loopback implicitly", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "http://127.0.0.1:3100/api/health" } },
+    });
+    const evidence = await getDeploymentHealthEvidence(host, companyId);
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("invalid_or_disallowed_url");
+  });
+
+  it("refuses an arbitrary path on an otherwise allowed loopback host", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "http://127.0.0.1:3100/api/plugins" } },
+    });
+    const evidence = await getDeploymentHealthEvidence(host, companyId);
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("invalid_or_disallowed_url");
+  });
+
+  it("reports configured target master, PR head, and exact-head check state", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId, {
+      httpResponses: [
+        { status: 200, body: JSON.stringify({ sha: "master-sha" }) },
+        { status: 200, body: JSON.stringify({ state: "open", draft: true, mergeable: true, head: { sha: "pr-head-sha" } }) },
+        {
+          status: 200,
+          body: JSON.stringify({
+            check_runs: [
+              { name: "build", status: "completed", conclusion: "success" },
+              { name: "review", status: "completed", conclusion: "failure" },
+              { name: "e2e", status: "in_progress", conclusion: null },
+            ],
+          }),
+        },
+      ],
+      secrets: { [`${companyId}:token`]: "test-github-secret" },
+      config: {
+        [companyId]: {
+          githubRepo: "Tangent-Forge/paperclip",
+          githubTokenSecretRef: { type: "secret_ref", secretId: "token" },
+          githubPullRequestNumber: 109,
+        },
+      },
+    });
+    const evidence = await getGithubEvidence(host, companyId);
+    expect(evidence.success).toBe(true);
+    expect(evidence.identity).toEqual({ commitSha: "master-sha", prNumber: 109 });
+    expect(evidence.summary).toContain("Target master commit");
+    expect(evidence.summary).toContain("PR #109 head is pr-head-sha");
+    expect(evidence.summary).toContain("1 passed, 1 failed (review), 1 pending");
   });
 });
 
@@ -692,6 +817,21 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
   // contract for the direct call.
   const companyId = "company-a";
   const SECRET_MARKER = "sk-super-secret-marker-should-never-leak-ANYWHERE";
+
+  it("refuses an invalid/non-Anthropic model before resolving a secret or making a provider request", async () => {
+    const { host } = fakeHost(companyId, {
+      config: {
+        [companyId]: {
+          model: "other-provider/model",
+          anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" },
+        },
+      },
+    });
+    const resolveSpy = vi.spyOn(host.secrets, "resolve");
+    const result = await callCompanionModel(host, companyId, "hello", [], []);
+    expect(result.error).toContain("model id is invalid");
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
 
   it("never persists, logs, or throws the resolved API key even when the provider call fails", async () => {
     const { host, state } = fakeHost(companyId, {
@@ -721,7 +861,6 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
     // state instead of the deterministic "couldn't complete that request"
     // reply this path is supposed to produce.
     const { host, state } = fakeHost(companyId, {
-      httpResponses: [{ status: 200, body: JSON.stringify({ status: "ok" }) }],
       config: { [companyId]: { anthropicApiKeySecretRef: { type: "secret_ref", secretId: "key" } } },
     });
     host.secrets.resolve = async () => {
@@ -736,7 +875,6 @@ describe("companion-service — Anthropic provider contract (secret hygiene)", (
   it("reports a generic, non-leaking error to the human when the provider returns a non-2xx status", async () => {
     const { host } = fakeHost(companyId, {
       httpResponses: [
-        { status: 200, body: JSON.stringify({ status: "ok" }) },
         { status: 401, body: JSON.stringify({ error: { message: `invalid key ${SECRET_MARKER}` } }) },
       ],
       secrets: { [`${companyId}:key`]: SECRET_MARKER },

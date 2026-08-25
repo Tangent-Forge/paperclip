@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { COMPANION_ACTOR_ID, COMPANION_ISSUE_TITLE, DEFAULT_HEALTH_CHECK_URL, EVIDENCE_SOURCES, LOCAL_FOLDER_KEYS } from "./constants.js";
-import { parseSecretRefBinding, validateGithubRepo, validateHealthCheckUrl } from "./config-validation.js";
+import { COMPANION_ACTOR_ID, COMPANION_ISSUE_TITLE, EVIDENCE_SOURCES, LOCAL_FOLDER_KEYS } from "./constants.js";
+import {
+  parseSecretRefBinding,
+  validateAnthropicModel,
+  validateGithubPullRequestNumber,
+  validateGithubRepo,
+  validateHealthCheckUrl,
+} from "./config-validation.js";
 import type {
   CompanionActionProposalRow,
   CompanionEvidenceRef,
@@ -42,14 +48,10 @@ function table(host: CompanionHost, name: CompanionTableName): string {
 // it exists only because issue_thread_interactions require an issueId.)
 //
 // Race safety: `companion_company_state.company_id` is a primary key, so the
-// claim INSERT below is the single atomic decision point. Two concurrent
-// first-time callers for the same company can both pass the fast-path SELECT
-// (nothing claimed yet) and both create a candidate issue via
-// host.issues.create — but only one of their claim INSERTs survives; the
-// loser discards its own candidate and returns the winner's issue id
-// instead. The loser's candidate issue is orphaned (never referenced by any
-// proposal or interaction) but harmless — not a correctness bug, just a
-// redundant issue a human will never see used.
+// The plugin SDK now forwards core issue-creation idempotency. That core path
+// serializes a company/key pair inside the issue transaction, so concurrent
+// first proposals receive the same issue rather than creating orphan issues.
+// companion_company_state remains the fast local lookup/cache.
 // ---------------------------------------------------------------------------
 
 export async function findOrCreateCompanionIssue(host: CompanionHost, companyId: string): Promise<string> {
@@ -69,6 +71,8 @@ export async function findOrCreateCompanionIssue(host: CompanionHost, companyId:
           title: COMPANION_ISSUE_TITLE,
           description:
             "Standing system issue used only as the attachment point for Paperclip Companion action-proposal interactions. Not a task for a human or agent to work.",
+          idempotencyKey: `companion-standing-issue:${companyId}`,
+          allowDuplicate: false,
         })
       ).id;
 
@@ -165,7 +169,7 @@ async function insertMessage(
   role: "human" | "companion",
   body: string,
   opts: { actorUserId?: string | null; evidence?: CompanionEvidenceRef[] | null; clientRequestId?: string | null } = {},
-): Promise<CompanionMessageRow> {
+): Promise<{ row: CompanionMessageRow; inserted: boolean }> {
   if (role === "human" && !opts.actorUserId) {
     throw new CompanionAuthorizationError("a 'human' message requires an authenticated actorUserId");
   }
@@ -202,7 +206,8 @@ async function insertMessage(
   if (!row) {
     throw new Error("insertMessage: insert did not produce a readable row");
   }
-  if (row.id === id) {
+  const inserted = row.id === id;
+  if (inserted) {
     // Only touch the thread's updated_at when this call actually created the
     // row (not on an idempotent replay that resolved to an earlier insert).
     await host.db.execute(`UPDATE ${table(host, "companion_threads")} SET updated_at = now() WHERE company_id = $1 AND id = $2`, [
@@ -210,7 +215,28 @@ async function insertMessage(
       threadId,
     ]);
   }
-  return row;
+  return { row, inserted };
+}
+
+async function waitForCompanionReply(
+  host: CompanionHost,
+  threadId: string,
+  clientRequestId: string,
+): Promise<CompanionMessageRow | null> {
+  // A concurrent replay may observe the durable human row while the original
+  // request is still creating the reply. Wait briefly for that winner before
+  // falling back to recovery work; this avoids duplicate provider calls and
+  // duplicate activity on ordinary concurrent delivery while still allowing
+  // a retry to recover if the original worker died mid-request.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const rows = await host.db.query<CompanionMessageRow>(
+      `SELECT * FROM ${table(host, "companion_messages")} WHERE thread_id = $1 AND role = $2 AND client_request_id = $3`,
+      [threadId, "companion", clientRequestId],
+    );
+    if (rows[0]) return rows[0];
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +250,7 @@ function nowISO(host: CompanionHost): string {
 
 export async function getDeploymentHealthEvidence(host: CompanionHost, companyId: string): Promise<CompanionEvidenceRef> {
   const config = await host.config.get(companyId);
-  const configuredUrl = typeof config.healthCheckUrl === "string" && config.healthCheckUrl ? config.healthCheckUrl : DEFAULT_HEALTH_CHECK_URL;
+  const configuredUrl = typeof config.healthCheckUrl === "string" ? config.healthCheckUrl : "";
   const allowlist = Array.isArray(config.healthCheckHostAllowlist)
     ? config.healthCheckHostAllowlist.filter((h): h is string => typeof h === "string")
     : [];
@@ -236,8 +262,10 @@ export async function getDeploymentHealthEvidence(host: CompanionHost, companyId
       scope: { companyId },
       success: false,
       summary:
-        "Configured healthCheckUrl is missing, malformed, or not on the allowed host list (loopback by default; add healthCheckHostAllowlist to permit others). Refusing to fetch it.",
-      redactedError: "invalid_or_disallowed_url",
+        configuredUrl
+          ? "Configured healthCheckUrl is malformed or its public hostname is not explicitly allowlisted. Refusing to fetch it."
+          : "Deployment health evidence is not configured. Set an exact public /api/health URL and explicitly allowlist its hostname.",
+      redactedError: configuredUrl ? "invalid_or_disallowed_url" : "not_configured",
     };
   }
   try {
@@ -326,7 +354,8 @@ export async function getGithubEvidence(host: CompanionHost, companyId: string):
     // [A-Za-z0-9._-] only) — split and re-encode each segment as defense in
     // depth rather than trusting the regex alone for URL-safety.
     const [owner, name] = repo.split("/");
-    const res = await host.http.fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/master`, {
+    const repoApi = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const res = await host.http.fetch(`${repoApi}/commits/master`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
     });
@@ -341,13 +370,93 @@ export async function getGithubEvidence(host: CompanionHost, companyId: string):
       };
     }
     const body = JSON.parse(await res.text()) as { sha?: string; commit?: { message?: string } };
+    const targetSha = body.sha ?? "unknown";
+    const configuredPr = config.githubPullRequestNumber;
+    const prNumber = validateGithubPullRequestNumber(configuredPr);
+    if (configuredPr !== undefined && configuredPr !== null && prNumber === null) {
+      return {
+        source: EVIDENCE_SOURCES.github,
+        fetchedAtUTC: nowISO(host),
+        scope: { companyId },
+        identity: { commitSha: body.sha },
+        success: false,
+        summary: `Target master commit is ${targetSha}, but configured githubPullRequestNumber is invalid; refusing PR/CI lookup.`,
+        redactedError: "invalid_pr_number",
+      };
+    }
+    if (prNumber === null) {
+      return {
+        source: EVIDENCE_SOURCES.github,
+        fetchedAtUTC: nowISO(host),
+        scope: { companyId },
+        identity: { commitSha: body.sha },
+        success: true,
+        summary: `Target master commit for ${repo} is ${targetSha}. PR/CI evidence is not configured; set githubPullRequestNumber to include an exact PR head and its check runs.`,
+      };
+    }
+
+    const prRes = await host.http.fetch(`${repoApi}/pulls/${prNumber}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!prRes.ok) {
+      return {
+        source: EVIDENCE_SOURCES.github,
+        fetchedAtUTC: nowISO(host),
+        scope: { companyId },
+        identity: { commitSha: body.sha, prNumber },
+        success: false,
+        summary: `Target master commit is ${targetSha}; configured PR #${prNumber} lookup returned HTTP ${prRes.status}.`,
+        redactedError: `pr_non_2xx_${prRes.status}`,
+      };
+    }
+    const pr = JSON.parse(await prRes.text()) as {
+      state?: string;
+      draft?: boolean;
+      mergeable?: boolean | null;
+      head?: { sha?: string };
+    };
+    const prHead = pr.head?.sha;
+    if (!prHead) {
+      return {
+        source: EVIDENCE_SOURCES.github,
+        fetchedAtUTC: nowISO(host),
+        scope: { companyId },
+        identity: { commitSha: body.sha, prNumber },
+        success: false,
+        summary: `Target master commit is ${targetSha}; PR #${prNumber} did not report a head SHA, so exact-head CI could not be queried.`,
+        redactedError: "pr_head_unavailable",
+      };
+    }
+    const checksRes = await host.http.fetch(`${repoApi}/commits/${encodeURIComponent(prHead)}/check-runs`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    });
+    if (!checksRes.ok) {
+      return {
+        source: EVIDENCE_SOURCES.github,
+        fetchedAtUTC: nowISO(host),
+        scope: { companyId },
+        identity: { commitSha: body.sha, prNumber },
+        success: false,
+        summary: `Target master commit is ${targetSha}; PR #${prNumber} head is ${prHead}, but exact-head check-run lookup returned HTTP ${checksRes.status}.`,
+        redactedError: `checks_non_2xx_${checksRes.status}`,
+      };
+    }
+    const checks = JSON.parse(await checksRes.text()) as {
+      check_runs?: Array<{ name?: string; status?: string; conclusion?: string | null }>;
+    };
+    const runs = checks.check_runs ?? [];
+    const passed = runs.filter((run) => run.conclusion === "success").length;
+    const failed = runs.filter((run) => run.conclusion === "failure").map((run) => run.name ?? "unnamed");
+    const pending = runs.filter((run) => !run.conclusion && run.status !== "completed").length;
     return {
       source: EVIDENCE_SOURCES.github,
       fetchedAtUTC: nowISO(host),
       scope: { companyId },
-      identity: { commitSha: body.sha },
+      identity: { commitSha: body.sha, prNumber },
       success: true,
-      summary: `${repo} master is at ${body.sha ?? "unknown"}${body.commit?.message ? `: ${body.commit.message.split("\n")[0]}` : ""}.`,
+      summary: `Target master commit for ${repo} is ${targetSha}. PR #${prNumber} head is ${prHead} (${pr.state ?? "unknown"}${pr.draft ? ", draft" : ""}, mergeable=${String(pr.mergeable ?? "unknown")}); exact-head checks: ${passed} passed, ${failed.length} failed${failed.length ? ` (${failed.join(", ")})` : ""}, ${pending} pending, ${runs.length} total.`,
     };
   } catch (err) {
     return {
@@ -534,7 +643,11 @@ export async function callCompanionModel(
   // input-validation purposes — see config-validation.ts's
   // parseSecretRefBinding for why.
   const secretRef = parseSecretRefBinding(config.anthropicApiKeySecretRef);
-  const model = typeof config.model === "string" && config.model ? config.model : "claude-sonnet-5";
+  const configuredModel = config.model ?? "claude-sonnet-5";
+  const model = validateAnthropicModel(configuredModel);
+  if (!model) {
+    return { text: "", error: "Companion's configured Anthropic model id is invalid." };
+  }
   if (!secretRef) {
     return { text: "", error: "Companion's LLM API key is not configured for this company (anthropicApiKeySecretRef)." };
   }
@@ -636,22 +749,31 @@ export async function sendMessage(
     }
   }
 
-  const humanMessage = await insertMessage(host, companyId, thread.id, "human", body, { actorUserId, clientRequestId });
+  const humanInsert = await insertMessage(host, companyId, thread.id, "human", body, { actorUserId, clientRequestId });
+  const humanMessage = humanInsert.row;
+
+  if (clientRequestId && !humanInsert.inserted) {
+    const concurrentReply = await waitForCompanionReply(host, threadId, clientRequestId);
+    if (concurrentReply) return { humanMessage, companionMessage: concurrentReply };
+  }
 
   const evidence = await gatherEvidence(host, companyId, body);
   const { messages: history } = await getThreadWithMessages(host, companyId, threadId);
   const result = await callCompanionModel(host, companyId, body, evidence, history);
 
   const replyBody = result.error ? `I couldn't complete that request: ${result.error}` : result.text;
-  const companionMessage = await insertMessage(host, companyId, thread.id, "companion", replyBody, { evidence, clientRequestId });
+  const companionInsert = await insertMessage(host, companyId, thread.id, "companion", replyBody, { evidence, clientRequestId });
+  const companionMessage = companionInsert.row;
 
-  await host.activity.log({
-    companyId,
-    message: "companion.message_sent",
-    entityType: "companion_thread",
-    entityId: thread.id,
-    metadata: { threadId: thread.id, evidenceSourceCount: evidence.length, ok: !result.error },
-  });
+  if (companionInsert.inserted) {
+    await host.activity.log({
+      companyId,
+      message: "companion.message_sent",
+      entityType: "companion_thread",
+      entityId: thread.id,
+      metadata: { threadId: thread.id, evidenceSourceCount: evidence.length, ok: !result.error },
+    });
+  }
 
   return { humanMessage, companionMessage };
 }
@@ -671,6 +793,17 @@ export async function proposeAction(
   summary: string,
   detailsMarkdown?: string,
 ): Promise<CompanionActionProposalRow> {
+  // Resolve both ids through a company-scoped thread read before creating
+  // any issue/interaction side effect. This prevents a tampered client from
+  // attaching a proposal to another company's message (or to a message from
+  // a different thread) merely by supplying a known UUID.
+  const snapshot = await getThreadWithMessages(host, companyId, threadId);
+  const sourceMessage = snapshot.messages.find((message) => message.id === messageId);
+  if (!sourceMessage || sourceMessage.role !== "companion") {
+    throw new CompanionNotFoundError(
+      `Companion message ${messageId} not found in thread ${threadId} for company ${companyId}`,
+    );
+  }
   // Idempotency fast path: the UI only ever offers one "propose next action"
   // button per message (it hides once `proposals[messageId]` is set), so a
   // message should resolve to at most one proposal. Check before spending an
@@ -687,19 +820,18 @@ export async function proposeAction(
     {
       title: "Companion action proposal",
       summary,
+      idempotencyKey: `companion-proposal:${companyId}:${messageId}`,
       continuationPolicy: "none",
       payload: { version: 1, prompt: summary, allowDeclineReason: true, detailsMarkdown: detailsMarkdown ?? null },
     },
     companyId,
   );
-  // Idempotency backstop: `companion_action_proposals_message_idx` is a
-  // UNIQUE INDEX on (company_id, message_id). If a concurrent call won the
-  // race between the fast-path check above and this insert, this INSERT
-  // loses silently (ctx.db.execute() has no RETURNING) — the re-read below
-  // then finds the winner's row instead of a duplicate. The interaction
-  // requested above is orphaned in that case (never attached to any
-  // persisted proposal) but harmless: nothing links to it, and it is never
-  // surfaced to a human.
+  // Idempotency backstop: requestConfirmation carries a deterministic host-
+  // enforced interaction idempotency key, while
+  // `companion_action_proposals_message_idx` is unique on
+  // (company_id, message_id). Concurrent deliveries therefore reuse both
+  // the same host interaction and the same persisted proposal — no orphan
+  // interaction is created merely because two callers raced.
   const id = randomUUID();
   await host.db.execute(
     `INSERT INTO ${table(host, "companion_action_proposals")}

@@ -58,12 +58,19 @@ export interface CompanionHost {
   };
   issues: {
     list(input: { companyId: string; q?: string; limit?: number }): Promise<CompanionIssueSummary[]>;
-    create(input: { companyId: string; title: string; description?: string }): Promise<CompanionIssueSummary>;
+    create(input: {
+      companyId: string;
+      title: string;
+      description?: string;
+      idempotencyKey?: string | null;
+      allowDuplicate?: boolean;
+    }): Promise<CompanionIssueSummary>;
     requestConfirmation(
       issueId: string,
       interaction: {
         title: string;
         summary: string;
+        idempotencyKey: string;
         // No agent is assigned to the standing Companion issue, so there is
         // nothing to wake — this interaction exists only for a human to see
         // and decide.

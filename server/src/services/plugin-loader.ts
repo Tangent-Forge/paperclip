@@ -45,6 +45,7 @@ import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import type { PluginStreamBus, StreamEventType } from "./plugin-stream-bus.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
@@ -351,6 +352,8 @@ export interface PluginRuntimeServices {
   workerManager: PluginWorkerManager;
   /** Event bus for registering plugin event subscriptions. */
   eventBus: PluginEventBus;
+  /** Stream bus for worker-to-UI SSE events. */
+  streamBus?: PluginStreamBus;
   /** Job scheduler for registering plugin cron jobs. */
   jobScheduler: PluginJobScheduler;
   /** Job store for syncing manifest job declarations to the DB. */
@@ -2189,6 +2192,7 @@ export function pluginLoader(
     const {
       workerManager,
       eventBus,
+      streamBus,
       jobScheduler,
       jobStore,
       toolDispatcher,
@@ -2286,6 +2290,20 @@ export function pluginLoader(
         // never reaches an unconfigured company.
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
+
+      if (streamBus) {
+        workerOptions.onStreamNotification = (method, params) => {
+          const channel = typeof params.channel === "string" ? params.channel : "";
+          const companyId = typeof params.companyId === "string" ? params.companyId : "";
+          if (!channel || !companyId) return;
+          const eventType: StreamEventType = method === "streams.open"
+            ? "open"
+            : method === "streams.close"
+              ? "close"
+              : "message";
+          streamBus.publish(pluginId, channel, companyId, params.event ?? {}, eventType);
+        };
+      }
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through

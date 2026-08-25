@@ -89,11 +89,10 @@ CREATE INDEX companion_action_proposals_thread_idx
 CREATE UNIQUE INDEX companion_action_proposals_message_idx
   ON plugin_companion_46345b9b3b.companion_action_proposals (company_id, message_id);
 
--- Race-safe claim table for the standing "Paperclip Companion (system)"
--- issue. The primary-key uniqueness on company_id is the atomic decision
--- point for find-or-create: only one of any set of concurrent first-proposal
--- calls can win the INSERT for a given company. See
--- findOrCreateCompanionIssue() in src/companion-service.ts.
+-- Fast lookup/cache for the standing "Paperclip Companion (system)" issue.
+-- Actual create concurrency is guarded by the core issue service's durable
+-- idempotency key; this primary key makes the plugin-local association unique
+-- as an independent backstop. See findOrCreateCompanionIssue().
 CREATE TABLE plugin_companion_46345b9b3b.companion_company_state (
   company_id uuid PRIMARY KEY,
   companion_issue_id uuid NOT NULL,

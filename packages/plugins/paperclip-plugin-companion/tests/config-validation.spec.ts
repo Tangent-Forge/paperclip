@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseSecretRefBinding, validateGithubRepo, validateHealthCheckUrl } from "../src/config-validation.js";
+import {
+  parseSecretRefBinding,
+  validateAnthropicModel,
+  validateGithubPullRequestNumber,
+  validateGithubRepo,
+  validateHealthCheckUrl,
+} from "../src/config-validation.js";
 
 describe("validateGithubRepo", () => {
   it("accepts a well-formed owner/repo", () => {
@@ -31,13 +37,10 @@ describe("validateGithubRepo", () => {
 });
 
 describe("validateHealthCheckUrl", () => {
-  it("accepts the shipped default loopback URL with no allowlist needed", () => {
-    expect(validateHealthCheckUrl("http://127.0.0.1:3100/api/health")).toBe("http://127.0.0.1:3100/api/health");
-  });
-
-  it("accepts localhost and IPv6 loopback by default", () => {
-    expect(validateHealthCheckUrl("http://localhost:3100/api/health")).not.toBeNull();
-    expect(validateHealthCheckUrl("http://[::1]:3100/api/health")).not.toBeNull();
+  it("rejects loopback when it is not explicitly allowlisted", () => {
+    expect(validateHealthCheckUrl("http://127.0.0.1:3100/api/health")).toBeNull();
+    expect(validateHealthCheckUrl("http://localhost:3100/api/health")).toBeNull();
+    expect(validateHealthCheckUrl("http://[::1]:3100/api/health")).toBeNull();
   });
 
   it("rejects a non-loopback host with no allowlist entry", () => {
@@ -51,6 +54,12 @@ describe("validateHealthCheckUrl", () => {
     );
   });
 
+  it("requires an exact hostname allowlist match", () => {
+    expect(validateHealthCheckUrl("https://paperclip.example.com/api/health", ["example.com"])).toBeNull();
+    expect(validateHealthCheckUrl("https://paperclip.example.com/api/health", ["PAPERCLIP.EXAMPLE.COM"]))
+      .toBe("https://paperclip.example.com/api/health");
+  });
+
   it("rejects non-http(s) schemes even against an allowlisted host", () => {
     expect(validateHealthCheckUrl("file:///etc/passwd")).toBeNull();
     expect(validateHealthCheckUrl("javascript:alert(1)")).toBeNull();
@@ -60,6 +69,38 @@ describe("validateHealthCheckUrl", () => {
   it("rejects malformed URLs and empty values", () => {
     expect(validateHealthCheckUrl("not a url")).toBeNull();
     expect(validateHealthCheckUrl("")).toBeNull();
+  });
+
+  it("rejects credentials, query/fragment data, and any path other than the approved health endpoint", () => {
+    expect(validateHealthCheckUrl("http://user:pass@127.0.0.1:3100/api/health")).toBeNull();
+    expect(validateHealthCheckUrl("http://127.0.0.1:3100/api/health?target=/admin")).toBeNull();
+    expect(validateHealthCheckUrl("http://127.0.0.1:3100/api/health#fragment")).toBeNull();
+    expect(validateHealthCheckUrl("http://127.0.0.1:3100/api/plugins")).toBeNull();
+    expect(validateHealthCheckUrl("http://127.0.0.1:3100/latest/meta-data")).toBeNull();
+  });
+});
+
+describe("validateAnthropicModel", () => {
+  it("accepts bounded Claude model ids", () => {
+    expect(validateAnthropicModel("claude-sonnet-5")).toBe("claude-sonnet-5");
+    expect(validateAnthropicModel(" claude-3-7-sonnet-20250219 ")).toBe("claude-3-7-sonnet-20250219");
+  });
+
+  it("rejects non-Claude, path-like, whitespace-bearing, and non-string ids", () => {
+    expect(validateAnthropicModel("gpt-5")).toBeNull();
+    expect(validateAnthropicModel("claude-../admin")).toBeNull();
+    expect(validateAnthropicModel("claude-sonnet 5")).toBeNull();
+    expect(validateAnthropicModel(null)).toBeNull();
+  });
+});
+
+describe("validateGithubPullRequestNumber", () => {
+  it("accepts positive safe integers and rejects every other shape", () => {
+    expect(validateGithubPullRequestNumber(109)).toBe(109);
+    expect(validateGithubPullRequestNumber(0)).toBeNull();
+    expect(validateGithubPullRequestNumber(-1)).toBeNull();
+    expect(validateGithubPullRequestNumber(1.5)).toBeNull();
+    expect(validateGithubPullRequestNumber("109")).toBeNull();
   });
 });
 

@@ -54,17 +54,12 @@ export function validateGithubRepo(value: string): string | null {
   return trimmed;
 }
 
-// Hosts a `healthCheckUrl` may point at without any explicit operator
-// allowlist. Loopback only — matches the shipped default
-// (http://127.0.0.1:3100/api/health) and nothing else, so an operator who
-// wants a non-loopback deployment health endpoint must opt in explicitly via
-// `healthCheckHostAllowlist`.
-const DEFAULT_ALLOWED_HEALTH_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-
 /**
  * Validate a `healthCheckUrl` config value: must parse as an absolute
- * http(s) URL whose hostname is loopback or on the operator-supplied
- * allowlist. Returns the normalized URL string if valid, otherwise `null`.
+ * http(s) URL whose hostname is on the operator-supplied allowlist. The host
+ * HTTP client independently blocks private/reserved targets, including
+ * loopback, so this plugin deliberately has no implicit localhost exception.
+ * Returns the normalized URL string if valid, otherwise `null`.
  */
 export function validateHealthCheckUrl(value: string, extraAllowedHosts: string[] = []): string | null {
   if (!value) return null;
@@ -75,7 +70,13 @@ export function validateHealthCheckUrl(value: string, extraAllowedHosts: string[
     return null;
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  const allowed = new Set(DEFAULT_ALLOWED_HEALTH_HOSTS);
+  // This setting is a health-endpoint selector, not a general-purpose URL.
+  // Constraining the path and forbidding credentials/query/fragment prevents
+  // an allowlisted host (especially loopback) from becoming an SSRF tunnel to
+  // arbitrary application/admin endpoints on that host.
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+  if (parsed.pathname !== "/api/health") return null;
+  const allowed = new Set<string>();
   for (const host of extraAllowedHosts) {
     if (typeof host === "string" && host.trim()) allowed.add(host.trim().toLowerCase());
   }
@@ -84,4 +85,22 @@ export function validateHealthCheckUrl(value: string, extraAllowedHosts: string[
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!allowed.has(hostname)) return null;
   return parsed.toString();
+}
+
+const ANTHROPIC_MODEL_PATTERN = /^claude-[a-z0-9][a-z0-9._-]{0,119}$/;
+
+/**
+ * Validate the direct-provider model id. Companion intentionally supports
+ * Anthropic Claude models only in this MVP; rejecting whitespace, URL/path
+ * syntax, and non-Claude ids keeps the provider contract explicit.
+ */
+export function validateAnthropicModel(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return ANTHROPIC_MODEL_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+/** Validate an optional configured GitHub pull-request number. */
+export function validateGithubPullRequestNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }

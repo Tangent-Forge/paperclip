@@ -15,7 +15,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
  *   2. Opens Companion, creates a thread, sends a message.
  *   3. Waits for Companion's persisted reply.
  *   4. Sees the evidence block rendered under that reply.
- *   5. Proposes an action from the reply and approves it as the
+ *   5. Proposes actions from replies and approves one / rejects one as the
  *      authenticated human (the `local_trusted` implicit board user).
  *   6. Reloads the page and asserts the same thread/messages/proposal
  *      (with the same decided status) are still there — both via the
@@ -23,10 +23,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
  *
  * On the LLM call: this spec never attempts to reach the real Anthropic API
  * and never uses a real API key. `anthropicApiKeySecretRef` is deliberately
- * left UNCONFIGURED (see the long comment in `beforeAll` for why a *bound*
- * fake secret cannot currently be used end-to-end here — it hits a real,
- * separately-flagged mismatch between this plugin's manifest and Paperclip's
- * secret system). `sendMessage()` in `companion-service.ts` does not throw
+ * left unconfigured. `sendMessage()` in `companion-service.ts` does not throw
  * when the LLM key isn't configured — it always persists both the human
  * message and a Companion reply, using `"I couldn't complete that request:
  * ..."` as the reply body (see `callCompanionModel` / `sendMessage`). That is
@@ -52,6 +49,7 @@ const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const SELF_ORIGIN = `http://127.0.0.1:${PORT}`;
 
 const HUMAN_MESSAGE = "What commit is Paperclip currently running, and what is the deployment status?";
+const SECOND_HUMAN_MESSAGE = "What should I verify next?";
 
 interface CompanionThreadSnapshot {
   thread: { id: string };
@@ -79,6 +77,7 @@ async function fetchThreadSnapshot(request: APIRequestContext, companyId: string
 test.describe.serial("Paperclip Companion", () => {
   let companyId: string;
   let prefix: string;
+  let persistedSnapshot: CompanionThreadSnapshot;
 
   test.beforeAll(async ({ request }) => {
     // Install the built plugin package from disk (dist/ must already exist —
@@ -91,6 +90,24 @@ test.describe.serial("Paperclip Companion", () => {
     expect(installed.status, `plugin did not reach ready status: ${JSON.stringify(installed)}`).toBe("ready");
     expect(installed.pluginKey).toBe(PLUGIN_ID);
 
+    const pluginRes = await request.get(`/api/plugins/${PLUGIN_ID}`);
+    expect(pluginRes.ok(), `plugin detail failed ${pluginRes.status()}: ${await pluginRes.text()}`).toBe(true);
+    const plugin = await pluginRes.json();
+    expect(plugin.status).toBe("ready");
+    expect(plugin.manifestJson?.database).toMatchObject({ namespaceSlug: "companion", migrationsDir: "migrations" });
+
+    const contributionsRes = await request.get("/api/plugins/ui-contributions");
+    expect(contributionsRes.ok(), `ui contributions failed ${contributionsRes.status()}: ${await contributionsRes.text()}`).toBe(true);
+    const contributions = (await contributionsRes.json()) as Array<{ pluginKey: string; slots: Array<{ type: string; routePath?: string }> }>;
+    const contribution = contributions.find((item) => item.pluginKey === PLUGIN_ID);
+    expect(contribution, "installed plugin must register UI contributions").toBeTruthy();
+    expect(contribution?.slots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "page", routePath: PAGE_ROUTE }),
+        expect.objectContaining({ type: "routeSidebar", routePath: PAGE_ROUTE }),
+      ]),
+    );
+
     const companyRes = await request.post("/api/companies", {
       data: { name: `Companion E2E ${Date.now()}` },
     });
@@ -99,40 +116,9 @@ test.describe.serial("Paperclip Companion", () => {
     companyId = company.id;
     prefix = company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E";
 
-    // Deliberately leave `anthropicApiKeySecretRef` unconfigured rather than
-    // binding a fake secret to it. Two independent reasons:
-    //
-    // 1. This spec must never reach the real Anthropic API or use a real
-    //    key (task requirement) — the "not configured" path guarantees that
-    //    with no dependency on outbound network being blocked/reachable.
-    //
-    // 2. There is a real, pre-existing mismatch between this plugin's
-    //    manifest and Paperclip's secret system that makes a *bound* secret
-    //    ref unusable end-to-end via the standard config API today: the
-    //    manifest declares `anthropicApiKeySecretRef` as
-    //    `{ type: "string", format: "secret-ref" }`, but the SDK's real
-    //    `PluginSecretsClient.resolve()` requires the shared
-    //    `{ type: "secret_ref", secretId, version? }` OBJECT shape and
-    //    fails closed on any string (see PluginSecretsClient.resolve's own
-    //    docstring in packages/plugins/sdk/src/types.ts: "Legacy string UUID
-    //    references fail closed"). Posting the object form to
-    //    `POST /api/plugins/:id/config` is rejected by AJV before it ever
-    //    reaches the secret-binding logic, because the manifest's declared
-    //    JSON-Schema `type` is `"string"` (confirmed against this exact
-    //    instance: `{"error":"Configuration does not match the plugin's
-    //    instanceConfigSchema","fieldErrors":[{"field":"/anthropicApiKeySecretRef",
-    //    "message":"must be string"}]}`). Posting a plain string instead
-    //    passes AJV but then companion-service.ts's own
-    //    `host.secrets.resolve(secretRef, ...)` call (not wrapped in a
-    //    try/catch) throws at the real host, which surfaces as an
-    //    "interrupted" UI state with NO persisted Companion reply — not the
-    //    deterministic persisted-reply behavior under test here. This is a
-    //    real bug worth fixing in the plugin (or in the shared config-schema
-    //    validator), but out of scope for this test task; flagged
-    //    separately rather than patched here. Leaving the field unconfigured
-    //    exercises companion-service.ts's own "not configured" branch, which
-    //    is unaffected by that mismatch and is just as valid an
-    //    "I couldn't complete that request: ..." error-path reply.
+    // Leave `anthropicApiKeySecretRef` unconfigured: the deterministic
+    // provider-failure path persists a real Companion response and evidence
+    // without contacting an external provider or materializing any secret.
     const configRes = await request.post(`/api/plugins/${PLUGIN_ID}/config`, {
       data: {
         companyId,
@@ -148,6 +134,7 @@ test.describe.serial("Paperclip Companion", () => {
   });
 
   test.afterAll(async ({ request }) => {
+    await request.delete(`/api/plugins/${PLUGIN_ID}`).catch(() => undefined);
     if (companyId) {
       await request.delete(`/api/companies/${companyId}`).catch(() => undefined);
     }
@@ -206,7 +193,7 @@ test.describe.serial("Paperclip Companion", () => {
 
     // 5. Evidence block rendered under the reply (gathered independently of
     // the LLM outcome, so it is always attached to the reply).
-    await expect(main.getByText("deployment_health")).toBeVisible();
+    await expect(main.getByText("deployment_health")).toHaveCount(1);
     await expect(main.getByText("github")).toBeVisible();
 
     // 6. Propose an action from that reply.
@@ -221,15 +208,27 @@ test.describe.serial("Paperclip Companion", () => {
     const decidedStatusText = (await decidedStatus.textContent())?.trim();
     expect(decidedStatusText).toMatch(/^Approved by \S+/);
 
+    // Exercise the opposite authenticated-human decision on a second,
+    // independently persisted proposal.
+    await composer.fill(SECOND_HUMAN_MESSAGE);
+    await main.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(main.getByText(SECOND_HUMAN_MESSAGE)).toBeVisible({ timeout: 30_000 });
+    await expect(main.getByRole("button", { name: "Propose next action from this reply" })).toBeVisible({ timeout: 10_000 });
+    await main.getByRole("button", { name: "Propose next action from this reply" }).click();
+    await main.getByRole("button", { name: "Reject" }).click();
+    const rejectedStatus = main.getByText(/^Rejected by /);
+    await expect(rejectedStatus).toBeVisible({ timeout: 15_000 });
+
     // Cross-check against the plugin's own persisted data before reloading,
     // for a deterministic (non-UI-text-based) record to compare against
     // after reload.
     const before = await fetchThreadSnapshot(page.request, companyId);
-    expect(before.messages).toHaveLength(2);
-    expect(before.messages.map((m) => m.role).sort()).toEqual(["companion", "human"]);
-    expect(before.proposals).toHaveLength(1);
-    expect(before.proposals[0].status).toBe("accepted");
-    expect(before.proposals[0].decided_by_user_id).toBeTruthy();
+    expect(before.messages).toHaveLength(4);
+    expect(before.messages.filter((message) => message.role === "human")).toHaveLength(2);
+    expect(before.messages.filter((message) => message.role === "companion")).toHaveLength(2);
+    expect(before.proposals).toHaveLength(2);
+    expect(before.proposals.map((proposal) => proposal.status).sort()).toEqual(["accepted", "rejected"]);
+    expect(before.proposals.every((proposal) => Boolean(proposal.decided_by_user_id))).toBe(true);
 
     // 8. Reload the page and assert the same thread/messages/proposal
     // (with the same decided status) are still there.
@@ -239,14 +238,45 @@ test.describe.serial("Paperclip Companion", () => {
     // "the first thread" on load is, unambiguously, re-selecting this same
     // thread — confirmed below against persisted IDs, not just UI text.
     await expect(main.getByText(HUMAN_MESSAGE)).toBeVisible({ timeout: 20_000 });
+    await expect(main.getByText(SECOND_HUMAN_MESSAGE)).toBeVisible({ timeout: 20_000 });
     await expect(companionReply).toBeVisible({ timeout: 20_000 });
-    await expect(main.getByText("deployment_health")).toBeVisible();
+    await expect(main.getByText("deployment_health")).toHaveCount(2);
     await expect(decidedStatus).toBeVisible({ timeout: 20_000 });
+    await expect(rejectedStatus).toBeVisible({ timeout: 20_000 });
     expect((await decidedStatus.textContent())?.trim()).toBe(decidedStatusText);
 
     const after = await fetchThreadSnapshot(page.request, companyId);
     expect(after.thread.id).toBe(before.thread.id);
     expect(after.messages.map((m) => m.id).sort()).toEqual(before.messages.map((m) => m.id).sort());
     expect(after.proposals).toEqual(before.proposals);
+    persistedSnapshot = after;
+  });
+
+  test("soft uninstall and reinstall preserve the plugin-owned data while unregistering/re-registering UI and workers", async ({ request }) => {
+    const uninstallRes = await request.delete(`/api/plugins/${PLUGIN_ID}`);
+    expect(uninstallRes.ok(), `plugin uninstall failed ${uninstallRes.status()}: ${await uninstallRes.text()}`).toBe(true);
+    const uninstalled = await uninstallRes.json();
+    expect(uninstalled.status).toBe("uninstalled");
+
+    const unavailableRes = await request.post(`/api/plugins/${PLUGIN_ID}/data/threads`, {
+      data: { companyId, params: { companyId } },
+    });
+    expect(unavailableRes.status()).toBe(502);
+    await expect(unavailableRes.json()).resolves.toMatchObject({ code: "WORKER_UNAVAILABLE" });
+
+    const contributionsAfterUninstall = (await (await request.get("/api/plugins/ui-contributions")).json()) as Array<{
+      pluginKey: string;
+    }>;
+    expect(contributionsAfterUninstall.some((item) => item.pluginKey === PLUGIN_ID)).toBe(false);
+
+    const reinstallRes = await request.post("/api/plugins/install", {
+      data: { packageName: PLUGIN_DIR, isLocalPath: true },
+    });
+    expect(reinstallRes.ok(), `plugin reinstall failed ${reinstallRes.status()}: ${await reinstallRes.text()}`).toBe(true);
+    const reinstalled = await reinstallRes.json();
+    expect(reinstalled.status).toBe("ready");
+
+    const afterReinstall = await fetchThreadSnapshot(request, companyId);
+    expect(afterReinstall).toEqual(persistedSnapshot);
   });
 });
