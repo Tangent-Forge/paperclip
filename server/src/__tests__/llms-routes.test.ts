@@ -12,7 +12,8 @@ vi.mock("../services/agents.js", () => ({
   agentService: () => mockAgentService,
 }));
 
-vi.mock("../adapters/index.js", () => ({
+vi.mock("../adapters/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../adapters/index.js")>()),
   listServerAdapters: mockListServerAdapters,
 }));
 
@@ -21,7 +22,8 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
   }));
 
-  vi.doMock("../adapters/index.js", () => ({
+  vi.doMock("../adapters/index.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../adapters/index.js")>()),
     listServerAdapters: mockListServerAdapters,
   }));
 }
