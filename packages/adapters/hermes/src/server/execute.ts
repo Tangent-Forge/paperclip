@@ -232,6 +232,71 @@ interface ParsedOutput {
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+  errorCode?: string;
+  errorFamily?: string;
+}
+
+/**
+ * Classify terminal Hermes provider/client failures that must never map to
+ * Paperclip run status `succeeded`, even when the process exits 0.
+ *
+ * Hermes frequently prints these on stdout (UI/renderer path), not stderr.
+ * Live proof (PAP-2918 / TAN-861): HTTP 400 "auto" model unsupported exited 0.
+ */
+export function classifyHermesTerminalFailure(combinedOutput: string): {
+  message: string;
+  errorCode: string;
+  errorFamily: string;
+} | null {
+  const text = combinedOutput ?? "";
+  if (!text.trim()) return null;
+
+  const nonRetryableHttp =
+    /Non-retryable (?:client )?error\s*\(HTTP\s*(\d{3})\)/i.exec(text) ??
+    /Non-retryable error\s*\(HTTP\s*(\d{3})\)/i.exec(text);
+  const httpBadRequest =
+    /BadRequestError\s*\[HTTP\s*400\]/i.test(text) ||
+    /HTTP\s*400\b/.test(text) ||
+    /status(?: code)?\s*[:=]?\s*400\b/i.test(text);
+  const unsupportedModel =
+    /model is not supported/i.test(text) ||
+    /unsupported model/i.test(text) ||
+    /'auto'\s*model is not supported/i.test(text);
+  const aborting =
+    /Aborting\.?/i.test(text) ||
+    /This type of error won't be fixed by retrying/i.test(text);
+
+  if (nonRetryableHttp || (httpBadRequest && (unsupportedModel || aborting || /API call failed/i.test(text)))) {
+    const status = nonRetryableHttp?.[1] ?? "400";
+    const detailMatch =
+      /Error:\s*(HTTP\s*400:[^\n\r]+)/i.exec(text) ??
+      /(HTTP\s*400:[^\n\r]+)/i.exec(text);
+    const detail = (detailMatch?.[1] ?? text.split(/\r?\n/).find((l) => /HTTP\s*400|not supported|Non-retryable/i.test(l)) ?? `HTTP ${status}`)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 500);
+    return {
+      message: detail,
+      errorCode: `hermes_provider_http_${status}`,
+      errorFamily: "provider_error",
+    };
+  }
+
+  // Generic zero-response / empty completion with explicit failure markers on either stream
+  if (
+    /API call failed/i.test(text) &&
+    /HTTP\s*(4\d\d|5\d\d)/i.test(text) &&
+    (/Non-retryable/i.test(text) || /Aborting/i.test(text))
+  ) {
+    const status = /HTTP\s*(\d{3})/i.exec(text)?.[1] ?? "error";
+    return {
+      message: `Hermes provider call failed (HTTP ${status})`,
+      errorCode: `hermes_provider_http_${status}`,
+      errorFamily: "provider_error",
+    };
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,8 +377,15 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     result.costUsd = parseFloat(costMatch[1]);
   }
 
-  // Check for error patterns in stderr
-  if (stderr.trim()) {
+  // Terminal provider failures may appear only on stdout (Hermes UI path).
+  // Classify the combined stream first so exit-0 no-ops cannot persist as succeeded.
+  const terminal = classifyHermesTerminalFailure(combined);
+  if (terminal) {
+    result.errorMessage = terminal.message;
+    result.errorCode = terminal.errorCode;
+    result.errorFamily = terminal.errorFamily;
+  } else if (stderr.trim()) {
+    // Fallback: legacy stderr-only diagnostics
     const errorLines = stderr
       .split("\n")
       .filter((line) => /error|exception|traceback|failed/i.test(line))
@@ -553,8 +625,14 @@ export async function execute(
   }
 
   // ── Build result ───────────────────────────────────────────────────────
+  // Semantic terminal failures force a non-zero exitCode so heartbeat's
+  // (exitCode === 0 && !errorMessage) success gate cannot persist a no-op.
+  const semanticFailure = Boolean(parsed.errorMessage) && !result.timedOut;
+  const effectiveExitCode =
+    semanticFailure && (result.exitCode ?? 0) === 0 ? 1 : result.exitCode;
+
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
+    exitCode: effectiveExitCode,
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,
@@ -563,6 +641,12 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
+    if (parsed.errorCode) {
+      executionResult.errorCode = parsed.errorCode;
+    }
+    if (parsed.errorFamily) {
+      executionResult.errorFamily = parsed.errorFamily as AdapterExecutionResult["errorFamily"];
+    }
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
