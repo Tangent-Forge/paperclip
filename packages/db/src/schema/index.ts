@@ -175,3 +175,7 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { deliveryRouteContracts, MAX_AUTO_RETRY_LIMIT, MAX_RETRY_BACKOFF_SECONDS } from "./delivery_route_contracts.js";
+export { deliveryCandidates, DELIVERY_CANDIDATE_STATES } from "./delivery_candidates.js";
+export { deliveryTransitions } from "./delivery_transitions.js";
+export { deliveryWorkerActivations, DELIVERY_WORKER_ACTIVATION_STATUSES } from "./delivery_worker_activation.js";
