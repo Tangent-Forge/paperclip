@@ -130,9 +130,10 @@ export function CompanionPage() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState("");
   const [proposals, setProposals] = useState<Record<string, CompanionActionProposal>>({});
+  const [interrupted, setInterrupted] = useState<{ clientRequestId: string; threadId: string; body: string } | null>(null);
 
   const threadsResult = usePluginData<CompanionThread[]>("threads", { companyId });
-  const threadResult = usePluginData<{ thread: CompanionThread; messages: CompanionMessage[] }>(
+  const threadResult = usePluginData<{ thread: CompanionThread; messages: CompanionMessage[]; proposals: CompanionActionProposal[] }>(
     "thread",
     activeThreadId ? { companyId, threadId: activeThreadId } : undefined,
   );
@@ -157,6 +158,23 @@ export function CompanionPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replyStream.lastEvent]);
+
+  // Hydrate action-proposal state from persisted thread data on every load
+  // (including a page reload) rather than relying only on this session's own
+  // propose/decide calls — otherwise a previously-approved or -rejected
+  // proposal (or a still-pending one) disappears from the UI after refresh
+  // even though it remains correctly persisted server-side.
+  useEffect(() => {
+    if (!threadResult.data) return;
+    setProposals((prev) => {
+      const next = { ...prev };
+      for (const p of threadResult.data!.proposals) {
+        next[p.message_id] = p;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadResult.data?.thread.id, threadResult.data?.proposals]);
 
   if (!companyId) {
     return (
@@ -186,14 +204,32 @@ export function CompanionPage() {
 
   async function handleSend() {
     if (!activeThreadId || !composerValue.trim()) return;
+    const clientRequestId = crypto.randomUUID();
+    await sendWithRetry(activeThreadId, composerValue, clientRequestId);
+  }
+
+  async function handleRetry() {
+    if (!interrupted) return;
+    await sendWithRetry(interrupted.threadId, interrupted.body, interrupted.clientRequestId);
+  }
+
+  async function sendWithRetry(threadId: string, body: string, clientRequestId: string) {
     setSending(true);
-    const body = composerValue;
+    setInterrupted(null);
     setComposerValue("");
     try {
-      await sendMessageAction({ threadId: activeThreadId, body });
+      // clientRequestId is a durable idempotency key: a retry of the exact
+      // same failed send reuses the human message and Companion reply
+      // already persisted for it (if any) instead of creating duplicates.
+      await sendMessageAction({ threadId, body, clientRequestId });
       threadResult.refresh();
     } catch (err) {
-      toast({ title: "Companion could not respond", tone: "error", body: String(err) });
+      // A distinct "interrupted" state, not just a transient toast — the
+      // human's message may or may not have reached the server, so we keep
+      // it recoverable (Retry re-sends with the same clientRequestId) rather
+      // than silently dropping it or leaving an infinite spinner.
+      setInterrupted({ clientRequestId, threadId, body });
+      toast({ title: "Companion's response was interrupted", tone: "error", body: String(err) });
     } finally {
       setSending(false);
     }
@@ -295,6 +331,22 @@ export function CompanionPage() {
                 </div>
               ))}
               {sending && <div style={{ opacity: 0.6 }}>Companion is thinking…</div>}
+              {interrupted && interrupted.threadId === activeThreadId && (
+                <div
+                  role="alert"
+                  style={{
+                    border: "1px solid var(--danger, crimson)",
+                    borderRadius: 6,
+                    padding: 10,
+                    color: "var(--danger, crimson)",
+                  }}
+                >
+                  <div style={{ marginBottom: 6 }}>Companion's response was interrupted before it could complete.</div>
+                  <button disabled={sending} onClick={() => void handleRetry()}>
+                    Retry
+                  </button>
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <textarea

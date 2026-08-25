@@ -24,6 +24,12 @@ CREATE TABLE companion_messages (
   actor_user_id text,
   body text NOT NULL,
   evidence jsonb,
+  -- Client-supplied dedup key for one logical send-message request (shared by
+  -- the human row and the companion reply row it produced). NULL for any row
+  -- created without an idempotency key (e.g. legacy callers). Scoped by role
+  -- so the human row and its companion reply — which intentionally share the
+  -- same client_request_id — don't collide with each other.
+  client_request_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT companion_messages_actor_role_chk CHECK (
     (role = 'human' AND actor_user_id IS NOT NULL) OR
@@ -35,6 +41,11 @@ CREATE INDEX companion_messages_thread_created_idx
   ON companion_messages (thread_id, created_at);
 CREATE INDEX companion_messages_company_created_idx
   ON companion_messages (company_id, created_at DESC);
+-- Idempotency: a retried sendMessage call with the same client_request_id
+-- must not create a second human row or a second companion row.
+CREATE UNIQUE INDEX companion_messages_dedup_idx
+  ON companion_messages (thread_id, role, client_request_id)
+  WHERE client_request_id IS NOT NULL;
 
 CREATE TABLE companion_action_proposals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,3 +69,21 @@ CREATE UNIQUE INDEX companion_action_proposals_interaction_idx
   ON companion_action_proposals (company_id, interaction_id);
 CREATE INDEX companion_action_proposals_thread_idx
   ON companion_action_proposals (company_id, thread_id, created_at DESC);
+-- Idempotency: the UI only ever offers one "propose next action" button per
+-- message (see src/ui/index.tsx), so a message must resolve to at most one
+-- proposal. This is also the mechanism that makes a double-click / duplicate
+-- submit safe: the loser of the race gets the winner's row back instead of
+-- creating a second proposal (and a second standing-issue interaction).
+CREATE UNIQUE INDEX companion_action_proposals_message_idx
+  ON companion_action_proposals (company_id, message_id);
+
+-- Race-safe claim table for the standing "Paperclip Companion (system)"
+-- issue. The primary-key uniqueness on company_id is the atomic decision
+-- point for find-or-create: only one of any set of concurrent first-proposal
+-- calls can win the INSERT for a given company. See
+-- findOrCreateCompanionIssue() in src/companion-service.ts.
+CREATE TABLE companion_company_state (
+  company_id uuid PRIMARY KEY,
+  companion_issue_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

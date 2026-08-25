@@ -88,7 +88,8 @@ export const plugin = definePlugin({
       if (!actorUserId) throw new Error("sendMessage requires an authenticated human actor");
       const threadId = requireString(params.threadId, "threadId");
       const body = requireString(params.body, "body");
-      const result = await sendMessage(host, companyId, threadId, actorUserId, body);
+      const clientRequestId = typeof params.clientRequestId === "string" && params.clientRequestId ? params.clientRequestId : null;
+      const result = await sendMessage(host, companyId, threadId, actorUserId, body, clientRequestId);
       // Known MVP limitation (see design record §6): this is a single buffered
       // emit, not token-level streaming — the full reply is already computed
       // by the time this fires. Kept so the streaming plumbing (ctx.streams +

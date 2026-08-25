@@ -128,6 +128,8 @@ export interface CompanionMessageRow {
   actor_user_id: string | null;
   body: string;
   evidence: CompanionEvidenceRef[] | null;
+  /** Client-supplied idempotency key for the send-message request that produced this row. Null for rows created without one. */
+  client_request_id: string | null;
   created_at: string;
 }
 

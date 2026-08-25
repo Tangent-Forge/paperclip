@@ -9,6 +9,7 @@ import {
   gatherEvidence,
   getDeploymentHealthEvidence,
   getGithubEvidence,
+  getLocalArtifactEvidence,
   getThreadWithMessages,
   listThreads,
   proposeAction,
@@ -38,6 +39,8 @@ interface FakeState {
   config: Record<string, Record<string, unknown>>;
   httpResponses: Array<{ status: number; body: string }>;
   secrets: Record<string, string>;
+  /** company_id -> companion_issue_id, mirrors companion_company_state's PK-uniqueness. */
+  companyState: Record<string, string>;
 }
 
 function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
@@ -51,6 +54,7 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
     config: { [companyId]: {} },
     httpResponses: [],
     secrets: {},
+    companyState: {},
     ...overrides,
   };
 
@@ -80,8 +84,23 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             .filter((t) => t.company_id === cid)
             .sort((a, b) => b.updated_at.localeCompare(a.updated_at)) as unknown as T[];
         }
+        if (sql.startsWith("SELECT companion_issue_id FROM companion_company_state")) {
+          const [cid] = params as string[];
+          const issueId = state.companyState[cid];
+          return (issueId ? [{ companion_issue_id: issueId }] : []) as unknown as T[];
+        }
+        if (sql.startsWith("INSERT INTO companion_company_state")) {
+          const [cid, issueId] = params as string[];
+          if (state.companyState[cid]) return [] as unknown as T[]; // ON CONFLICT (company_id) DO NOTHING
+          state.companyState[cid] = issueId;
+          return [{ companion_issue_id: issueId }] as unknown as T[];
+        }
+        if (sql.startsWith("SELECT * FROM companion_messages WHERE thread_id = $1 AND role = $2 AND client_request_id = $3")) {
+          const [tid, role, crid] = params as string[];
+          return state.messages.filter((m) => m.thread_id === tid && m.role === role && m.client_request_id === crid) as unknown as T[];
+        }
         if (sql.startsWith("INSERT INTO companion_messages")) {
-          const [id, company_id, thread_id, role, actor_user_id, body, evidence] = params as [
+          const [id, company_id, thread_id, role, actor_user_id, body, evidence, client_request_id = null] = params as [
             string,
             string,
             string,
@@ -89,7 +108,14 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             string | null,
             string,
             string | null,
+            string | null | undefined,
           ];
+          if (client_request_id) {
+            const dup = state.messages.find(
+              (m) => m.thread_id === thread_id && m.role === role && m.client_request_id === client_request_id,
+            );
+            if (dup) return [] as unknown as T[]; // ON CONFLICT (thread_id, role, client_request_id) DO NOTHING
+          }
           const row: CompanionMessageRow = {
             id,
             company_id,
@@ -98,6 +124,7 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             actor_user_id,
             body,
             evidence: evidence ? JSON.parse(evidence) : null,
+            client_request_id: client_request_id ?? null,
             created_at: new Date().toISOString(),
           };
           state.messages.push(row);
@@ -109,8 +136,24 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
             .filter((m) => m.company_id === cid && m.thread_id === tid)
             .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
         }
+        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND message_id = $2")) {
+          const [cid, mid] = params as string[];
+          return state.proposals.filter((p) => p.company_id === cid && p.message_id === mid) as unknown as T[];
+        }
+        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND thread_id = $2")) {
+          const [cid, tid] = params as string[];
+          return state.proposals
+            .filter((p) => p.company_id === cid && p.thread_id === tid)
+            .sort((a, b) => a.created_at.localeCompare(b.created_at)) as unknown as T[];
+        }
+        if (sql.startsWith("SELECT * FROM companion_action_proposals WHERE company_id = $1 AND id = $2")) {
+          const [cid, id] = params as string[];
+          return state.proposals.filter((p) => p.company_id === cid && p.id === id) as unknown as T[];
+        }
         if (sql.startsWith("INSERT INTO companion_action_proposals")) {
           const [id, company_id, thread_id, message_id, companion_issue_id, interaction_id, summary] = params as string[];
+          const dup = state.proposals.find((p) => p.company_id === company_id && p.message_id === message_id);
+          if (dup) return [] as unknown as T[]; // ON CONFLICT (company_id, message_id) DO NOTHING
           const row: CompanionActionProposalRow = {
             id,
             company_id,
@@ -126,10 +169,6 @@ function fakeHost(companyId: string, overrides: Partial<FakeState> = {}) {
           };
           state.proposals.push(row);
           return [row] as unknown as T[];
-        }
-        if (sql.startsWith("SELECT * FROM companion_action_proposals")) {
-          const [cid, id] = params as string[];
-          return state.proposals.filter((p) => p.company_id === cid && p.id === id) as unknown as T[];
         }
         if (sql.startsWith("UPDATE companion_action_proposals")) {
           const [status, decidedByUserId, cid, id] = params as string[];
@@ -431,5 +470,216 @@ describe("companion-service — standing issue reuse (find-or-create)", () => {
     const second = await findOrCreateCompanionIssue(host, companyId);
     expect(first).toBe(second);
     expect(state.issues.filter((i) => i.company_id === companyId).length).toBe(1);
+  });
+
+  it("resolves concurrent first-time calls to a single issue, not one each (race safety)", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    // Ten concurrent callers, none of whom have seen a winner yet.
+    const results = await Promise.all(Array.from({ length: 10 }, () => findOrCreateCompanionIssue(host, companyId)));
+    const distinctIds = new Set(results);
+    // Every caller must agree on exactly one issue id, even though several of
+    // them may have each created their own candidate issue along the way
+    // (companion_company_state.company_id's PK uniqueness is the single
+    // atomic decision point — see findOrCreateCompanionIssue).
+    expect(distinctIds.size).toBe(1);
+  });
+});
+
+describe("companion-service — proposal hydration (persisted-proposal-visibility-after-reload)", () => {
+  it("returns proposals alongside thread/messages so a reload can restore proposal state from storage", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const humanMsg = await host.db.query<CompanionMessageRow>(
+      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
+    );
+    const proposal = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    await decideProposal(host, companyId, proposal.id, "accept", "user-1");
+
+    // Simulate a fresh page load: nothing but the persisted DB state is
+    // consulted here — no in-memory React state survives a reload.
+    const reloaded = await getThreadWithMessages(host, companyId, thread.id);
+    expect(reloaded.proposals).toHaveLength(1);
+    expect(reloaded.proposals[0].id).toBe(proposal.id);
+    expect(reloaded.proposals[0].status).toBe("accepted");
+    expect(reloaded.proposals[0].decided_by_user_id).toBe("user-1");
+  });
+
+  it("never returns another company's proposals from a reload", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const humanMsg = await host.db.query<CompanionMessageRow>(
+      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
+    );
+    await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+
+    await expect(getThreadWithMessages(host, "company-b", thread.id)).rejects.toThrow(CompanionNotFoundError);
+  });
+});
+
+describe("companion-service — idempotency (durable keys, not just in-memory UI state)", () => {
+  it("sendMessage with a repeated clientRequestId returns the same persisted pair instead of creating duplicates", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId, {
+      httpResponses: [
+        { status: 200, body: JSON.stringify({ status: "ok" }) },
+        { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "answer" }] }) },
+      ],
+      secrets: { [`${companyId}:key`]: "sk-fake" },
+      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+    });
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const clientRequestId = randomUUID();
+
+    const first = await sendMessage(host, companyId, thread.id, "user-1", "hello", clientRequestId);
+    // A retry with the same key must not call the LLM again — no further
+    // http responses are queued, so a second real call would throw.
+    const second = await sendMessage(host, companyId, thread.id, "user-1", "hello", clientRequestId);
+
+    expect(second.humanMessage.id).toBe(first.humanMessage.id);
+    expect(second.companionMessage.id).toBe(first.companionMessage.id);
+    expect(state.messages.filter((m) => m.thread_id === thread.id)).toHaveLength(2);
+  });
+
+  it("a different clientRequestId in the same thread creates a distinct pair", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId, {
+      httpResponses: [
+        { status: 200, body: JSON.stringify({ status: "ok" }) },
+        { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "a1" }] }) },
+        { status: 200, body: JSON.stringify({ status: "ok" }) },
+        { status: 200, body: JSON.stringify({ content: [{ type: "text", text: "a2" }] }) },
+      ],
+      secrets: { [`${companyId}:key`]: "sk-fake" },
+      config: { [companyId]: { anthropicApiKeySecretRef: "key" } },
+    });
+    const thread = await createThread(host, companyId, "user-1", "t");
+    await sendMessage(host, companyId, thread.id, "user-1", "hello", randomUUID());
+    await sendMessage(host, companyId, thread.id, "user-1", "hello again", randomUUID());
+    expect(state.messages.filter((m) => m.thread_id === thread.id)).toHaveLength(4);
+  });
+
+  it("proposeAction with a duplicate call for the same message returns the existing proposal, not a second one", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId);
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const humanMsg = await host.db.query<CompanionMessageRow>(
+      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
+    );
+    const first = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing");
+    const second = await proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do a different thing");
+
+    expect(second.id).toBe(first.id);
+    expect(second.summary).toBe("Do the thing"); // the first proposal's summary wins, not the duplicate call's
+    expect(state.proposals.filter((p) => p.message_id === humanMsg[0].id)).toHaveLength(1);
+  });
+
+  it("concurrent duplicate proposeAction calls for the same message resolve to one persisted proposal (race safety)", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId);
+    const thread = await createThread(host, companyId, "user-1", "t");
+    const humanMsg = await host.db.query<CompanionMessageRow>(
+      `INSERT INTO companion_messages (id, company_id, thread_id, role, actor_user_id, body, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [randomUUID(), companyId, thread.id, "human", "user-1", "hi", null],
+    );
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => proposeAction(host, companyId, thread.id, humanMsg[0].id, "Do the thing")),
+    );
+    const distinctIds = new Set(results.map((r) => r.id));
+    expect(distinctIds.size).toBe(1);
+    expect(state.proposals.filter((p) => p.message_id === humanMsg[0].id)).toHaveLength(1);
+  });
+});
+
+describe("companion-service — outbound config hardening", () => {
+  it("refuses a malformed githubRepo instead of using it in an outbound request", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId, {
+      secrets: { [`${companyId}:tok`]: "gh-fake" },
+      config: { [companyId]: { githubRepo: "not-a-valid-repo-string", githubTokenSecretRef: "tok" } },
+    });
+    // No http response is queued — if getGithubEvidence attempted the fetch
+    // anyway, the fake host.http.fetch would throw "no fake http response
+    // queued" and this test would fail with that error instead of asserting
+    // the expected refusal.
+    const evidence = await getGithubEvidence(host, companyId);
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("invalid_repo_format");
+  });
+
+  it("refuses a non-loopback, non-allowlisted healthCheckUrl instead of fetching it", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId, {
+      config: { [companyId]: { healthCheckUrl: "http://169.254.169.254/latest/meta-data/" } },
+    });
+    const evidence = await getDeploymentHealthEvidence(host, companyId);
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("invalid_or_disallowed_url");
+  });
+
+  it("allows a non-loopback healthCheckUrl once explicitly allowlisted", async () => {
+    const companyId = "company-a";
+    const { host, state } = fakeHost(companyId, {
+      config: {
+        [companyId]: {
+          healthCheckUrl: "https://staging.internal.example.com/api/health",
+          healthCheckHostAllowlist: ["staging.internal.example.com"],
+        },
+      },
+    });
+    state.httpResponses.push({ status: 200, body: JSON.stringify({ status: "ok" }) });
+    const evidence = await getDeploymentHealthEvidence(host, companyId);
+    expect(evidence.success).toBe(true);
+  });
+});
+
+describe("companion-service — repo-aware evidence: reading a specific allowlisted file", () => {
+  it("reads a file that is present in the directory listing", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    host.localFolders.status = async () => ({ configured: true, healthy: true });
+    host.localFolders.list = async () => [{ path: "cutover-receipt.md", isDirectory: false }];
+    host.localFolders.readText = async (_cid, _key, path) => {
+      expect(path).toBe("cutover-receipt.md");
+      return "Cutover completed at 2026-08-25T00:00:00Z.";
+    };
+    const evidence = await getLocalArtifactEvidence(host, companyId, "cutover-receipt.md");
+    expect(evidence.success).toBe(true);
+    expect(evidence.summary).toContain("Cutover completed");
+    expect(evidence.identity?.path).toBe("cutover-receipt.md");
+  });
+
+  it("refuses a requested file that is not in the directory listing, without calling readText", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    host.localFolders.status = async () => ({ configured: true, healthy: true });
+    host.localFolders.list = async () => [{ path: "other.md", isDirectory: false }];
+    host.localFolders.readText = async () => {
+      throw new Error("readText must not be called for an unlisted file");
+    };
+    const evidence = await getLocalArtifactEvidence(host, companyId, "secrets.env");
+    expect(evidence.success).toBe(false);
+    expect(evidence.redactedError).toBe("file_not_found");
+  });
+
+  it("reports a file count summary (no readText call) when no specific file is requested", async () => {
+    const companyId = "company-a";
+    const { host } = fakeHost(companyId);
+    host.localFolders.status = async () => ({ configured: true, healthy: true });
+    host.localFolders.list = async () => [
+      { path: "a.md", isDirectory: false },
+      { path: "b.md", isDirectory: false },
+    ];
+    host.localFolders.readText = async () => {
+      throw new Error("readText must not be called when no file was requested");
+    };
+    const evidence = await getLocalArtifactEvidence(host, companyId, null);
+    expect(evidence.success).toBe(true);
+    expect(evidence.summary).toContain("2 file(s)");
   });
 });

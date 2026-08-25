@@ -61,7 +61,9 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       githubRepo: {
         type: "string",
-        description: "owner/repo used for PR/CI lookups (e.g. Tangent-Forge/paperclip). Optional.",
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+        description:
+          "Strict \"owner/repo\" used for PR/CI lookups (e.g. Tangent-Forge/paperclip). Optional. Any value not matching this exact owner/repo shape is refused rather than used in an outbound request.",
       },
       githubTokenSecretRef: {
         type: "string",
@@ -71,7 +73,14 @@ const manifest: PaperclipPluginManifestV1 = {
       healthCheckUrl: {
         type: "string",
         default: "http://127.0.0.1:3100/api/health",
-        description: "URL Companion polls for current deployment/runtime identity (reuses the existing /api/health response shape).",
+        description:
+          "URL Companion polls for current deployment/runtime identity (reuses the existing /api/health response shape). Must be http(s) and resolve to a loopback host (127.0.0.1/localhost/::1) unless its host is added to healthCheckHostAllowlist — any other value is refused rather than fetched.",
+      },
+      healthCheckHostAllowlist: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Additional hostnames healthCheckUrl is permitted to point at, beyond the loopback default (127.0.0.1/localhost/::1). Optional; leave empty unless Companion needs to poll a non-loopback deployment health endpoint.",
       },
     },
   },
