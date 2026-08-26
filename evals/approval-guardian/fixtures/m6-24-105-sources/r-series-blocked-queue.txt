@@ -1,0 +1,10 @@
+24-105 R-series blocker checklist excerpt.
+
+Owner approvals and fresh pulls remain the main gate. Canonical run registration
+is owner-gated. Fresh source exports are missing. No accepted curated mart
+release exists. No accepted RT-01..RT-16 result set exists. Cutover depends on
+R4/R5 acceptance and standing controls are not live.
+
+Immediate next actions include holding RT-05 as a hard failure until an owner
+rules the sixteen discrepancies and treating R4/R5 artifacts as review-only
+until acceptance evidence exists.
