@@ -471,13 +471,22 @@ describe.sequential("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("suppresses agent detail config for authenticated company members without agent admin permission", async () => {
+  it("returns real agent detail config to authenticated company members on the board plane", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: input.action === "agent:read",
       reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
       explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
     }));
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { command: "pnpm agent:run" },
+      runtimeConfig: {
+        modelProfiles: {
+          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        },
+      },
+    });
 
     const app = await createApp({
       type: "board",
@@ -490,11 +499,15 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toBe(REDACTED_EVENT_VALUE);
-    expect(res.body.runtimeConfig).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.adapterConfig).toEqual({ command: "pnpm agent:run" });
+    expect(res.body.runtimeConfig).toEqual({
+      modelProfiles: {
+        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+      },
+    });
   }, 20_000);
 
-  it("suppresses adapter config shape from privileged board agent detail", async () => {
+  it("returns real agent detail config to instance-admin board actors even for low-trust agents", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -523,12 +536,19 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toBe(REDACTED_EVENT_VALUE);
-    expect(res.body.runtimeConfig).toBe(REDACTED_EVENT_VALUE);
+    // The settings UI edits configs through this detail read; a trusted
+    // operator must see the stored values (round-trip), not the redaction
+    // marker — including for agents pinned to the low-trust preset.
+    expect(res.body.adapterConfig).toEqual({
+      command: "pnpm agent:run",
+      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+    });
+    expect(res.body.runtimeConfig).toEqual({
+      modelProfiles: {
+        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+      },
+    });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
-    expect(JSON.stringify(res.body)).not.toContain("PAPERCLIP_API_KEY");
-    expect(JSON.stringify(res.body)).not.toContain("modelProfiles");
-    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
   }, 20_000);
 
   it("suppresses adapter config shape from privileged company agent lists", async () => {
@@ -645,6 +665,13 @@ describe.sequential("agent permission routes", () => {
       return null;
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    // An ordinary peer holds agent:read but not agent_config:read — the
+    // grant ladder is exactly what keeps peers from snooping configs.
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
 
     const app = await createApp({
       type: "agent",
@@ -660,6 +687,67 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.adapterConfig).toBe(REDACTED_EVENT_VALUE);
     expect(res.body.runtimeConfig).toBe(REDACTED_EVENT_VALUE);
     expectNoSensitiveConfigPayload(res.body);
+  }, 20_000);
+
+  it("returns real peer detail config to agents holding the agent_config:read grant", async () => {
+    const peerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) {
+        return {
+          ...baseAgent,
+          id: peerAgentId,
+          adapterConfig: { command: "pnpm agent:run" },
+          runtimeConfig: { modelProfiles: { default: { enabled: true } } },
+        };
+      }
+      if (id === agentId) return { ...baseAgent, permissions: { canCreateAgents: false } };
+      return null;
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read" || input.action === "agent_config:read",
+      reason: "allow_test_grant",
+      explanation: "Allowed by test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${peerAgentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toEqual({ command: "pnpm agent:run" });
+    expect(res.body.runtimeConfig).toEqual({ modelProfiles: { default: { enabled: true } } });
+  }, 20_000);
+
+  it("keeps agent self detail config suppressed without the config-read grant", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { command: "pnpm agent:run", env: { PAPERCLIP_API_KEY: "secret-test-key" } },
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
   }, 20_000);
 
   it("suppresses company agent list config for authenticated company members without agent admin permission", async () => {

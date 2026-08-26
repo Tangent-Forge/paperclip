@@ -1015,15 +1015,19 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { includeConfig?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
+    // adapterConfig/runtimeConfig can embed live credentials, so they are
+    // suppressed unless the call site has already verified the actor passes
+    // the configuration-read gate (actorCanReadConfigurationsForCompany).
+    // Callers that never verified it must not pass includeConfig.
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : suppressAgentDetailConfigFields(agent)),
+      ...(options?.includeConfig ? agent : suppressAgentDetailConfigFields(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -2210,11 +2214,6 @@ export function agentRoutes(
     };
   }
 
-  function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
-    if (!agent) return null;
-    return suppressAgentDetailConfigFields(agent);
-  }
-
   function suppressAgentDetailConfigFields<T extends { adapterConfig?: unknown; runtimeConfig?: unknown }>(agent: T): T {
     return {
       ...agent,
@@ -3065,14 +3064,13 @@ export function agentRoutes(
         return;
       }
     }
-    const canReadSensitiveDetail = isSelf
-      ? true
-      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
-    if (!canReadSensitiveDetail) {
-      res.json(await buildAgentDetail(agent, { restricted: true }));
-      return;
-    }
-    res.json(await buildAgentDetail(agent));
+    // Actor-aware config redaction: configuration-read actors (board members
+    // with company access; agents holding the agent_config:read grant) get
+    // the real adapterConfig/runtimeConfig so the settings UI can round-trip
+    // edits. Everyone else — low-trust, red-team, ungranted peers, ungranted
+    // self — sees the redacted marker.
+    const canReadConfigurations = await actorCanReadConfigurationsForCompany(req, agent.companyId);
+    res.json(await buildAgentDetail(agent, { includeConfig: canReadConfigurations }));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
