@@ -45,8 +45,8 @@ import type {
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
 import {
+  buildRoutineVariableContext,
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
-  getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
@@ -443,17 +443,33 @@ function resolveRoutineVariableValues(
 function mergeRoutineRunPayload(
   payload: Record<string, unknown> | null | undefined,
   variables: Record<string, string | number | boolean>,
+  allVariables?: Record<string, unknown> | null,
 ) {
-  if (Object.keys(variables).length === 0) return payload ?? null;
-  if (!payload) return { variables };
-  const existingVariables = isPlainRecord(payload.variables) ? payload.variables : {};
-  return {
+  const hasVariables = Object.keys(variables).length > 0;
+  const hasAllVariables = !!allVariables && Object.keys(allVariables).length > 0;
+  if (!hasVariables && !hasAllVariables) return payload ?? null;
+  if (!payload) {
+    return {
+      variables: hasVariables ? variables : {},
+      ...(hasAllVariables ? { allVariables } : {}),
+    };
+  }
+  // For webhook-sourced runs (signalled by allVariables being present), the
+  // payload is untrusted: a spoofed payload.variables must not be merged in
+  // as if it were a resolved routine variable, the same distrust already
+  // applied to every other non-allowlisted payload field via allVariables.
+  const existingVariables = !hasAllVariables && isPlainRecord(payload.variables) ? payload.variables : {};
+  const mergedPayload: Record<string, unknown> = {
     ...payload,
     variables: {
       ...existingVariables,
       ...variables,
     },
   };
+  if (hasAllVariables) {
+    mergedPayload.allVariables = allVariables;
+  }
+  return mergedPayload;
 }
 
 function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
@@ -1706,13 +1722,22 @@ export function routineService(
       ...input,
       automaticVariables,
     });
-    const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
+    const allVariables = buildRoutineVariableContext({
+      source: input.source,
+      payload: input.payload,
+      automaticVariables,
+      resolvedVariables,
+    });
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const triggerPayload = mergeRoutineRunPayload(
+      input.payload,
+      { ...automaticVariables, ...resolvedVariables },
+      input.source === "webhook" ? allVariables : null,
+    );
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
