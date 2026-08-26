@@ -1015,7 +1015,6 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
@@ -1023,7 +1022,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...suppressAgentDetailConfigFields(agent),
       chainOfCommand,
       access: accessState,
     };
@@ -1299,25 +1298,6 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
     return agent;
-  }
-
-  async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    // Mirrors assertCanReadConfigurations but returns a boolean instead of
-    // throwing. Board actors only need company access; agent actors must pass
-    // the agent configuration read grant ladder so peer agents cannot snoop
-    // each others' configurations.
-    try {
-      assertCompanyAccess(req, companyId);
-    } catch {
-      return false;
-    }
-    if (req.actor.type === "board") return true;
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "agent_config:read",
-      resource: { type: "company", companyId },
-    });
-    return decision.allowed;
   }
 
   async function buildSkippedWakeupResponse(
@@ -2210,11 +2190,6 @@ export function agentRoutes(
     };
   }
 
-  function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
-    if (!agent) return null;
-    return suppressAgentDetailConfigFields(agent);
-  }
-
   function suppressAgentDetailConfigFields<T extends { adapterConfig?: unknown; runtimeConfig?: unknown }>(agent: T): T {
     return {
       ...agent,
@@ -3064,13 +3039,6 @@ export function agentRoutes(
         res.json(buildLowTrustSelfView(agent));
         return;
       }
-    }
-    const canReadSensitiveDetail = isSelf
-      ? true
-      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
-    if (!canReadSensitiveDetail) {
-      res.json(await buildAgentDetail(agent, { restricted: true }));
-      return;
     }
     res.json(await buildAgentDetail(agent));
   });
