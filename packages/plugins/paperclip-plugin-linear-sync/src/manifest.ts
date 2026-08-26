@@ -4,7 +4,7 @@ import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, JOB_KEYS, PLUGIN_ID, WEBHO
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.1.2",
   displayName: "Linear Sync",
   description: "Deterministic Linear-to-Paperclip intake sync with dedupe, bounded polling, retries, incidents, and observability.",
   author: "Paperclip",

@@ -190,7 +190,7 @@ describe("linear sync", () => {
     };
 
     expect(manifest.version).toBe(packageJson.version);
-    expect(manifest.version).toBe("0.1.1");
+    expect(manifest.version).toBe("0.1.2");
     expect(schema.properties?.candidateStatusNames?.default).toEqual([ADMISSION_LINEAR_STATE_NAME]);
   });
 
@@ -213,6 +213,13 @@ describe("linear sync", () => {
   it("normalizes config defaults", () => {
     expect(readConfig({}).candidateStatusNames).toEqual([ADMISSION_LINEAR_STATE_NAME]);
     expect(readConfig({ maxIssuesPerRun: 1000 }).maxIssuesPerRun).toBe(100);
+  });
+
+  it("normalizes legacy UUID secret references for the structured host contract", () => {
+    expect(readConfig({ linearApiKeySecretRef: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6" }).linearApiKeySecretRef)
+      .toEqual({ type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: "latest" });
+    expect(readConfig({ linearApiKeySecretRef: { type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: 2 } }).linearApiKeySecretRef)
+      .toEqual({ type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: 2 });
   });
 
   it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
