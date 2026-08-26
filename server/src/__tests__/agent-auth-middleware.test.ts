@@ -172,7 +172,7 @@ describe("agent auth middleware", () => {
     else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
   });
 
-  it("keeps header-less local requests as the implicit board actor with their run id", async () => {
+  it("PAP-1975: does not grant the implicit board actor to header-less local requests, but still threads the run id", async () => {
     const runId = randomUUID();
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
 
@@ -181,7 +181,8 @@ describe("agent auth middleware", () => {
       .set("X-Paperclip-Run-Id", runId);
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
+    expect(res.body).toMatchObject({ type: "none", source: "none", runId });
+    expect(res.body.userId).not.toBe("local-board");
   });
 
   it.each([
