@@ -202,6 +202,62 @@ describe("approval routes idempotent retries", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("does not emit duplicate revision-requested logs when request-revision is already applied", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "revision_requested",
+      payload: {},
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "revision_requested",
+        payload: {},
+      },
+      applied: false,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-1/request-revision")
+      .send({ decisionNote: "please fix X" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("does not emit duplicate resubmit logs when resubmit is already applied", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: false,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-1/resubmit")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("rejects approval decisions for companies outside the caller scope", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-2",
@@ -303,11 +359,14 @@ describe("approval routes idempotent retries", () => {
       payload: {},
     });
     mockApprovalService.requestRevision.mockResolvedValue({
-      id: "approval-6",
-      companyId: "company-1",
-      type: "hire_agent",
-      status: "revision_requested",
-      payload: {},
+      approval: {
+        id: "approval-6",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "revision_requested",
+        payload: {},
+      },
+      applied: true,
     });
 
     const res = await request(await createApp())
