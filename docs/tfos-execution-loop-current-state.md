@@ -1,6 +1,6 @@
 # TFOS execution loop: current state
 
-Last checked: 2026-08-25
+Last checked: 2026-08-26
 
 This is an operational description of the Paperclip execution path as implemented
 in this checkout. It distinguishes verified code and run metadata from things that
@@ -36,18 +36,27 @@ The relevant implementation points are:
 
 ## Live state observed for this remediation
 
-- PAP-2923's bootstrap metadata identifies run
-  `87f16c40-716a-4e53-a76f-9928dbca310b` as an `assignment` invocation and
-  identifies PAP-2585 as returned to `in_review`. These are candidate evidence
-  pointers, pending independent readback.
-- This run is executing in the dedicated branch checkout
-  `codex/pap-2923-tfos-closure-guard`, but its injected workspace strategy is
-  `project_primary`. Therefore this run is **not** evidence that the control
-  plane provisioned an isolated execution worktree.
-- The local control-plane endpoint at `127.0.0.1:3100` was unavailable during
-  this check. The current agent scheduler state, agent error records, a live
-  failing-run result, and a live HTTP-422 closure attempt must be read from the
-  control plane once it is reachable; none are inferred from this document.
+- `GET /api/health` at `127.0.0.1:3100` returned 200 on 2026-08-26. The live
+  service reports commit `0923ab575cc6094e6a7757da43c8ac8d732f092c`; it is not
+  the closure-guard worktree commit `6b838ec5924e19abd1b9af52199df4983db47026`.
+  A live HTTP-422 close attempt must wait for the tracked deployment verification
+  work in PAP-2926; no unevidenced issue was closed merely to probe the old
+  server.
+- PAP-2923 run `12f3f9be-3242-4936-a504-4f2ec785576d` is recorded with
+  `invocationSource=assignment` and started at `2026-08-26T06:28:08.778Z`.
+  This is fresh evidence that assignment starts a worker run without a manual
+  heartbeat invocation.
+- That run's execution workspace is `project_primary`, so it is explicitly
+  **not** evidence of an isolated control-plane worktree. An isolated execution
+  receipt still needs `strategy=git_worktree` plus a distinct `worktreePath`.
+- The live registry reports the following agents in `error`: Kimi Code
+  (`15ef21e0-252a-40d8-90e3-316ff5d8d04f`, last heartbeat
+  `2026-08-19T01:58:28.791Z`), Google Antigravity Subscription
+  (`7c565d23-4711-4381-a662-97dd9836f5af`, `2026-08-11T20:02:09.517Z`), and
+  TF Risk Auditor (`ab646839-2540-455d-b608-bee0cbff5422`,
+  `2026-08-25T15:50:04.907Z`). Each has a separate tracked remediation issue:
+  PAP-2927, PAP-2928, and PAP-2929, respectively. None has been silently
+  resumed.
 
 ## PAP-2924 refresh record (2026-08-26)
 
