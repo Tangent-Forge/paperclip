@@ -222,6 +222,34 @@ describe("linear sync", () => {
       .toEqual({ type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: 2 });
   });
 
+  it("keeps legacy secret IDs discoverable while accepting structured references", () => {
+    const properties = (manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties;
+    expect(properties.linearApiKeySecretRef).toMatchObject({
+      anyOf: [
+        { type: "string", minLength: 1, format: "secret-ref" },
+        { type: "object", required: ["type", "secretId"] },
+      ],
+    });
+    expect(properties.linearWebhookSigningSecretRef).toMatchObject({
+      anyOf: [
+        { type: "string", minLength: 1, format: "secret-ref" },
+        { type: "object", required: ["type", "secretId"] },
+      ],
+    });
+  });
+
+  it("declares body sync and query status company resolution for the host route layer", () => {
+    const routes = manifest.apiRoutes ?? [];
+    expect(routes.find((route) => route.routeKey === API_ROUTE_KEYS.syncNow)).toMatchObject({
+      method: "POST",
+      companyResolution: { from: "body", key: "companyId" },
+    });
+    expect(routes.find((route) => route.routeKey === API_ROUTE_KEYS.status)).toMatchObject({
+      method: "GET",
+      companyResolution: { from: "query", key: "companyId" },
+    });
+  });
+
   it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
     const rejected = await plugin.definition.onValidateConfig?.({
       enabled: true,
