@@ -24,6 +24,16 @@ type SupertestTestConstructor = {
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 
+// Server suites must never read the real ~/.paperclip of a machine that hosts
+// a live instance: resolvePaperclipHomeDir() falls back to ~/.paperclip when
+// PAPERCLIP_HOME is unset, so instance state (e.g. adapter-settings.json
+// disabling adapters) leaks into tests and makes them fail locally while
+// passing on CI. Pin PAPERCLIP_HOME to a fresh per-run temp dir
+// unconditionally — an inherited value from a live instance's shell is the
+// same contamination. Suites that need a specific home dir set and restore
+// process.env.PAPERCLIP_HOME themselves, which runs after this setup file.
+process.env.PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-home-"));
+
 if (!process.env.CODEX_HOME) {
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vitest-codex-home-"));
   fs.writeFileSync(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-vitest"}\n', { mode: 0o600 });
