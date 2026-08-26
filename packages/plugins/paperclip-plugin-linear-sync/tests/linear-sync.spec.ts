@@ -625,6 +625,72 @@ describe("linear sync", () => {
     }
   });
 
+  it("normalizes a legacy secret ID before resolving a body-scoped manual sync", async () => {
+    await plugin.definition.onShutdown?.();
+    const legacySecretId = "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6";
+    const config = {
+      enabled: true,
+      companyId: "company-1",
+      linearApiKeySecretRef: legacySecretId,
+      triageAgentId: "triage-1",
+      candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME],
+    };
+    const harness = createTestHarness({ manifest, config });
+    const secretResolve = vi.fn(async () => "token");
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+    harness.ctx.http.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { issues: { nodes: [] } } }), { status: 200 }));
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      const response = await plugin.definition.onApiRequest?.({
+        routeKey: API_ROUTE_KEYS.syncNow,
+        method: "POST",
+        path: "/companies/company-1/sync-now",
+        params: {},
+        query: {},
+        body: { companyId: "company-1" },
+        actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null },
+        companyId: "company-1",
+        headers: {},
+      });
+
+      expect(response?.status).toBe(202);
+      expect(secretResolve).toHaveBeenCalledWith(
+        { type: "secret_ref", secretId: legacySecretId, version: "latest" },
+        { companyId: "company-1", configPath: "linearApiKeySecretRef" },
+      );
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("does not resolve a secret for a query-scoped status request", async () => {
+    await plugin.definition.onShutdown?.();
+    const harness = createTestHarness({ manifest, config: { enabled: true, companyId: "company-1" } });
+    const secretResolve = vi.fn(async () => "token");
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      const response = await plugin.definition.onApiRequest?.({
+        routeKey: API_ROUTE_KEYS.status,
+        method: "GET",
+        path: "/companies/company-1/status",
+        params: {},
+        query: { companyId: "company-1" },
+        body: null,
+        actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null },
+        companyId: "company-1",
+        headers: {},
+      });
+
+      expect(response?.status).toBeUndefined();
+      expect(secretResolve).not.toHaveBeenCalled();
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
   it("fails Linear webhooks closed when company scope is missing or unconfigured", async () => {
     await plugin.definition.onShutdown?.();
     const config = { enabled: false, companyId: "company-a" };
