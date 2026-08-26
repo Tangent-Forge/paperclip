@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 describe("buildCodexExecArgs", () => {
   it("rewrites the legacy bare gpt-5.6 alias to gpt-5.6-sol and applies fast mode", () => {
@@ -83,7 +84,15 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
+  it("falls blank/omitted model config through to DEFAULT_CODEX_LOCAL_MODEL with --model", () => {
+    for (const config of [{}, { model: "" }, { model: "   " }, { model: null }, { model: undefined }]) {
+      const result = buildCodexExecArgs(config as Record<string, unknown>);
+      expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+      expect(result.args).toEqual(["exec", "--json", "--model", DEFAULT_CODEX_LOCAL_MODEL, "-"]);
+    }
+  });
+
+  it("enables Codex fast mode overrides when model is omitted (resolved default)", () => {
     const result = buildCodexExecArgs({
       fastMode: true,
     });
@@ -94,6 +103,8 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-c",
       'service_tier="fast"',
       "-c",
