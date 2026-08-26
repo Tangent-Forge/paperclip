@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 import {
@@ -269,7 +270,7 @@ describe("server adapter registry", () => {
       expect.objectContaining({
         key: "cheap",
         // MC-0.15: cheap must apply an explicit model (DEFAULT_CODEX_LOCAL_MODEL), not {}.
-        adapterConfig: expect.objectContaining({ model: "gpt-5.6-sol" }),
+        adapterConfig: expect.objectContaining({ model: DEFAULT_CODEX_LOCAL_MODEL }),
         source: "adapter_default",
       }),
     ]);
