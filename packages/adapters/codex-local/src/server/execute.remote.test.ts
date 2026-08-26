@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 
 const {
   runChildProcess,
@@ -391,6 +392,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-",
     ]);
   });
@@ -462,6 +465,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "resume",
       "session-123",
       "-",
@@ -541,6 +546,8 @@ describe("codex remote execution", () => {
     expect(call?.[2]).toEqual([
       "exec",
       "--json",
+      "--model",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "resume",
       "session-123",
       "-",

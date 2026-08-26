@@ -835,6 +835,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             executionWorkspaceId: input.executionWorkspaceId,
             executionWorkspacePreference: input.executionWorkspacePreference,
             executionWorkspaceSettings: input.executionWorkspaceSettings,
+            idempotencyKey: input.idempotencyKey,
+            allowDuplicate: input.allowDuplicate,
             actorAgentId: input.actor?.actorAgentId,
             actorUserId: input.actor?.actorUserId,
             actorRunId: input.actor?.actorRunId,

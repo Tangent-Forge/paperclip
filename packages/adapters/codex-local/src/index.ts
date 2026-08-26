@@ -9,7 +9,15 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
-export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+// Default OFF. `--dangerously-bypass-approvals-and-sandbox` disables the sandbox
+// *and* every approval prompt; Codex documents it as "intended solely for running
+// in environments that are externally sandboxed". A default of `true` also made
+// this the one place the three layers disagreed on an absent key: the runtime
+// (server/codex-args.ts) resolves absent -> false, while the server route
+// (routes/agents.ts, applyCreateDefaultsByAdapterType) resolved absent -> true,
+// so the effective sandbox posture depended on which code path last wrote the
+// config. `false` makes all three agree.
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = false;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -49,9 +57,10 @@ export function isCodexLocalManualModel(model: string | null | undefined): boole
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
   if (isCodexLocalManualModel(model)) return true;
   const normalizedModel = typeof model === "string" ? model.trim() : "";
-  // Empty means we're omitting --model so the Codex CLI picks its own default.
-  // Manual model IDs are also treated as supported: pass the fast-mode overrides
-  // through and let the CLI reject them if the chosen model can't use them.
+  // Blank/omitted model is resolved to DEFAULT_CODEX_LOCAL_MODEL before exec.
+  // Treat empty as the default lane (fast-mode capable). Manual model IDs are
+  // also treated as supported so fast-mode overrides pass through and the CLI
+  // can reject them if the chosen model cannot use them.
   if (!normalizedModel) return true;
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
     normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
@@ -78,8 +87,11 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
-    adapterConfig: {},
+    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    adapterConfig: {
+      // Explicit override — empty {} previously applied no model and fell through to the CLI default.
+      model: DEFAULT_CODEX_LOCAL_MODEL,
+    },
     source: "adapter_default",
   },
 ];

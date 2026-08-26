@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
+  isCodexLocalKnownModel,
+  modelProfiles,
   models,
   normalizeCodexModel,
 } from "./index.js";
@@ -33,5 +36,24 @@ describe("codex local adapter metadata", () => {
     expect(normalizeCodexModel("future-model")).toBe("future-model");
     expect(normalizeCodexModel("")).toBe("");
     expect(normalizeCodexModel(null)).toBe("");
+  });
+});
+
+describe("Codex local defaults", () => {
+  it("keeps approval and sandbox bypass disabled by default", () => {
+    expect(DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX).toBe(false);
+  });
+});
+
+describe("codex_local workload model policy", () => {
+  it("uses the configured default Paperclip selection", () => {
+    expect(DEFAULT_CODEX_LOCAL_MODEL).toBeTruthy();
+    expect(isCodexLocalKnownModel(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
+  });
+
+  it("sets the cheap profile to an explicit DEFAULT_CODEX_LOCAL_MODEL override", () => {
+    expect(modelProfiles.find((profile) => profile.key === "cheap")?.adapterConfig).toEqual({
+      model: DEFAULT_CODEX_LOCAL_MODEL,
+    });
   });
 });

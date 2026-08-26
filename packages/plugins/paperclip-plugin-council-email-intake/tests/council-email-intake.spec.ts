@@ -149,6 +149,30 @@ describe("council email intake", () => {
     expect(extractEmailMessages(wrapped)[0]).toMatchObject({ sourceMessageId: "gmail-2", subject: "Wrapped" });
   });
 
+  it("normalizes snake_case Worker payload fields", () => {
+    const [message] = extractEmailMessages({
+      gmail_message_id: "<mail-123@example.com>",
+      received_at: "2026-06-08T12:00:00.000Z",
+      from: "Council Lead <lead@example.gov>",
+      to: ["Ops <ingest+cto@tf-hub.dev>"],
+      cc: ["Audit <audit@example.gov>"],
+      subject: "Worker payload",
+      body_text: "Plain text body",
+      body_html: "<p>HTML body</p>",
+    });
+
+    expect(message).toMatchObject({
+      sourceMessageId: "<mail-123@example.com>",
+      receivedAt: "2026-06-08T12:00:00.000Z",
+      from: "Council Lead <lead@example.gov>",
+      to: ["Ops <ingest+cto@tf-hub.dev>"],
+      cc: ["Audit <audit@example.gov>"],
+      subject: "Worker payload",
+      textBody: "Plain text body",
+      htmlBody: "<p>HTML body</p>",
+    });
+  });
+
   it("filters sender domain, recipient, and subject candidates", () => {
     const config = readConfig({
       allowedSenderDomains: ["example.gov"],
