@@ -332,14 +332,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it.each([
-    ["process_lost", undefined, "coder"],
-    ["adapter_failed", "successful_run_missing_state", "coder"],
-    ["codex_output_inactivity_monitor", undefined, "coder"],
-    ["workspace_validation_failed", "workspace_validation_failed", "manager"],
-    ["adapter_failed", undefined, "manager"],
+    ["process_lost", undefined, "coder", true],
+    ["adapter_failed", "successful_run_missing_state", "coder", true],
+    ["codex_output_inactivity_monitor", undefined, "coder", true],
+    ["workspace_validation_failed", "workspace_validation_failed", "manager", false],
+    ["adapter_failed", undefined, "manager", true],
   ] as const)(
     "routes %s recovery through the cause-keyed playbook",
-    async (errorCode, explicitCause, expectedOwner) => {
+    async (errorCode, explicitCause, expectedOwner, shouldWakeOwner) => {
       const { managerId, coderId, sourceIssue } = await seedCompany();
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
@@ -371,15 +371,29 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         .from(issueRecoveryActions)
         .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
       expect(action?.ownerAgentId).toBe(expectedOwnerId);
-      expect(enqueueWakeup).toHaveBeenCalledWith(
-        expectedOwnerId,
-        expect.objectContaining({
+      if (shouldWakeOwner) {
+        expect(action?.wakePolicy).toMatchObject({
+          type: "wake_owner",
           reason: "source_scoped_recovery_action",
-          payload: expect.objectContaining({
-            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+          ownerAgentId: expectedOwnerId,
+        });
+        expect(enqueueWakeup).toHaveBeenCalledWith(
+          expectedOwnerId,
+          expect.objectContaining({
+            reason: "source_scoped_recovery_action",
+            payload: expect.objectContaining({
+              recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+            }),
           }),
-        }),
-      );
+        );
+      } else {
+        expect(action?.wakePolicy).toMatchObject({
+          type: "manual_repair_required",
+          reason: "workspace_validation_failed",
+          ownerAgentId: expectedOwnerId,
+        });
+        expect(enqueueWakeup).not.toHaveBeenCalled();
+      }
     },
   );
 
@@ -1137,8 +1151,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }),
       nextAction: expect.stringContaining("git worktree branch incoherence"),
       wakePolicy: expect.objectContaining({
-        type: "wake_owner",
-        reason: "source_scoped_recovery_action",
+        type: "manual_repair_required",
+        reason: "workspace_validation_failed",
         ownerAgentId: expect.any(String),
       }),
     });
@@ -1153,14 +1167,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       tone: "danger",
       title: "Workspace validation failed",
     });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        reason: "source_scoped_recovery_action",
-        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
-      }),
-    );
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
