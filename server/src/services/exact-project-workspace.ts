@@ -134,7 +134,9 @@ export function classifyWakeBudgetSource(input: {
   if (trigger === "manual" || trigger === "ping") return "operator";
 
   const source = (input.source ?? "").toLowerCase();
-  if (source === "on_demand" && (trigger === "manual" || trigger === "ping" || actor === "user")) {
+  // Historical/legacy boards may stamp invocationSource=manual (WakeupOptions
+  // today prefers on_demand+triggerDetail=manual). Either form is an operator epoch.
+  if (source === "manual") {
     return "operator";
   }
 
@@ -258,8 +260,7 @@ export function readCanonicalExecutionContinuationSignals(executionState: unknow
   // Canonical success disposition: execution policy completed with approved outcome
   // (buildCompletedState). completed alone is terminal; approved on completed is verifier pass.
   const verifierPassed = Boolean(
-    legacyVerifier ||
-      (canonicalTerminal && (lastDecisionOutcome === "approved" || lastDecisionOutcome == null)),
+    legacyVerifier || (canonicalTerminal && lastDecisionOutcome === "approved"),
   );
 
   return {
