@@ -568,5 +568,33 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
       const result = await db.execute(bindSql(statement, params));
       return { rowCount: Number((result as { count?: number | string }).count ?? 0) };
     },
+
+    /**
+     * Physically tear down a plugin's database namespace (`DROP SCHEMA ...
+     * CASCADE`), including every table and any data it holds.
+     *
+     * Must be called BEFORE the `plugins` row is hard-deleted: deleting that
+     * row cascade-deletes the `plugin_database_namespaces` ledger row this
+     * function reads to find the schema name, so calling it after leaves no
+     * way to discover which schema to drop.
+     *
+     * Callers must run this in the same transaction as the `plugins` row
+     * delete (see `pluginRegistryService.uninstall`). Without that, a crash
+     * between the two steps can again desync the ledger from physical state
+     * — the exact class of bug this method exists to close. Reinstalling a
+     * plugin after purge previously failed with a raw "relation already
+     * exists" Postgres error because the ledger was wiped (via FK cascade)
+     * while the physical schema and its tables were left behind, so the
+     * next install's migrations tried to CREATE TABLE objects that already
+     * existed.
+     */
+    async dropNamespace(pluginId: string): Promise<{ namespaceName: string } | null> {
+      const namespace = await getNamespace(pluginId);
+      if (!namespace) return null;
+      await db.execute(
+        sql.raw(`DROP SCHEMA IF EXISTS ${quoteIdentifier(namespace.namespaceName)} CASCADE`),
+      );
+      return { namespaceName: namespace.namespaceName };
+    },
   };
 }
