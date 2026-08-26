@@ -176,7 +176,7 @@ const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
  * auto-built on install, so it is recomputed per request in `listBundledPlugins`
  * rather than cached.
  */
-type DiscoveredBundledPlugin = {
+export type DiscoveredBundledPlugin = {
   entry: Omit<AvailableBundledPlugin, "hasBuiltEntrypoints">;
   packageRoot: string;
   pkgJson: Record<string, unknown>;
@@ -230,7 +230,8 @@ async function findPackageJsonFiles(root: string, maxDepth = 4): Promise<string[
   return packageJsonFiles;
 }
 
-function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
+/** Exported for the bundled-manifest contract test; see `discoverBundledPlugins`. */
+export function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
   const paperclipPlugin = pkgJson.paperclipPlugin;
   if (
     !paperclipPlugin
@@ -289,7 +290,15 @@ function isExperimentalBundledPlugin(packageRoot: string, packageName: string): 
   );
 }
 
-async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
+/**
+ * Exported so the bundled-manifest contract test can enumerate plugins through
+ * the same predicate the Plugin Manager uses. A test that reimplemented this
+ * scan would silently stop covering any plugin added in a directory shape the
+ * copy did not anticipate -- the exact failure mode that test exists to catch.
+ *
+ * @see server/src/__tests__/bundled-plugin-manifests.test.ts
+ */
+export async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
   const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
   const bundledPlugins: DiscoveredBundledPlugin[] = [];
   for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
