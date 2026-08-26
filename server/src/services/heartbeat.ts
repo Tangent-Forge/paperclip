@@ -164,6 +164,12 @@ import {
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import {
+  classifyWakeBudgetSource,
+  countAutomaticAttemptsTowardCeiling,
+  readCanonicalExecutionContinuationSignals,
+  evaluateAutomaticExecutionGate,
+} from "./exact-project-workspace.js";
+import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -7197,6 +7203,91 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * TAN-861 B0: enforce executionPolicy.retryCeiling and terminal-continuation
+   * suppression for automatic recovery/handoff/requeue/continuation paths.
+   * Operator/manual wakes open a new epoch and are not blocked by the ceiling.
+   */
+  async function evaluateIssueAutomaticExecutionGate(input: {
+    companyId: string;
+    issueId: string;
+    source?: string | null;
+    triggerDetail?: string | null;
+    requestedByActorType?: string | null;
+    wakeReason?: string | null;
+    retryReason?: string | null;
+    kind?: "new_attempt" | "deferral_retry";
+    excludeRunId?: string | null;
+  }) {
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue) {
+      return {
+        allowed: false as const,
+        reason: "issue_not_found",
+        retryCeiling: null as number | null,
+        used: 0,
+        issueStatus: null as string | null,
+      };
+    }
+
+    const runRows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        invocationSource: heartbeatRuns.invocationSource,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : sql`true`,
+        ),
+      );
+
+    const automaticAttemptsUsed = countAutomaticAttemptsTowardCeiling(runRows);
+    const wakeBudgetSource = classifyWakeBudgetSource({
+      source: input.source,
+      triggerDetail: input.triggerDetail,
+      requestedByActorType: input.requestedByActorType,
+      wakeReason: input.wakeReason,
+      retryReason: input.retryReason,
+    });
+
+    // Canonical executionState uses status "completed" + lastDecisionOutcome "approved".
+    // Legacy synthetic terminal/verifier fields remain accepted.
+    const continuationSignals = readCanonicalExecutionContinuationSignals(issue.executionState);
+
+    const gate = evaluateAutomaticExecutionGate({
+      issueStatus: issue.status,
+      executionPolicy: issue.executionPolicy,
+      automaticAttemptsUsed,
+      wakeBudgetSource,
+      kind: input.kind ?? "new_attempt",
+      terminalDispositionRecorded: continuationSignals.terminalDispositionRecorded,
+      verifierPassed: continuationSignals.verifierPassed,
+    });
+
+    return {
+      ...gate,
+      issueStatus: issue.status,
+      wakeBudgetSource,
+    };
+  }
+
   async function getPinnedSkillTestContext(companyId: string, issueId: string) {
     const row = await db
       .select({
@@ -8581,9 +8672,91 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const materializationFailures: WorkspaceMaterializationFailure[] = [];
       let hasConfiguredProjectCwd = false;
       let preferredWorkspaceWarning: string | null = null;
-      if (preferredProjectWorkspaceId && !preferredWorkspace) {
-        preferredWorkspaceWarning =
-          `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
+      // TAN-861 / PAP-2917: issue-selected projectWorkspaceId must bind exactly.
+      // Never fall through to another project workspace or agent-home cwd.
+      if (preferredProjectWorkspaceId) {
+        const issueLabel = issueId
+          ? await db
+              .select({ identifier: issues.identifier })
+              .from(issues)
+              .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+              .then((rows) => rows[0]?.identifier ?? issueId)
+          : "issue";
+        if (!preferredWorkspace) {
+          throw new WorkspaceValidationFailure(
+            `Issue ${issueLabel} selected project workspace "${preferredProjectWorkspaceId}", but that workspace is not available on this project. Failing closed without fallback cwd execution.`,
+            {
+              workspaceValidation: {
+                reason: "workspace_unavailable",
+                issueId,
+                issueIdentifier: typeof issueLabel === "string" ? issueLabel : null,
+                issueProjectId: resolvedProjectId,
+                issueProjectWorkspaceId: preferredProjectWorkspaceId,
+                detail: "workspace_row_missing",
+              },
+            },
+          );
+        }
+        const resolveGitAuthPreferred = createGitRemoteAuthProvider(db, agent.companyId, { issueId });
+        let preferredCwd: string;
+        try {
+          const resolvedCwd = await resolveConfiguredOrManagedProjectCwd({
+            companyId: agent.companyId,
+            projectId: workspaceProjectId ?? resolvedProjectId ?? preferredWorkspace.projectId,
+            cwd: preferredWorkspace.cwd,
+            repoUrl: preferredWorkspace.repoUrl,
+            resolveGitAuth: resolveGitAuthPreferred,
+          });
+          preferredCwd = resolvedCwd.cwd;
+        } catch (error) {
+          const scrubbedError = scrubGitCredentialText(
+            error instanceof Error ? error.message : String(error),
+          );
+          throw new WorkspaceValidationFailure(
+            `Issue ${issueLabel} selected project workspace "${preferredProjectWorkspaceId}", but it could not be prepared (${scrubbedError}). Failing closed without fallback cwd execution.`,
+            {
+              workspaceValidation: {
+                reason: "workspace_unavailable",
+                issueId,
+                issueProjectId: resolvedProjectId,
+                issueProjectWorkspaceId: preferredProjectWorkspaceId,
+                detail: "workspace_materialization_failed",
+                error: scrubbedError,
+              },
+            },
+          );
+        }
+        const preferredExists = await fs
+          .stat(preferredCwd)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false);
+        if (!preferredExists) {
+          throw new WorkspaceValidationFailure(
+            `Issue ${issueLabel} selected project workspace "${preferredProjectWorkspaceId}" at path "${preferredCwd}", but that path is not available. Failing closed without fallback to project-primary or agent-home cwd.`,
+            {
+              workspaceValidation: {
+                reason: "workspace_unavailable",
+                issueId,
+                issueProjectId: resolvedProjectId,
+                issueProjectWorkspaceId: preferredProjectWorkspaceId,
+                resolvedWorkspaceCwd: preferredCwd,
+                detail: "workspace_path_not_directory",
+              },
+            },
+          );
+        }
+        return {
+          cwd: preferredCwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: preferredWorkspace.id,
+          repoUrl: preferredWorkspace.repoUrl,
+          repoRef: preferredWorkspace.repoRef,
+          workspaceHints,
+          warnings: [],
+          baseCwdFallback: false,
+          materializationFailures: [],
+        };
       }
       const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, { issueId });
       for (const workspace of projectWorkspaceRows) {
@@ -8609,9 +8782,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             repoUrl: workspaceRepoUrl ? scrubGitCredentialText(workspaceRepoUrl) : null,
             error: scrubbedError,
           });
-          if (preferredWorkspace?.id === workspace.id) {
-            preferredWorkspaceWarning = scrubbedError;
-          }
           continue;
         }
         hasConfiguredProjectCwd = true;
@@ -8634,10 +8804,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             baseCwdFallback: false,
             materializationFailures,
           };
-        }
-        if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning =
-            `Selected project workspace path "${projectCwd}" is not available yet.`;
         }
         missingProjectCwds.push(projectCwd);
       }
@@ -10785,7 +10951,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_dependencies_blocked";
+          | "issue_dependencies_blocked"
+          | "retry_policy_suppressed";
         issueId: string | null;
         details: Record<string, unknown>;
       };
@@ -10962,6 +11129,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId,
           unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
           unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+        },
+      };
+    }
+
+    const policyGate = await evaluateIssueAutomaticExecutionGate({
+      companyId: run.companyId,
+      issueId,
+      source: "automation",
+      triggerDetail: "system",
+      requestedByActorType: "system",
+      wakeReason: readNonEmptyString(contextSnapshot.wakeReason),
+      retryReason,
+      kind: retryReason === WORKSPACE_BUSY_RETRY_REASON ? "deferral_retry" : "new_attempt",
+      // The due scheduled_retry row itself should not consume budget again.
+      excludeRunId: run.id,
+    });
+    if (!policyGate.allowed) {
+      return {
+        allowed: false,
+        reason: `Scheduled retry suppressed (${policyGate.reason})`,
+        errorCode: "retry_policy_suppressed",
+        issueId,
+        details: {
+          issueId,
+          gateReason: policyGate.reason,
+          retryCeiling: policyGate.retryCeiling,
+          automaticAttemptsUsed: policyGate.used,
+          issueStatus: policyGate.issueStatus,
         },
       };
     }
@@ -11188,6 +11383,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+
+    if (issueId) {
+      const kind =
+        retryReason === WORKSPACE_BUSY_RETRY_REASON ? ("deferral_retry" as const) : ("new_attempt" as const);
+      const gate = await evaluateIssueAutomaticExecutionGate({
+        companyId: run.companyId,
+        issueId,
+        source: "automation",
+        triggerDetail: "system",
+        requestedByActorType: "system",
+        wakeReason,
+        retryReason,
+        kind,
+        // Current run is terminal/cancelling; still counts if it was a real attempt.
+        // Exclude only for pure workspace_busy cancel of this run so the same attempt
+        // can be rescheduled without double-counting the cancelled busy row.
+        excludeRunId: kind === "deferral_retry" ? run.id : null,
+      });
+      if (!gate.allowed) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Automatic scheduled retry suppressed (${gate.reason})`,
+          payload: {
+            retryReason,
+            wakeReason,
+            gateReason: gate.reason,
+            retryCeiling: gate.retryCeiling,
+            automaticAttemptsUsed: gate.used,
+            issueStatus: gate.issueStatus,
+            kind,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: `Automatic scheduled retry suppressed (${gate.reason})`,
+          errorCode: "retry_policy_suppressed" as const,
+          issueId,
+        };
+      }
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -17129,6 +17366,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeReason: readNonEmptyString(promotedContextSnapshot.wakeReason),
           });
         }
+
+        // Comment wakes deliver conversation context rather than start an automatic
+        // execution attempt: they must still fire on finished issues (the issue
+        // update below is assignee-scoped, so a mentioned agent never re-locks).
+        const promotedWakeReason =
+          readNonEmptyString(promotedContextSnapshot.wakeReason) ?? promotedReason;
+        const promotedIsCommentDeliveryWake =
+          promotedWakeReason === "issue_comment_mentioned" || promotedWakeReason === "issue_commented";
+        const promotionGate = promotedIsCommentDeliveryWake
+          ? { allowed: true as const }
+          : await evaluateIssueAutomaticExecutionGate({
+            companyId: deferredAgent.companyId,
+            issueId: issue.id,
+            source: promotedSource,
+            triggerDetail: promotedTriggerDetail,
+            requestedByActorType: deferred.requestedByActorType,
+            wakeReason: promotedWakeReason,
+            retryReason: readNonEmptyString(promotedContextSnapshot.retryReason),
+            kind:
+              readNonEmptyString(promotedContextSnapshot.retryReason) === WORKSPACE_BUSY_RETRY_REASON
+                ? "deferral_retry"
+                : "new_attempt",
+          });
+        if (!promotionGate.allowed) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "skipped",
+              finishedAt: new Date(),
+              error: `Deferred wake suppressed by automatic execution gate (${promotionGate.reason})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const now = new Date();
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -17828,6 +18101,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           releasePolicy: activePauseHold.releasePolicy,
           interaction: true,
         };
+      }
+    }
+
+    if (issueId) {
+      const wakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason;
+      const retryReason = readNonEmptyString(enrichedContextSnapshot.retryReason);
+      const gate = await evaluateIssueAutomaticExecutionGate({
+        companyId: agent.companyId,
+        issueId,
+        source,
+        triggerDetail,
+        requestedByActorType: opts.requestedByActorType ?? null,
+        wakeReason,
+        retryReason,
+        kind: retryReason === WORKSPACE_BUSY_RETRY_REASON ? "deferral_retry" : "new_attempt",
+      });
+      if (!gate.allowed) {
+        await writeSkippedHeartbeatRequest("heartbeat.automatic_execution_gate", {
+          reason: gate.reason,
+          retryCeiling: gate.retryCeiling,
+          automaticAttemptsUsed: gate.used,
+          issueStatus: gate.issueStatus,
+          wakeBudgetSource: "wakeBudgetSource" in gate ? gate.wakeBudgetSource : null,
+          wakeReason,
+          retryReason,
+          source,
+        });
+        logger.info(
+          {
+            agentId,
+            issueId,
+            reason: gate.reason,
+            retryCeiling: gate.retryCeiling,
+            automaticAttemptsUsed: gate.used,
+            source,
+          },
+          "suppressed automatic heartbeat wakeup by execution policy gate",
+        );
+        return null;
       }
     }
 

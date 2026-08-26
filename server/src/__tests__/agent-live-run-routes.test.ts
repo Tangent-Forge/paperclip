@@ -83,13 +83,17 @@ function registerModuleMocks() {
     workspaceOperationService: () => ({}),
   }));
 
-  vi.doMock("../adapters/index.js", () => ({
-    findServerAdapter: vi.fn(),
-    listAdapterModels: vi.fn(),
-    detectAdapterModel: vi.fn(),
-    findActiveServerAdapter: vi.fn(),
-    requireServerAdapter: vi.fn(),
-  }));
+  vi.doMock("../adapters/index.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../adapters/index.js")>();
+    return {
+      ...actual,
+      findServerAdapter: vi.fn(),
+      listAdapterModels: vi.fn(),
+      detectAdapterModel: vi.fn(),
+      findActiveServerAdapter: vi.fn(),
+      requireServerAdapter: vi.fn(),
+    };
+  });
 }
 
 async function createApp(db: Record<string, unknown> = {}) {

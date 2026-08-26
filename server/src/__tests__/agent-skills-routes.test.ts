@@ -111,7 +111,8 @@ vi.mock("../services/instance-settings.js", async (importOriginal) => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
-vi.mock("../adapters/index.js", () => ({
+vi.mock("../adapters/index.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../adapters/index.js")>()),
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
   listAdapterModels: vi.fn(),
@@ -154,7 +155,8 @@ function registerModuleMocks() {
     instanceSettingsService: () => mockInstanceSettingsService,
   }));
 
-  vi.doMock("../adapters/index.js", () => ({
+  vi.doMock("../adapters/index.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../adapters/index.js")>()),
     findServerAdapter: vi.fn(() => mockAdapter),
     findActiveServerAdapter: vi.fn(() => mockAdapter),
     listAdapterModels: vi.fn(),

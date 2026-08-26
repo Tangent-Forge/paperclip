@@ -38,7 +38,7 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
-import { execute } from "./execute.js";
+import { execute, classifyHermesTerminalFailure } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
@@ -185,6 +185,36 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const result = await execute(ctx as any);
 
     expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("maps HTTP 400 unsupported model=auto on stdout exit 0 to failed (TAN-861)", async () => {
+    const stdout = [
+      "[hermes] Starting Hermes Agent (model=auto, provider=auto [auto], timeout=1800s)",
+      "⚠️  API call failed (attempt 1/3): BadRequestError [HTTP 400]",
+      "   🌐 Endpoint: https://chatgpt.com/backend-api/codex",
+      `   📝 Error: HTTP 400: {"detail":"The 'auto' model is not supported when using Codex with a ChatGPT account."}`,
+      `❌ Non-retryable error (HTTP 400): HTTP 400: {"detail":"The 'auto' model is not supported when using Codex with a ChatGPT account."}`,
+      "❌ Non-retryable client error (HTTP 400). Aborting.",
+      "   💡 This type of error won't be fixed by retrying.",
+    ].join("\n");
+
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toMatch(/HTTP 400|not supported/i);
+    expect(result.errorCode).toBe("hermes_provider_http_400");
+    expect(result.errorFamily).toBe("provider_error");
   });
 
   it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {

@@ -40,6 +40,7 @@ COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-lo
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
+COPY packages/plugins/paperclip-plugin-companion/package.json packages/plugins/paperclip-plugin-companion/
 COPY packages/plugins/paperclip-plugin-council-email-intake/package.json packages/plugins/paperclip-plugin-council-email-intake/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/paperclip-plugin-linear-sync/package.json packages/plugins/paperclip-plugin-linear-sync/
