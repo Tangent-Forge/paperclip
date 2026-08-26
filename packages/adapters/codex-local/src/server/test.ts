@@ -320,12 +320,12 @@ export async function testEnvironment(
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
   if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
-      checks.push({
-        code: "codex_hello_probe_skipped_custom_command",
-        level: "info",
-        message: "Skipped hello probe because command is not `codex`.",
-        detail: command,
-        hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
+        checks.push({
+          code: "codex_hello_probe_skipped_custom_command",
+          level: "info",
+          message: "Skipped hello probe because command is not `codex`.",
+          detail: command,
+          hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
       });
     } else {
       const execArgs = buildCodexExecArgs(
@@ -333,14 +333,14 @@ export async function testEnvironment(
         { skipGitRepoCheck: targetIsSandbox },
       );
       const args = execArgs.args;
-      if (execArgs.fastModeIgnoredReason) {
-        checks.push({
-          code: "codex_fast_mode_unsupported_model",
-          level: "warn",
-          message: execArgs.fastModeIgnoredReason,
-          hint: "Switch the agent model to GPT-5.4 or enter a manual model ID to enable Codex Fast mode.",
-        });
-      }
+        if (execArgs.fastModeIgnoredReason) {
+          checks.push({
+            code: "codex_fast_mode_unsupported_model",
+            level: "warn",
+            message: execArgs.fastModeIgnoredReason,
+            hint: "Switch the agent model to GPT-5.4 or GPT-5.5 to enable Codex Fast mode.",
+          });
+        }
       if (targetIsSandbox) {
         checks.push({
           code: "codex_git_repo_check_skipped",

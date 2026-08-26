@@ -524,7 +524,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     notes.push(
       commandIsAntigravity
         ? "Using Antigravity-compatible unattended execution flags."
-        : "Added --approval-mode yolo for unattended execution.",
+        : "Added --dangerously-skip-permissions for unattended execution.",
     );
     notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
     if (executionTargetIsRemote) {
@@ -594,11 +594,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--dangerously-skip-permissions", "--disable-slash-commands");
       if (sandbox) args.push("--sandbox");
     } else {
-      args.push("--approval-mode", "yolo");
+      args.push("--dangerously-skip-permissions");
       if (sandbox) {
         args.push("--sandbox");
-      } else {
-        args.push("--sandbox=none");
       }
     }
     const safeExtraArgs = sanitizeGeminiLocalExtraArgs(resolvedCommand || command, extraArgs);

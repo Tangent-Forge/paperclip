@@ -91,7 +91,7 @@ import {
   requireServerAdapter,
 } from "../adapters/index.js";
 import { listGeminiModelsForContext, refreshGeminiModelsForContext } from "../adapters/gemini-models.js";
-import { redactEventPayload } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
@@ -1023,7 +1023,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(agent) : suppressAgentDetailConfigFields(agent)),
       chainOfCommand,
       access: accessState,
     };
@@ -2212,10 +2212,43 @@ export function agentRoutes(
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
+    return suppressAgentDetailConfigFields(agent);
+  }
+
+  function suppressAgentDetailConfigFields<T extends { adapterConfig?: unknown; runtimeConfig?: unknown }>(agent: T): T {
     return {
       ...agent,
-      adapterConfig: {},
-      runtimeConfig: {},
+      adapterConfig: REDACTED_EVENT_VALUE,
+      runtimeConfig: REDACTED_EVENT_VALUE,
+    };
+  }
+
+  function projectCompanyAgentRosterEntry(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      urlKey: agent.urlKey,
+      role: agent.role,
+      title: agent.title,
+      icon: agent.icon,
+      status: agent.status,
+      reportsTo: agent.reportsTo,
+      capabilities: agent.capabilities,
+      adapterType: agent.adapterType,
+      adapterConfig: REDACTED_EVENT_VALUE,
+      runtimeConfig: REDACTED_EVENT_VALUE,
+      defaultEnvironmentId: agent.defaultEnvironmentId,
+      budgetMonthlyCents: agent.budgetMonthlyCents,
+      spentMonthlyCents: agent.spentMonthlyCents,
+      pauseReason: agent.pauseReason,
+      pausedAt: agent.pausedAt,
+      permissions: agent.permissions,
+      lastHeartbeatAt: agent.lastHeartbeatAt,
+      metadata: agent.metadata,
+      orgChainHealth: agent.orgChainHealth,
+      createdAt: agent.createdAt,
+      updatedAt: agent.updatedAt,
     };
   }
 
@@ -2809,12 +2842,7 @@ export function agentRoutes(
       return;
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => projectCompanyAgentRosterEntry(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {

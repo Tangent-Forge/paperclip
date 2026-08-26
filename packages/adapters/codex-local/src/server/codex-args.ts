@@ -2,7 +2,7 @@ import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/s
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   isCodexLocalFastModeSupported,
-  normalizeCodexModel,
+  resolveCodexLocalModel,
 } from "../index.js";
 
 const SKIP_GIT_REPO_CHECK_FLAG = "--skip-git-repo-check";
@@ -55,7 +55,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function formatFastModeSupportedModels(): string {
-  return `${CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ")} or manually configured model IDs`;
+  return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.join(", ");
 }
 
 export function buildCodexExecArgs(
@@ -66,7 +66,8 @@ export function buildCodexExecArgs(
   } = {},
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
-  const model = normalizeCodexModel(asString(record.model, ""));
+  // Blank/whitespace model must not fall through to the CLI default.
+  const model = resolveCodexLocalModel(asString(record.model, ""));
   const modelReasoningEffort = asString(
     record.modelReasoningEffort,
     asString(record.reasoningEffort, ""),
