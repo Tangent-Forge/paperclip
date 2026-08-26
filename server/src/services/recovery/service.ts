@@ -2867,6 +2867,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
+  function resolveSourceScopedStrandedRecoveryWakePolicy(input: {
+    recoveryCause: StrandedRecoveryCause;
+    ownerAgentId: string | null;
+  }) {
+    if (input.recoveryCause === "provider_quota" && !input.ownerAgentId) {
+      return {
+        type: "monitor_only",
+        reason: input.recoveryCause,
+      };
+    }
+    if (
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "configuration_incomplete"
+    ) {
+      return {
+        type: "manual_repair_required",
+        reason: input.recoveryCause,
+        ownerAgentId: input.ownerAgentId,
+      };
+    }
+    if (input.ownerAgentId) {
+      return {
+        type: "wake_owner",
+        reason: "source_scoped_recovery_action",
+        ownerAgentId: input.ownerAgentId,
+      };
+    }
+    return {
+      type: "board_escalation",
+      reason: "no_invokable_recovery_owner",
+    };
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2928,27 +2961,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: recoveryCause === "provider_quota" && !ownerAgentId
-        ? {
-          type: "monitor_only",
-          reason: recoveryCause,
-        }
-        : recoveryCause === "configuration_incomplete"
-        ? {
-          type: "manual_repair_required",
-          reason: recoveryCause,
-          ownerAgentId,
-        }
-        : ownerAgentId
-        ? {
-          type: "wake_owner",
-          reason: "source_scoped_recovery_action",
-          ownerAgentId,
-        }
-        : {
-          type: "board_escalation",
-          reason: "no_invokable_recovery_owner",
-        },
+      wakePolicy: resolveSourceScopedStrandedRecoveryWakePolicy({
+        recoveryCause,
+        ownerAgentId,
+      }),
       monitorPolicy: recoveryCause === "provider_quota" && !ownerAgentId
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
@@ -2965,8 +2981,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
-    if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
-    if (input.recoveryCause === "configuration_incomplete") return;
+    if (parseObject(input.action.wakePolicy).type !== "wake_owner") return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",

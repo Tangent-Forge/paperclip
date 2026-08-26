@@ -638,6 +638,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
     sameWorkspaceSiblingId: input.sameWorkspaceSiblingId,
     otherWorkspaceSiblingId: input.otherWorkspaceSiblingId,
   });
+  await drainHeartbeatRunsToQuiescence(input.db, input.heartbeat);
   const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
   expect(issueById.get(input.sourceIssueId)).toMatchObject({
     status: "blocked",
@@ -684,11 +685,26 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
     nextAction: expect.stringContaining("choose a new execution workspace"),
     wakePolicy: expect.objectContaining({
-      type: "wake_owner",
-      reason: "source_scoped_recovery_action",
+      type: "manual_repair_required",
+      reason: "workspace_validation_failed",
       ownerAgentId: expect.any(String),
     }),
   });
+
+  const automaticRecoveryWakeups = await input.db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+    ));
+  expect(automaticRecoveryWakeups).toHaveLength(0);
+
+  const companyRunRows = await input.db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.companyId, input.companyId));
+  expect(companyRunRows).toEqual([{ id: input.runId }]);
 
   expect(comments.filter((comment) =>
     comment.issueId === input.sourceIssueId &&
