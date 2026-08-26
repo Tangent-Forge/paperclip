@@ -1,6 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { expect, request as pwRequest, test, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
+import { request as pwRequest, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
 import { createLocalAgentJwt } from "../../server/src/agent-auth-jwt";
+import { readE2eBoardCredential } from "./board-key-bootstrap.js";
+
+// PAP-1975 removed local_trusted's implicit board grant. This file both
+// drives the real browser (`page.goto`, gated via the board-auth `test`
+// import above, which covers page/browser-context requests too) AND builds
+// its own raw `board` APIRequestContext via `pwRequest.newContext()` for
+// setup calls — that second context is NOT the injected `request` fixture,
+// so board-auth's wrapper can't reach it; it needs the header applied
+// directly below instead.
+function requireE2eBoardToken(): string {
+  const credential = readE2eBoardCredential();
+  if (!credential) {
+    throw new Error(
+      "pipelines-tutorial-flow: no e2e board credential found — global-setup.ts must run first.",
+    );
+  }
+  return credential.token;
+}
 
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
@@ -279,7 +298,7 @@ test.describe("Pipelines tutorial UI flow", () => {
   test.setTimeout(240_000);
 
   test("covers agent fan-out, drift acknowledgement gates, child-terminal gates, and stale approvals", async () => {
-    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const board = await pwRequest.newContext({ baseURL: BASE_URL, extraHTTPHeaders: { Authorization: `Bearer ${requireE2eBoardToken()}` } });
     const company = await createCompany(board);
     const pipeline = await createPrimitivePipeline(board, company.id);
     const key = await createPipelineWriterAgentKey(board, company.id);
@@ -436,7 +455,7 @@ test.describe("Pipelines tutorial UI flow", () => {
   });
 
   test("walks setup, intake, board moves, item detail, review queue, and learnings", async ({ page }) => {
-    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const board = await pwRequest.newContext({ baseURL: BASE_URL, extraHTTPHeaders: { Authorization: `Bearer ${requireE2eBoardToken()}` } });
     const company = await createCompany(board);
     await createCompanyAgent(board, company.id, {
       name: "Pipeline Writer",

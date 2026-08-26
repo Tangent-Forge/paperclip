@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import type { Page } from "@playwright/test";
 
 /**
  * Archived-company URL handling.

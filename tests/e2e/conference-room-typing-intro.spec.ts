@@ -1,4 +1,10 @@
-import { test, expect, type Page } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant. This spec
+// creates companies both through the onboarding wizard and, in the "already
+// exists" case below, directly via `page.request.post("/api/companies")` —
+// both now require real board authority. See fixtures/board-auth.ts and
+// board-key-bootstrap.ts.
+import { test, expect } from "./fixtures/board-auth.js";
+import type { Page } from "@playwright/test";
 import {
   expectLandsOnFirstTaskWithoutDashboardBounce,
   instrumentNavLog,

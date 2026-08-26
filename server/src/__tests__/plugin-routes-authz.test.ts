@@ -10,6 +10,8 @@ const mockRegistry = vi.hoisted(() => ({
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
+  backfillWebhookDeliveryExternalId: vi.fn(),
+  createWebhookDelivery: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -97,12 +99,15 @@ async function createApp(
 }
 
 function createSelectQueueDb(rows: Array<Array<Record<string, unknown>>>) {
+  // Supports both .where().limit() (most existing callers) and
+  // .where().orderBy().limit() (the webhook-dashboard query) against the
+  // same queued-rows sequence.
+  const limit = vi.fn(() => Promise.resolve(rows.shift() ?? []));
+  const queryResult = { limit, orderBy: vi.fn(() => ({ limit })) };
   return {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(rows.shift() ?? [])),
-        })),
+        where: vi.fn(() => queryResult),
       })),
     })),
   };
@@ -1183,6 +1188,11 @@ describe.sequential("plugin tool and bridge authz", () => {
   it("passes a top-level webhook company scope to the worker and leaves instance webhooks unscoped", async () => {
     const db = createWebhookDb();
     const workerCall = vi.fn().mockResolvedValue(undefined);
+    let deliveryCounter = 0;
+    mockRegistry.createWebhookDelivery.mockImplementation(async () => {
+      deliveryCounter += 1;
+      return { id: `delivery-${deliveryCounter}` };
+    });
     mockRegistry.getByKey.mockResolvedValue({
       id: pluginId,
       pluginKey: "paperclip.example",
@@ -1228,5 +1238,86 @@ describe.sequential("plugin tool and bridge authz", () => {
       "handleWebhook",
       expect.not.objectContaining({ companyId: expect.anything() }),
     );
+  });
+
+  it("surfaces webhook delivery externalId in the plugin dashboard and backfills missing rows", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "ready",
+      manifestJson: {},
+    });
+    mockRegistry.backfillWebhookDeliveryExternalId.mockResolvedValue({
+      id: "delivery-1",
+      webhookKey: "linear",
+      externalId: "linear-delivery-123",
+      status: "success",
+      durationMs: 87,
+      error: null,
+      startedAt: new Date("2026-08-20T12:00:00.000Z"),
+      finishedAt: new Date("2026-08-20T12:00:01.000Z"),
+      createdAt: new Date("2026-08-20T12:00:02.000Z"),
+    });
+
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([[
+        {
+          id: "delivery-1",
+          webhookKey: "linear",
+          externalId: null,
+          status: "success",
+          durationMs: 87,
+          error: null,
+          startedAt: new Date("2026-08-20T12:00:00.000Z"),
+          finishedAt: new Date("2026-08-20T12:00:01.000Z"),
+          createdAt: new Date("2026-08-20T12:00:02.000Z"),
+        },
+      ]]),
+    });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/dashboard`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.recentWebhookDeliveries).toEqual([
+      expect.objectContaining({
+        id: "delivery-1",
+        webhookKey: "linear",
+        externalId: "linear-delivery-123",
+      }),
+    ]);
+    expect(mockRegistry.backfillWebhookDeliveryExternalId).toHaveBeenCalledWith("delivery-1");
+  });
+
+  it("passes through an already-present webhook delivery externalId without backfilling", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "ready",
+      manifestJson: {},
+    });
+
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([[
+        {
+          id: "delivery-2",
+          webhookKey: "linear",
+          externalId: "linear-delivery-456",
+          status: "success",
+          durationMs: 42,
+          error: null,
+          startedAt: new Date("2026-08-20T12:05:00.000Z"),
+          finishedAt: new Date("2026-08-20T12:05:01.000Z"),
+          createdAt: new Date("2026-08-20T12:05:02.000Z"),
+        },
+      ]]),
+    });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/dashboard`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.recentWebhookDeliveries).toEqual([
+      expect.objectContaining({ id: "delivery-2", externalId: "linear-delivery-456" }),
+    ]);
+    expect(mockRegistry.backfillWebhookDeliveryExternalId).not.toHaveBeenCalled();
   });
 });

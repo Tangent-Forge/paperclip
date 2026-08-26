@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import type { APIRequestContext, Page } from "@playwright/test";
 import { ciSmokeLabScenarios, type SmokeLabLifecycleTool, type SmokeLabScenario, type SmokeRunStepPath } from "./smoke-lab.catalog";
 
 type SmokeRunStepStatus = "pass" | "fail" | "skipped";
@@ -147,29 +148,83 @@ async function screenshot(page: Page, scenario: SmokeLabScenario, step: string) 
   return path;
 }
 
+// This suite loops over multiple scenarios (P1-P7) whose evidence-capture
+// steps repeatedly navigate between a handful of URLs (notably
+// `/apps/connections`, hit from both navigateForEvidence's "attention" case
+// and the schemaChangeQuarantine step below) — an earlier scenario's step
+// can easily leave the browser already sitting on the exact URL a later
+// scenario's step navigates to next.
+//
+// Root-caused via a captured Playwright trace: the default `waitUntil:
+// "load"` genuinely hung indefinitely on exactly that "already there" case
+// (this SPA's client-side router doesn't always trigger a fresh `load`
+// event for a same-URL `page.goto`) — the one code path this suite could
+// never previously reach, since every prior CI run 403'd at
+// company-creation, step 1, before PAP-1975's board-credential fix.
+//
+// `waitUntil: "commit"` (fires once navigation is committed, not on full
+// load) sidesteps that hang, but on its own is NOT sufficient: an earlier
+// version of this fix used it with no follow-up wait at several call sites
+// and traded the indefinite hang for an intermittent blank-page failure
+// instead — `commit` can return before this SPA has rendered anything, and
+// a screenshot taken immediately after captures exactly that (confirmed via
+// a captured trace + matching blank screenshots, including inside a run
+// that still reported overall pass). Every helper below pairs the
+// `commit`-mode goto with a real content assertion instead — Playwright's
+// web-first `expect(...).toBeVisible()` polls/retries up to its own
+// timeout, so it's the assertion, not the goto, that provides the actual
+// "did this page really load" guarantee. Used at every goto call site in
+// this file, not just navigateForEvidence's. Timeouts are 30s, not
+// Playwright's 5s default — this environment has shown real render latency
+// under concurrent load, and an assertion that's slow-but-eventually-true is
+// a very different failure mode than the content genuinely being wrong.
+async function gotoActivity(page: Page, seed: Seed, connectionId: string) {
+  await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`, { waitUntil: "commit" });
+  await expect(page.getByRole("heading", { name: "Recent activity" })).toBeVisible({ timeout: 30_000 });
+}
+
+async function gotoReview(page: Page, seed: Seed, connectionId: string) {
+  await page.goto(`/${seed.prefix}/apps/${connectionId}/review`, { waitUntil: "commit" });
+  // ReviewQueueCard.tsx: the "Waiting for your OK" <h2> only renders when
+  // there's at least one pending item; the empty state renders only the
+  // plain "Nothing is waiting for your OK right now." text, no heading at
+  // all. This regex's second alternative used to read `new actions?
+  // (need|to) review`, which never matched either real state — confirmed
+  // by reading the component directly after this assertion started
+  // legitimately failing (not hanging/blank) against a real, correctly
+  // rendered "Waiting for your OK" page showing 1 real pending item.
+  await expect(page.getByText(/Nothing is waiting for your OK right now\.|Waiting for your OK/i).first()).toBeVisible({ timeout: 30_000 });
+}
+
+async function gotoConnectionDetail(page: Page, seed: Seed, connectionId: string) {
+  await page.goto(`/${seed.prefix}/apps/${connectionId}`, { waitUntil: "commit" });
+  await expect(page.getByRole("heading", { name: /Smoke Lab/i }).first()).toBeVisible({ timeout: 30_000 });
+}
+
+async function gotoConnectionsList(page: Page, seed: Seed) {
+  await page.goto(`/${seed.prefix}/apps/connections`, { waitUntil: "commit" });
+  await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+}
+
 async function navigateForEvidence(page: Page, seed: Seed, connectionId: string, scenario: SmokeLabScenario) {
   if (scenario.uiEntryPath === "advanced") {
-    await page.goto(`/${seed.prefix}/apps/advanced`);
-    await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
+    await page.goto(`/${seed.prefix}/apps/advanced`, { waitUntil: "commit" });
+    await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 30_000 });
     return;
   }
   if (scenario.uiEntryPath === "review") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
-    await expect(page.getByText(/Nothing is waiting for your OK|new actions? (need|to) review/i).first()).toBeVisible({ timeout: 20_000 });
+    await gotoReview(page, seed, connectionId);
     return;
   }
   if (scenario.uiEntryPath === "activity") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
-    await expect(page.getByRole("heading", { name: "Recent activity" })).toBeVisible({ timeout: 20_000 });
+    await gotoActivity(page, seed, connectionId);
     return;
   }
   if (scenario.uiEntryPath === "attention") {
-    await page.goto(`/${seed.prefix}/apps/connections`);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 20_000 });
+    await gotoConnectionsList(page, seed);
     return;
   }
-  await page.goto(`/${seed.prefix}/apps/${connectionId}`);
-  await expect(page.getByRole("heading", { name: /Smoke Lab/i }).first()).toBeVisible({ timeout: 30_000 });
+  await gotoConnectionDetail(page, seed, connectionId);
 }
 
 async function runRecordedStep(
@@ -301,7 +356,19 @@ async function gatewayFetch(request: APIRequestContext, path: string, token: str
 }
 
 test.describe.serial("Smoke Lab scenario catalog mirror", () => {
-  test.setTimeout(240_000);
+  // Bumped from 240s to 360s, then to 600s: with 30s-budgeted, retry-polling
+  // assertions now on every one of the ~60 navigations across all 7
+  // scenarios (see the goto helpers above), a few genuinely slow-but-correct
+  // renders under load can legitimately push the cumulative total past the
+  // old ceiling even when no single step is actually stuck. An independent
+  // review measured 270s to complete cleanly at moderate host load, but two
+  // runs under heavier contention were still only 91-95% through the
+  // scenario list at the 360s mark (a ~380-395s actual requirement) — 360s
+  // left under ~25% margin, which moderate load erased. 600s restores a
+  // real safety margin without masking a genuine hang: a truly stuck step
+  // still fails its own 30s per-assertion timeout long before the suite
+  // timeout would ever be reached.
+  test.setTimeout(600_000);
 
   test("records the P1-P7 CI-safe Smoke Lab lifecycle into the results API @smoke-lab", async ({ page, request }) => {
     const seed = await newCompany(request, "catalog");
@@ -336,7 +403,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await gotoActivity(page, seed, connection.id);
           return `Allowed read ${scenario.lifecycle.allowedRead.name}`;
         });
 
@@ -350,7 +417,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const pending = await testCall(request, connection.id, scout, scenario.lifecycle.askFirstWrite);
           expect(pending.decision).toBe("ask_first");
           expect(pending.actionRequestId).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
+          await gotoReview(page, seed, connection.id);
           await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
           await pollTestCall(request, connection.id, pending.actionRequestId!, "done");
           return `Approved ask-first call ${scenario.lifecycle.askFirstWrite.name}`;
@@ -366,13 +433,13 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
           const denied = await testCall(request, connection.id, scout, scenario.lifecycle.deniedCall);
           expect(denied.decision).toBe("off");
           expect(denied.error?.reasonCode).toBeTruthy();
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/review`);
+          await gotoReview(page, seed, connection.id);
           return `Blocked call ${scenario.lifecycle.deniedCall.name}: ${denied.error?.reasonCode}`;
         });
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "schema-change-quarantine", async () => {
           if (connection.transport !== "mcp_remote") {
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await gotoActivity(page, seed, connection.id);
             return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
           }
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -391,7 +458,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             await request.post(`/api/tool-connections/${connection.id}/catalog/refresh`),
           );
           expect(refresh.quarantinedCount).toBeGreaterThan(0);
-          await page.goto(`/${seed.prefix}/apps/connections`);
+          await gotoConnectionsList(page, seed);
           return `Catalog refresh quarantined ${refresh.quarantinedCount} changed entries.`;
         });
 
@@ -404,14 +471,14 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
               data: { companyId: seed.companyId },
             }));
             await expectError(await gatewayFetch(request, session.toolsUrl, session.token), 401);
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await gotoActivity(page, seed, connection.id);
             return scenario.lifecycle.revoke;
           }
           const disabled = await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
             data: { enabled: false },
           }));
           expect(disabled.enabled).toBe(false);
-          await page.goto(`/${seed.prefix}/apps/${connection.id}`);
+          await gotoConnectionDetail(page, seed, connection.id);
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
             data: { enabled: true },
           }));
@@ -424,7 +491,7 @@ test.describe.serial("Smoke Lab scenario catalog mirror", () => {
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await gotoActivity(page, seed, connection.id);
           return scenario.lifecycle.auditEvidence;
         });
       }

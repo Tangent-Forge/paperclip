@@ -432,6 +432,40 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     ).toEqual([companyB, null].sort((a, b) => String(a).localeCompare(String(b))));
   });
 
+  it("pluginRegistryService.createWebhookDelivery persists a trimmed externalId", async () => {
+    const pluginId = await seedPlugin();
+    const registry = pluginRegistryService(db);
+
+    const delivery = await registry.createWebhookDelivery(pluginId, "linear", null, {
+      externalId: "  linear-delivery-123  ",
+      payload: { data: { id: "ignored" } },
+    });
+
+    expect(delivery?.externalId).toBe("linear-delivery-123");
+
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.externalId).toBe("linear-delivery-123");
+  });
+
+  it("pluginRegistryService.backfillWebhookDeliveryExternalId derives externalId from payload.data.id", async () => {
+    const pluginId = await seedPlugin();
+    const registry = pluginRegistryService(db);
+
+    const delivery = await registry.createWebhookDelivery(pluginId, "linear", null, {
+      payload: { data: { id: "linear-delivery-456" } },
+    });
+
+    expect(delivery?.externalId).toBeNull();
+
+    const backfilled = await registry.backfillWebhookDeliveryExternalId(delivery!.id);
+    expect(backfilled?.externalId).toBe("linear-delivery-456");
+
+    const rows = await db.select().from(pluginWebhookDeliveries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.externalId).toBe("linear-delivery-456");
+  });
+
   it("buildHostServices.logger.log + flushPluginLogBuffer persist companyId so cascade delete reaps log rows", async () => {
     const pluginId = await seedPlugin();
     const companyA = await seedCompany();

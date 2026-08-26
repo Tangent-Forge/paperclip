@@ -1,4 +1,9 @@
-import { test, expect } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant for
+// unauthenticated loopback requests — this spec creates a company during
+// setup, which now requires real board authority. Use the e2e-only board
+// credential fixture instead of talking to @playwright/test directly.
+// See board-key-bootstrap.ts.
+import { test, expect } from "./fixtures/board-auth.js";
 
 /**
  * E2E: Onboarding wizard flow (NUX Phase 2 expanded wizard).
