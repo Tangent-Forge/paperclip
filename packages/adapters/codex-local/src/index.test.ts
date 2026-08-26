@@ -66,9 +66,10 @@ describe("codex_local workload model policy", () => {
 
   it("keeps spark out of the curated picker and applies an explicit cheap-profile model", () => {
     expect(models.map((model) => model.id)).not.toContain("gpt-5.3-codex-spark");
-    // Spark stays a manually configured choice; manual IDs ride the fast-mode pass-through.
+    // Spark stays a manually configured choice. Manual IDs are not assumed to
+    // support fast mode until proven — see isCodexLocalFastModeSupported.
     expect(isCodexLocalManualModel("gpt-5.3-codex-spark")).toBe(true);
-    expect(isCodexLocalFastModeSupported("gpt-5.3-codex-spark")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-5.3-codex-spark")).toBe(false);
     expect(modelProfiles.find((profile) => profile.key === "cheap")?.adapterConfig).toEqual({
       model: DEFAULT_CODEX_LOCAL_MODEL,
     });

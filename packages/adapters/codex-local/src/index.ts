@@ -60,15 +60,12 @@ export function resolveCodexLocalModel(model: string | null | undefined): string
 }
 
 export function isCodexLocalFastModeSupported(model: string | null | undefined): boolean {
-  if (isCodexLocalManualModel(model)) return true;
-  const normalizedModel = typeof model === "string" ? model.trim() : "";
-  // Blank/omitted model is resolved to DEFAULT_CODEX_LOCAL_MODEL before exec.
-  // Treat empty as the default lane (fast-mode capable). Manual model IDs are
-  // also treated as supported so fast-mode overrides pass through and the CLI
-  // can reject them if the chosen model cannot use them.
-  if (!normalizedModel) return true;
+  // Manual model IDs aren't assumed to support fast mode until proven —
+  // fall through to the same curated-membership check as known models.
+  // Blank/omitted model resolves to DEFAULT_CODEX_LOCAL_MODEL before exec.
+  const resolvedModel = resolveCodexLocalModel(model);
   return CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS.includes(
-    normalizedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
+    resolvedModel as (typeof CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS)[number],
   );
 }
 
@@ -112,7 +109,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4. Ignored for manual model IDs until support is proven.
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -143,7 +140,7 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4. Ignored for manual model IDs until support is proven for them too. When enabled, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - Workload routing policy: use \`gpt-5.6-luna\` (the pinned default) for routine Paperclip work; retain \`gpt-5.3-codex-spark\` as a manually configured interactive low-latency choice only. Spark is intentionally not added to the curated model picker.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
