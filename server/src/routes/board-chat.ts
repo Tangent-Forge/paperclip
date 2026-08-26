@@ -4,9 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { isLoopbackHost } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -64,7 +65,11 @@ const MAX_CONCURRENT_BOARD_CHATS = 3;
 
 export function boardChatRoutes(
   db: Db,
-  opts: { deploymentMode: DeploymentMode },
+  opts: {
+    deploymentMode: DeploymentMode;
+    deploymentExposure: DeploymentExposure;
+    bindHost: string;
+  },
 ) {
   const router = Router();
   let liveBoardChats = 0;
@@ -109,15 +114,32 @@ export function boardChatRoutes(
 
     // The relay spawns the operator's local `claude` CLI with permissions
     // skipped (it must run headless), so it is only safe where the requester
-    // IS the machine operator: local_trusted is loopback-only single-operator
-    // by construction (see server/src/index.ts boot guards). Refuse everywhere
-    // else rather than lending the server's shell to remote users.
-    if (opts.deploymentMode !== "local_trusted") {
+    // IS the machine operator. Two configurations guarantee that:
+    //   - local_trusted: loopback-only single-operator by construction (see
+    //     server/src/index.ts boot guards).
+    //   - authenticated, private exposure, loopback-bound, AND the actor is a
+    //     verified instance admin — a signed-in admin on a loopback socket is
+    //     a stronger operator guarantee than local_trusted's implicit grant.
+    // Refuse everywhere else rather than lending the server's shell to
+    // remote or non-admin users.
+    const isLocalTrusted = opts.deploymentMode === "local_trusted";
+    const isAuthenticatedPrivateLoopback =
+      opts.deploymentMode === "authenticated" &&
+      opts.deploymentExposure === "private" &&
+      isLoopbackHost(opts.bindHost);
+    if (!isLocalTrusted && !isAuthenticatedPrivateLoopback) {
       res.status(403).json({
-        error: "Board chat is only available on local single-operator instances",
+        error:
+          "Board chat is only available on local single-operator instances " +
+          "or private loopback-bound authenticated instances",
         code: "DEPLOYMENT_MODE_UNSUPPORTED",
       });
       return;
+    }
+    if (!isLocalTrusted) {
+      // The authenticated path never grants board chat by network position
+      // alone: the actor must be a signed-in instance admin.
+      assertInstanceAdmin(req);
     }
 
     const { companyId, message, taskId } = req.body as {
