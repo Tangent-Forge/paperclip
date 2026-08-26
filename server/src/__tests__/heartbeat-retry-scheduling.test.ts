@@ -159,10 +159,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
+    const issuePrefix = `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueId = randomUUID();
     await db.insert(companies).values({
       id: input.companyId,
       name: "Paperclip",
-      issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
@@ -205,12 +207,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           : {}),
       },
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId,
         wakeReason: "issue_assigned",
       },
       updatedAt: input.now,
       createdAt: input.now,
     });
+
+    // The automatic execution gate fails closed when the issue row is missing,
+    // so the retried run must reference a live in_progress issue.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Retry transient failure",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: input.agentId,
+      executionRunId: input.runId,
+      executionAgentNameKey: agentName.toLowerCase(),
+      executionLockedAt: input.now,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    return { issueId };
   }
 
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
@@ -387,12 +408,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const now = new Date("2026-04-20T12:00:00.000Z");
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
@@ -424,11 +447,27 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       errorCode: "adapter_failed",
       finishedAt: now,
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId,
         wakeReason: "issue_assigned",
       },
       updatedAt: now,
       createdAt: now,
+    });
+
+    // The automatic execution gate fails closed when the issue row is missing.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Retry transient failure",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: sourceRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: now,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
     });
 
     const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
@@ -1160,9 +1199,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       maxAttempts: 3,
     });
 
+    // The automatic execution gate suppresses terminal-status issues before the
+    // transactional issue-state guard can report issue_terminal_status.
     expect(scheduled).toMatchObject({
       outcome: "not_scheduled",
-      errorCode: "issue_terminal_status",
+      errorCode: "retry_policy_suppressed",
       issueId,
     });
   });
@@ -1304,9 +1345,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(duplicateWakeup?.status).toBe("cancelled");
   });
 
-  it.each(["blocked", "todo", "backlog"] as const)(
+  // backlog is suppressed by the automatic execution gate before the transactional
+  // issue-state guard can report issue_not_in_progress; blocked/todo reach that guard.
+  it.each([
+    ["blocked", "issue_not_in_progress"],
+    ["todo", "issue_not_in_progress"],
+    ["backlog", "retry_policy_suppressed"],
+  ] as const)(
     "does not schedule a max-turn continuation when the issue is already %s",
-    async (issueStatus) => {
+    async (issueStatus, expectedErrorCode) => {
       const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus });
 
       const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
@@ -1319,7 +1366,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
       expect(scheduled).toMatchObject({
         outcome: "not_scheduled",
-        errorCode: "issue_not_in_progress",
+        errorCode: expectedErrorCode,
         issueId,
       });
 

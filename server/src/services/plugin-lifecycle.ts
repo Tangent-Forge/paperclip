@@ -43,6 +43,7 @@ import type {
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
@@ -336,6 +337,25 @@ export function pluginLifecycleManager(
     return plugin as PluginRecord;
   }
 
+  /**
+   * Hard-delete a plugin: drop its physical database namespace (if any) and
+   * delete its `plugins` row in the same transaction, so the migration
+   * ledger and the physical schema can never desync. See
+   * `pluginDatabaseService.dropNamespace` for why ordering and atomicity
+   * matter here — deleting the `plugins` row first cascade-wipes the ledger
+   * row that names the schema to drop, and a crash between an un-transacted
+   * drop and delete reproduces the same "reinstall fails on a leftover
+   * table" bug this closes.
+   */
+  async function hardDeleteWithNamespaceDrop(pluginId: string): Promise<PluginRecord | null> {
+    return db.transaction(async (tx) => {
+      const scopedTx = tx as unknown as Db;
+      await pluginDatabaseService(scopedTx).dropNamespace(pluginId);
+      const deleted = await pluginRegistryService(scopedTx).uninstall(pluginId, true);
+      return deleted as PluginRecord | null;
+    });
+  }
+
   function assertTransition(plugin: PluginRecord, to: PluginStatus): void {
     if (!isValidTransition(plugin.status, to)) {
       throw badRequest(
@@ -542,7 +562,7 @@ export function pluginLifecycleManager(
       if (plugin.status === "uninstalled") {
         if (removeData) {
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
-          const deleted = await registry.uninstall(pluginId, true);
+          const deleted = await hardDeleteWithNamespaceDrop(pluginId);
           log.info(
             { pluginId, pluginKey: plugin.pluginKey },
             "plugin lifecycle: hard-deleted already-uninstalled plugin",
@@ -563,8 +583,12 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
-      // Perform the uninstall via registry (handles soft/hard delete)
-      const result = await registry.uninstall(pluginId, removeData);
+      // Perform the uninstall via registry (handles soft/hard delete). Hard
+      // delete also drops the plugin's physical database namespace — see
+      // hardDeleteWithNamespaceDrop.
+      const result = removeData
+        ? await hardDeleteWithNamespaceDrop(pluginId)
+        : await registry.uninstall(pluginId, false);
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },

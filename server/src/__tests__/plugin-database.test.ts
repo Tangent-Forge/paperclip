@@ -784,4 +784,78 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await expect(pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot))
       .rejects.toThrow(/checksum mismatch/i);
   });
+
+  it("purge leaves a leftover schema behind when the namespace is never dropped (regression)", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.purge_rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    // Simulate the pre-fix purge path: hard-delete the plugin row (which
+    // cascades away the plugin_database_namespaces / plugin_migrations
+    // ledger rows) without dropping the physical schema. This reproduces
+    // the reported bug: reinstall re-runs 001_init.sql against a schema
+    // that still has `purge_rows` from the first install.
+    await db.delete(plugins).where(eq(plugins.id, pluginId));
+
+    const reinstalledId = await installPluginRecord(pluginManifest);
+    // The driver wraps the raw Postgres error (a generic "Failed query: ..."
+    // message) with the real reason on `.cause` — assert on that, not the
+    // wrapper's own message.
+    await expect(pluginDb.applyMigrations(reinstalledId, pluginManifest, packageRoot)).rejects.toMatchObject({
+      cause: expect.objectContaining({ code: "42P07", message: expect.stringMatching(/already exists/i) }),
+    });
+  });
+
+  it("dropNamespace tears down the physical schema so purge-then-reinstall succeeds", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.purge_rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    // Correct purge order (matches plugin-lifecycle's
+    // hardDeleteWithNamespaceDrop): drop the namespace BEFORE the `plugins`
+    // row is deleted, since the delete cascades away the ledger row that
+    // names the schema.
+    const dropped = await pluginDb.dropNamespace(pluginId);
+    expect(dropped).toEqual({ namespaceName: namespace });
+    await db.delete(plugins).where(eq(plugins.id, pluginId));
+
+    const reinstalledId = await installPluginRecord(pluginManifest);
+    await expect(
+      pluginDb.applyMigrations(reinstalledId, pluginManifest, packageRoot),
+    ).resolves.not.toThrow();
+
+    const migrations = await db
+      .select()
+      .from(pluginMigrations)
+      .where(and(eq(pluginMigrations.pluginId, reinstalledId), eq(pluginMigrations.status, "applied")));
+    expect(migrations).toHaveLength(1);
+  });
+
+  it("dropNamespace is a no-op when the plugin never had a database namespace", async () => {
+    const pluginManifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.no-database",
+      apiVersion: 1,
+      version: "1.0.0",
+      displayName: "No Database",
+      description: "Plugin with no database manifest block.",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: [],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const pluginId = await installPluginRecord(pluginManifest);
+    await expect(pluginDatabaseService(db).dropNamespace(pluginId)).resolves.toBeNull();
+  });
 });

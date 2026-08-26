@@ -17367,19 +17367,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         }
 
-        const promotionGate = await evaluateIssueAutomaticExecutionGate({
-          companyId: deferredAgent.companyId,
-          issueId: issue.id,
-          source: promotedSource,
-          triggerDetail: promotedTriggerDetail,
-          requestedByActorType: deferred.requestedByActorType,
-          wakeReason: readNonEmptyString(promotedContextSnapshot.wakeReason) ?? promotedReason,
-          retryReason: readNonEmptyString(promotedContextSnapshot.retryReason),
-          kind:
-            readNonEmptyString(promotedContextSnapshot.retryReason) === WORKSPACE_BUSY_RETRY_REASON
-              ? "deferral_retry"
-              : "new_attempt",
-        });
+        // Comment wakes deliver conversation context rather than start an automatic
+        // execution attempt: they must still fire on finished issues (the issue
+        // update below is assignee-scoped, so a mentioned agent never re-locks).
+        const promotedWakeReason =
+          readNonEmptyString(promotedContextSnapshot.wakeReason) ?? promotedReason;
+        const promotedIsCommentDeliveryWake =
+          promotedWakeReason === "issue_comment_mentioned" || promotedWakeReason === "issue_commented";
+        const promotionGate = promotedIsCommentDeliveryWake
+          ? { allowed: true as const }
+          : await evaluateIssueAutomaticExecutionGate({
+            companyId: deferredAgent.companyId,
+            issueId: issue.id,
+            source: promotedSource,
+            triggerDetail: promotedTriggerDetail,
+            requestedByActorType: deferred.requestedByActorType,
+            wakeReason: promotedWakeReason,
+            retryReason: readNonEmptyString(promotedContextSnapshot.retryReason),
+            kind:
+              readNonEmptyString(promotedContextSnapshot.retryReason) === WORKSPACE_BUSY_RETRY_REASON
+                ? "deferral_retry"
+                : "new_attempt",
+          });
         if (!promotionGate.allowed) {
           await tx
             .update(agentWakeupRequests)
