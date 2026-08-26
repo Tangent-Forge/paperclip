@@ -124,6 +124,7 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { checkTfosAcceptanceClosure, isTfosAlignGoal } from "../services/tfos-acceptance-closure.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -4804,6 +4805,19 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+    if (req.body.status === "done") {
+      const nextGoalId = req.body.goalId === undefined ? existing.goalId : req.body.goalId;
+      const goal = nextGoalId ? await goalsSvc.getById(nextGoalId) : null;
+      if (isTfosAlignGoal(goal)) {
+        const closure = checkTfosAcceptanceClosure(
+          req.body.description === undefined ? existing.description : req.body.description,
+        );
+        if (!closure.allowed) {
+          res.status(422).json({ error: closure.message });
+          return;
+        }
+      }
+    }
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
