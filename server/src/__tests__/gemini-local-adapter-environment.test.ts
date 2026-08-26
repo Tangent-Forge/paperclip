@@ -68,7 +68,7 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes model and yolo flags to the hello probe", async () => {
+  it("passes model and permission-skip flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -100,8 +100,7 @@ describe("gemini_local environment diagnostics", () => {
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
     expect(args).toContain("--model");
     expect(args).toContain("gemini-2.5-pro");
-    expect(args).toContain("--approval-mode");
-    expect(args).toContain("yolo");
+    expect(args).toContain("--dangerously-skip-permissions");
     expect(args).toContain("--prompt");
     await fs.rm(root, { recursive: true, force: true });
   });
