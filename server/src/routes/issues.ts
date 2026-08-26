@@ -105,6 +105,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { checkTfosAcceptanceClosure } from "../services/tfos-acceptance-closure.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -5043,6 +5044,16 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (existing.status !== "done" && updateFields.status === "done") {
+      const closureCheck = checkTfosAcceptanceClosure(existing.description);
+      if (closureCheck.applies && closureCheck.incomplete.length > 0) {
+        res.status(422).json({
+          error: "TFOS acceptance evaluations must be checked and include durable evidence before closing",
+          incompleteAcceptanceEvals: closureCheck.incomplete,
+        });
+        return;
+      }
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
