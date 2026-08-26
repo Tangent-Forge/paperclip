@@ -49,6 +49,27 @@ The relevant implementation points are:
   failing-run result, and a live HTTP-422 closure attempt must be read from the
   control plane once it is reachable; none are inferred from this document.
 
+## PAP-2924 refresh record (2026-08-26)
+
+This refresh ran from the isolated Paperclip checkout
+`codex/pap-2923-tfos-closure-guard` at `f039fe9d9823e08f4e5e4168d4e31d46021c655d`.
+It is not the canonical Paperclip checkout, as confirmed by `git worktree
+list --porcelain`.
+
+| Evaluation | Current result | Receipt |
+| --- | --- | --- |
+| Assignment produces an assignment wake/run | Not live-verifiable | `127.0.0.1:3100` refused connections; the embedded-Postgres regression test `dispatches assigned todo work with no prior run as a normal assignment wake` was skipped because this host has no supported embedded Postgres runtime. |
+| Execution uses an isolated worktree | Passed at code level | `pnpm --dir server exec vitest run src/__tests__/workspace-runtime.test.ts -t 'creates and reuses a git worktree for an issue-scoped branch'` — 1 passed, 60 skipped (2026-08-26T04:31:52Z). |
+| A deliberate failure remains failed and does not complete the issue | Not live-verifiable | The embedded-Postgres regression test `does not block paused-tree work when immediate continuation recovery is suppressed by the hold` was skipped for the same unsupported-runtime reason; no failed `heartbeat_runs` record can be honestly attached while the control plane is down. |
+| Non-council worker dispatchability or an idle reason | Not live-verifiable | The current company registry could not be read while the control plane was offline. The scheduler regression test `clears due monitors that cannot be dispatched and records a skip` was likewise skipped because embedded Postgres is unavailable. The wake payload additionally states that Claude Subscription Worker is absent from this local registry snapshot. |
+| TFOS closure rejects incomplete/unevidenced acceptance | Passed at code level | `pnpm --dir server exec vitest run src/services/tfos-acceptance-closure.test.ts` — 3 passed (2026-08-26T04:32:10Z). |
+
+The first, third, and fourth evaluations require a healthy Paperclip service
+and current Postgres-backed registry. Do not substitute these code-level checks
+for `heartbeat_runs` or registry receipts. The control-plane operator must
+restore `http://127.0.0.1:3100`, then execute the two-minute operator check
+below and attach the returned run IDs/agent states before PAP-2924 can close.
+
 ## Two-minute operator check
 
 1. Open the assigned issue and its `executionRunId`; confirm the newest
