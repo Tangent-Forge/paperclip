@@ -96,7 +96,14 @@ describe("doctor", () => {
     });
 
     expect(summary.failed).toBe(0);
-    expect(summary.warned).toBe(0);
+    // 1, not 0: local_trusted (this fixture's deploymentMode) now always
+    // warns that its Board UI has no working sign-in (PAP-1975 removed the
+    // implicit grant with no session replacement — deployment-auth-check.ts).
+    // Deliberately not repairable (canRepair: false) — there's no automatic
+    // fix, only a real operator decision to switch modes — so this warning
+    // is expected to survive `repair: true` unlike the checks this test is
+    // actually about.
+    expect(summary.warned).toBe(1);
     expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeTruthy();
   });
 });

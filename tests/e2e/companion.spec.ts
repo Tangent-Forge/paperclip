@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { type APIRequestContext } from "@playwright/test";
+import { expect, test } from "./fixtures/board-auth.js";
 
 /**
  * E2E: Paperclip Companion plugin — full authenticated-human flow.

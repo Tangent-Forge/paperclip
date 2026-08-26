@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import type { APIRequestContext, Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 import { storyById } from "./mcp-user-stories.catalog";

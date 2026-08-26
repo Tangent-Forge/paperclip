@@ -325,6 +325,10 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
+  // Read by routes/authz.ts to give board-access-denied errors a mode-aware,
+  // actionable message instead of a bare 403 — see PAP-1975's removal of the
+  // local_trusted implicit-board grant.
+  app.locals.deploymentMode = opts.deploymentMode;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
@@ -526,7 +530,11 @@ export async function createApp(
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
-  api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
+  api.use(boardChatRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    bindHost: opts.bindHost,
+  }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
   const trustedLocalStdioRuntimeHost =

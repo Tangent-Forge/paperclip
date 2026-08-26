@@ -111,7 +111,9 @@ export async function promptServer(opts?: {
       {
         value: "local_trusted",
         label: "Local trusted",
-        hint: "No login required; only safe with loopback-only or similarly trusted access",
+        hint:
+          "No login required; only safe with loopback-only or similarly trusted access. " +
+          "Board UI (browser) sign-in doesn't work in this mode — pick this only for CLI/agent-only use.",
       },
       {
         value: "authenticated",

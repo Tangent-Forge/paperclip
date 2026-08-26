@@ -2862,17 +2862,17 @@ export function pluginRoutes(
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
-    const [delivery] = await db
-      .insert(pluginWebhookDeliveries)
-      .values({
-        pluginId: plugin.id,
-        webhookKey: endpointKey,
-        status: "pending",
-        payload,
-        headers: rawHeaders,
-        startedAt,
-      })
-      .returning({ id: pluginWebhookDeliveries.id });
+    const deliveryExternalId = rawHeaders["linear-delivery"]?.trim() || null;
+    const delivery = await registry.createWebhookDelivery(plugin.id, endpointKey, null, {
+      externalId: deliveryExternalId ?? undefined,
+      payload,
+      headers: rawHeaders,
+      startedAt,
+    });
+    if (!delivery) {
+      res.status(500).json({ error: "Failed to record webhook delivery" });
+      return;
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
@@ -3172,6 +3172,7 @@ export function pluginRoutes(
     let recentWebhookDeliveries: Array<{
       id: string;
       webhookKey: string;
+      externalId: string | null;
       status: string;
       durationMs: number | null;
       error: string | null;
@@ -3185,6 +3186,7 @@ export function pluginRoutes(
         .select({
           id: pluginWebhookDeliveries.id,
           webhookKey: pluginWebhookDeliveries.webhookKey,
+          externalId: pluginWebhookDeliveries.externalId,
           status: pluginWebhookDeliveries.status,
           durationMs: pluginWebhookDeliveries.durationMs,
           error: pluginWebhookDeliveries.error,
@@ -3197,16 +3199,24 @@ export function pluginRoutes(
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 
-      recentWebhookDeliveries = deliveries.map((d) => ({
-        id: d.id,
-        webhookKey: d.webhookKey,
-        status: d.status,
-        durationMs: d.durationMs,
-        error: d.error,
-        startedAt: d.startedAt ? d.startedAt.toISOString() : null,
-        finishedAt: d.finishedAt ? d.finishedAt.toISOString() : null,
-        createdAt: d.createdAt.toISOString(),
-      }));
+      recentWebhookDeliveries = [];
+      for (const delivery of deliveries) {
+        const resolvedDelivery = delivery.externalId
+          ? delivery
+          : (await registry.backfillWebhookDeliveryExternalId(delivery.id)) ?? delivery;
+
+        recentWebhookDeliveries.push({
+          id: resolvedDelivery.id,
+          webhookKey: resolvedDelivery.webhookKey,
+          externalId: resolvedDelivery.externalId ?? null,
+          status: resolvedDelivery.status,
+          durationMs: resolvedDelivery.durationMs,
+          error: resolvedDelivery.error,
+          startedAt: resolvedDelivery.startedAt ? resolvedDelivery.startedAt.toISOString() : null,
+          finishedAt: resolvedDelivery.finishedAt ? resolvedDelivery.finishedAt.toISOString() : null,
+          createdAt: resolvedDelivery.createdAt.toISOString(),
+        });
+      }
     } catch {
       // Webhook data unavailable — leave empty
     }

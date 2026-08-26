@@ -1,8 +1,43 @@
 import type { Request, Response } from "express";
-import type { SecretBindingTargetType } from "@paperclipai/shared";
+import type { DeploymentMode, SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+
+/**
+ * PAP-1975 removed `local_trusted`'s implicit board grant for unauthenticated
+ * loopback requests — correct, since any shell-capable agent on the same host
+ * could reach the same loopback port. `local_trusted` mode is documented as
+ * "no login required" by design (docs/deploy/deployment-modes.md), so there is
+ * deliberately no session/credential path being added back for it — see
+ * doc/plans/2026-08-25-local-trusted-board-access-gap.md for the accepted
+ * direction. A denied board request in this mode almost always means a human
+ * is trying to use the Board UI as an ongoing per-actor identity, which
+ * `local_trusted` was never designed to support once more than one loopback
+ * caller (a human and an agent) share the same host. Point them at the
+ * already-built migration path instead of a bare "Board access required".
+ */
+function unauthenticatedBoardAccessMessage(req: Request, fallback: string): string {
+  if (req.actor.type !== "none") return fallback;
+  const deploymentMode = (req.app?.locals as { deploymentMode?: DeploymentMode } | undefined)?.deploymentMode;
+  if (deploymentMode !== "local_trusted") return fallback;
+  // Deliberately does not inline the exact CLI reconfigure invocation here:
+  // cli-invocation-safety.test.ts only trusts a literal CLI command in
+  // source files when it's the whole value of a `command:` property (e.g. a
+  // webServer config) — a prose mention like this one is correctly
+  // untrusted, by design, since the guard can't prove no dangerous suffix
+  // survived string concatenation. The exact invocation already lives in
+  // docs/deploy/deployment-modes.md, in proper Markdown code-span form the
+  // guard does trust; point there instead of duplicating (and risking
+  // drifting from) the real command.
+  return (
+    "Board access required. This instance is running in local_trusted mode, which has no " +
+    "login and grants no implicit board identity to loopback requests (PAP-1975) — any agent " +
+    "on this host could otherwise reach the same port. For a durable, per-actor human board " +
+    "identity, switch this instance to authenticated + private mode. Agents and scripts should " +
+    "use an explicit board or agent API key instead. See docs/deploy/deployment-modes.md."
+  );
+}
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -25,13 +60,13 @@ function throwOrShadowResponsibleUserCompanyAccessDeny(
 
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
-    throw unauthorized();
+    throw unauthorized(unauthenticatedBoardAccessMessage(req, "Unauthorized"));
   }
 }
 
 export function assertBoard(req: Request) {
   if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
+    throw forbidden(unauthenticatedBoardAccessMessage(req, "Board access required"));
   }
 }
 
