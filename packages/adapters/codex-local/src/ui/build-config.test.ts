@@ -57,4 +57,17 @@ describe("buildCodexLocalConfig", () => {
 
     expect(config).not.toHaveProperty("model");
   });
+
+  it("defaults dangerouslyBypassApprovalsAndSandbox to false when the operator leaves it unset (SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816)", () => {
+    const overrides = makeValues();
+    // Simulate the operator never touching the toggle, rather than the test fixture's own
+    // explicit true baseline above.
+    delete (overrides as Record<string, unknown>).dangerouslyBypassSandbox;
+
+    const config = buildCodexLocalConfig(overrides);
+
+    expect(config).toMatchObject({
+      dangerouslyBypassApprovalsAndSandbox: false,
+    });
+  });
 });

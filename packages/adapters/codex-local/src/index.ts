@@ -6,7 +6,11 @@ export const label = "Codex (local)";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.5";
-export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+// Flipped false 2026-08-26 (SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816, owner decision):
+// new codex_local agents default to sandboxed execution. Headless runs that would otherwise
+// stall on approval_policy=on-request should set approveForMe=true (see codex-args.ts) rather
+// than reaching for the bypass flag again.
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = false;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
 
 function normalizeModelId(model: string | null | undefined): string {
@@ -77,7 +81,8 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.5, GPT-5.4 and passed through for manual model IDs
-- dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
+- dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag. Defaults to false since 2026-08-26 (SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816) -- new agents are sandboxed unless this is explicitly set true.
+- approveForMe (boolean, optional): when true and dangerouslyBypassApprovalsAndSandbox is not set, passes --approve-for-me and an explicit --sandbox workspace-write so headless runs (approval_policy=on-request, no human to answer) auto-review through the sandbox instead of stalling, without removing the sandbox itself. No effect when dangerouslyBypassApprovalsAndSandbox is true.
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

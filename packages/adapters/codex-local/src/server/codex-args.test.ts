@@ -109,6 +109,65 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
+  it("adds --dangerously-bypass-approvals-and-sandbox when explicitly requested", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.4",
+      "-",
+    ]);
+  });
+
+  it("adds --approve-for-me and an explicit --sandbox workspace-write when approveForMe is set and not bypassing (SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816)", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      approveForMe: true,
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--approve-for-me",
+      "--sandbox",
+      "workspace-write",
+      "--model",
+      "gpt-5.4",
+      "-",
+    ]);
+  });
+
+  it("ignores approveForMe when dangerouslyBypassApprovalsAndSandbox is also set -- bypass already skips approvals", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      approveForMe: true,
+    });
+
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-5.4",
+      "-",
+    ]);
+  });
+
+  it("adds neither flag by default (sandboxed, no auto-approval) when neither option is set", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.4",
+    });
+
+    expect(result.args).toEqual(["exec", "--json", "--model", "gpt-5.4", "-"]);
+  });
+
   it("adds --skip-git-repo-check when requested", () => {
     const result = buildCodexExecArgs(
       {

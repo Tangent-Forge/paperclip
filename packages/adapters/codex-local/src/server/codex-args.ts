@@ -48,12 +48,17 @@ export function buildCodexExecArgs(
     record.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
+  // SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816: opt-in headless-approval path that keeps
+  // the sandbox enforced instead of reaching for dangerouslyBypassApprovalsAndSandbox. No effect
+  // when bypass is set -- the bypass flag already skips approvals entirely.
+  const approveForMe = !bypass && asBoolean(record.approveForMe, false);
   const extraArgs = readExtraArgs(record);
 
   const args = ["exec", "--json"];
   if (options.skipGitRepoCheck) args.push("--skip-git-repo-check");
   if (search) args.unshift("--search");
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (approveForMe) args.push("--approve-for-me", "--sandbox", "workspace-write");
   if (model) args.push("--model", model);
   if (modelReasoningEffort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
