@@ -16,6 +16,69 @@ const repoRoot = resolve(__dirname, "../..");
 const stdioServerPath = resolve(repoRoot, "scripts/mcp-fixtures/servers/stdio-fixture.mjs");
 const httpServerPath = resolve(repoRoot, "scripts/mcp-fixtures/servers/http-fixture.mjs");
 
+// Fixture children must not survive this harness. `stop()` only runs on the
+// happy path, so anything that ends the run early -- a signal, a throw, a
+// failed assertion -- would otherwise leave the fixtures orphaned to init.
+const activeChildren = new Set();
+
+function trackChild(child) {
+  activeChildren.add(child);
+  child.once("exit", () => activeChildren.delete(child));
+  return child;
+}
+
+function hasExited(child) {
+  return !child || child.exitCode !== null || child.signalCode !== null;
+}
+
+function reapChildren() {
+  for (const child of activeChildren) {
+    if (hasExited(child)) continue;
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already gone; nothing to reap.
+    }
+  }
+  activeChildren.clear();
+}
+
+async function stopChild(child) {
+  // `child.killed` only records that a signal was sent, not that the process
+  // died, so exit state is the only safe guard here.
+  if (hasExited(child)) return;
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    once(child, "exit").then(() => true),
+    new Promise((resolveStop) => setTimeout(() => resolveStop(false), 500)),
+  ]);
+  if (exited || hasExited(child)) return;
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    return;
+  }
+  await Promise.race([
+    once(child, "exit"),
+    new Promise((resolveStop) => setTimeout(resolveStop, 500)),
+  ]);
+}
+
+process.on("exit", reapChildren);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {
+    reapChildren();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+for (const event of ["uncaughtException", "unhandledRejection"]) {
+  process.on(event, (error) => {
+    reapChildren();
+    console.error(error);
+    process.exit(1);
+  });
+}
+
 function parseArgs(argv) {
   const args = {
     paperclipUrl: process.env.PAPERCLIP_API_URL ?? "http://127.0.0.1:3100/api",
@@ -82,10 +145,10 @@ class StdioFixtureClient {
   }
 
   async start() {
-    this.process = spawn(process.execPath, [stdioServerPath], {
+    this.process = trackChild(spawn(process.execPath, [stdioServerPath], {
       cwd: repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
-    });
+    }));
     const rl = createInterface({ input: this.process.stdout });
     rl.on("line", (line) => {
       let response;
@@ -129,12 +192,7 @@ class StdioFixtureClient {
   }
 
   async stop() {
-    if (!this.process || this.process.killed) return;
-    this.process.kill("SIGTERM");
-    await Promise.race([
-      once(this.process, "exit"),
-      new Promise((resolveStop) => setTimeout(resolveStop, 500)),
-    ]);
+    await stopChild(this.process);
   }
 }
 
@@ -145,11 +203,11 @@ class HttpFixtureClient {
   }
 
   async start() {
-    this.process = spawn(process.execPath, [httpServerPath], {
+    this.process = trackChild(spawn(process.execPath, [httpServerPath], {
       cwd: repoRoot,
       env: { ...process.env, PORT: "0" },
       stdio: ["ignore", "pipe", "pipe"],
-    });
+    }));
     this.process.stderr.on("data", (chunk) => {
       process.stderr.write(`[mcp-http-fixture] ${chunk}`);
     });
@@ -185,12 +243,7 @@ class HttpFixtureClient {
   }
 
   async stop() {
-    if (!this.process || this.process.killed) return;
-    this.process.kill("SIGTERM");
-    await Promise.race([
-      once(this.process, "exit"),
-      new Promise((resolveStop) => setTimeout(resolveStop, 500)),
-    ]);
+    await stopChild(this.process);
   }
 }
 
