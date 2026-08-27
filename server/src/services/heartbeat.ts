@@ -83,7 +83,12 @@ export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import {
+  findActiveServerAdapter,
+  listAdapterModelProfiles,
+  resolveExecutionAdapter,
+  runningProcesses,
+} from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -6404,8 +6409,14 @@ const defaultSessionCodec: AdapterSessionCodec = {
 };
 
 function getAdapterSessionCodec(adapterType: string) {
-  const adapter = getServerAdapter(adapterType);
-  return adapter.sessionCodec ?? defaultSessionCodec;
+  // Soft lookup on purpose. Session params are decoded for stored rows, which
+  // can reference an adapter type that is no longer (or not yet) registered on
+  // this build; that must not throw here — only the execution path fails loudly
+  // on an unregistered type. Unregistered types resolve to the default codec,
+  // matching the previous behaviour: the old `getServerAdapter` fallback landed
+  // on the process adapter, which defines no `sessionCodec`.
+  const adapter = findActiveServerAdapter(adapterType);
+  return adapter?.sessionCodec ?? defaultSessionCodec;
 }
 
 export function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
@@ -15988,7 +15999,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      // Resolved against the effective config, not the type alone: an
+      // unregistered type must fail by name when the adapter simply is not on
+      // this build, but agents that carry a `command` execute through the
+      // process adapter and have to keep doing so. See resolveExecutionAdapter.
+      const adapter = resolveExecutionAdapter(agent.adapterType, runtimeConfig);
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }

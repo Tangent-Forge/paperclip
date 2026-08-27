@@ -29,6 +29,11 @@ vi.doMock("../adapters/index.js", async (importOriginal) => {
       execute: vi.fn(),
       testEnvironment: vi.fn(),
     })),
+    resolveExecutionAdapter: vi.fn(() => ({
+      type: "process",
+      execute: vi.fn(),
+      testEnvironment: vi.fn(),
+    })),
     listAdapterModelProfiles: vi.fn(() => []),
     runningProcesses: new Map(),
   };
