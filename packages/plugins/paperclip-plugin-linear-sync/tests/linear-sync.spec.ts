@@ -190,7 +190,7 @@ describe("linear sync", () => {
     };
 
     expect(manifest.version).toBe(packageJson.version);
-    expect(manifest.version).toBe("0.1.1");
+    expect(manifest.version).toBe("0.1.2");
     expect(schema.properties?.candidateStatusNames?.default).toEqual([ADMISSION_LINEAR_STATE_NAME]);
   });
 
@@ -213,6 +213,41 @@ describe("linear sync", () => {
   it("normalizes config defaults", () => {
     expect(readConfig({}).candidateStatusNames).toEqual([ADMISSION_LINEAR_STATE_NAME]);
     expect(readConfig({ maxIssuesPerRun: 1000 }).maxIssuesPerRun).toBe(100);
+  });
+
+  it("normalizes legacy UUID secret references for the structured host contract", () => {
+    expect(readConfig({ linearApiKeySecretRef: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6" }).linearApiKeySecretRef)
+      .toEqual({ type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: "latest" });
+    expect(readConfig({ linearApiKeySecretRef: { type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: 2 } }).linearApiKeySecretRef)
+      .toEqual({ type: "secret_ref", secretId: "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6", version: 2 });
+  });
+
+  it("keeps legacy secret IDs discoverable while accepting structured references", () => {
+    const properties = (manifest.instanceConfigSchema as { properties: Record<string, unknown> }).properties;
+    expect(properties.linearApiKeySecretRef).toMatchObject({
+      anyOf: [
+        { type: "string", minLength: 1, format: "secret-ref" },
+        { type: "object", required: ["type", "secretId"] },
+      ],
+    });
+    expect(properties.linearWebhookSigningSecretRef).toMatchObject({
+      anyOf: [
+        { type: "string", minLength: 1, format: "secret-ref" },
+        { type: "object", required: ["type", "secretId"] },
+      ],
+    });
+  });
+
+  it("declares body sync and query status company resolution for the host route layer", () => {
+    const routes = manifest.apiRoutes ?? [];
+    expect(routes.find((route) => route.routeKey === API_ROUTE_KEYS.syncNow)).toMatchObject({
+      method: "POST",
+      companyResolution: { from: "body", key: "companyId" },
+    });
+    expect(routes.find((route) => route.routeKey === API_ROUTE_KEYS.status)).toMatchObject({
+      method: "GET",
+      companyResolution: { from: "query", key: "companyId" },
+    });
   });
 
   it("fails config validation unless enabled intake is Triage-only and has a triage agent", async () => {
@@ -585,6 +620,72 @@ describe("linear sync", () => {
         { companyId: "company-a", configPath: "linearApiKeySecretRef" },
         { companyId: "company-b", configPath: "linearApiKeySecretRef" },
       ]);
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("normalizes a legacy secret ID before resolving a body-scoped manual sync", async () => {
+    await plugin.definition.onShutdown?.();
+    const legacySecretId = "eea25144-0a6d-4e0e-a2db-49b9e12a5ee6";
+    const config = {
+      enabled: true,
+      companyId: "company-1",
+      linearApiKeySecretRef: legacySecretId,
+      triageAgentId: "triage-1",
+      candidateStatusNames: [ADMISSION_LINEAR_STATE_NAME],
+    };
+    const harness = createTestHarness({ manifest, config });
+    const secretResolve = vi.fn(async () => "token");
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+    harness.ctx.http.fetch = vi.fn(async () => new Response(JSON.stringify({ data: { issues: { nodes: [] } } }), { status: 200 }));
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      const response = await plugin.definition.onApiRequest?.({
+        routeKey: API_ROUTE_KEYS.syncNow,
+        method: "POST",
+        path: "/companies/company-1/sync-now",
+        params: {},
+        query: {},
+        body: { companyId: "company-1" },
+        actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null },
+        companyId: "company-1",
+        headers: {},
+      });
+
+      expect(response?.status).toBe(202);
+      expect(secretResolve).toHaveBeenCalledWith(
+        { type: "secret_ref", secretId: legacySecretId, version: "latest" },
+        { companyId: "company-1", configPath: "linearApiKeySecretRef" },
+      );
+    } finally {
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("does not resolve a secret for a query-scoped status request", async () => {
+    await plugin.definition.onShutdown?.();
+    const harness = createTestHarness({ manifest, config: { enabled: true, companyId: "company-1" } });
+    const secretResolve = vi.fn(async () => "token");
+    harness.ctx.secrets.resolve = secretResolve as typeof harness.ctx.secrets.resolve;
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      const response = await plugin.definition.onApiRequest?.({
+        routeKey: API_ROUTE_KEYS.status,
+        method: "GET",
+        path: "/companies/company-1/status",
+        params: {},
+        query: { companyId: "company-1" },
+        body: null,
+        actor: { actorType: "user", actorId: "u1", userId: "u1", agentId: null, runId: null },
+        companyId: "company-1",
+        headers: {},
+      });
+
+      expect(response?.status).toBeUndefined();
+      expect(secretResolve).not.toHaveBeenCalled();
     } finally {
       await plugin.definition.onShutdown?.();
     }

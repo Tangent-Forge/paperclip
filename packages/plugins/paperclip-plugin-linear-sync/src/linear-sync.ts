@@ -119,6 +119,11 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
   const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
   const str = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   const secretRef = (value: unknown): EnvSecretRefBinding | null => {
+    if (typeof value === "string" && value.trim()) {
+      // Existing installations store a UUID string. Normalize it before the
+      // RPC call so the host always receives its structured secret-ref contract.
+      return { type: "secret_ref", secretId: value.trim(), version: "latest" };
+    }
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const binding = value as Record<string, unknown>;
     const secretId = str(binding.secretId);
