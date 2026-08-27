@@ -3596,6 +3596,7 @@ export function agentRoutes(
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
+        canCreateTasks: agent.permissions?.canCreateTasks ?? false,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
     });

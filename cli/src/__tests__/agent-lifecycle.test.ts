@@ -74,7 +74,7 @@ describe("agent lifecycle commands", () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);
 
-    await run(["agent", "permissions:update", AGENT_ID, "--payload-json", JSON.stringify({ canCreateAgents: true, canAssignTasks: true })]);
+    await run(["agent", "permissions:update", AGENT_ID, "--payload-json", JSON.stringify({ canCreateAgents: true, canAssignTasks: true, canCreateTasks: false })]);
     await run(["agent", "configuration", AGENT_ID]);
     await run(["agent", "config-revisions", AGENT_ID]);
     await run(["agent", "config-revision:get", AGENT_ID, REVISION_ID]);
