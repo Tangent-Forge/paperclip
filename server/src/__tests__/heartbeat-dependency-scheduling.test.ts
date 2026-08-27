@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
   companySkills,
@@ -47,6 +48,10 @@ vi.mock("../adapters/index.ts", async () => {
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+    resolveExecutionAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
@@ -142,6 +147,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
