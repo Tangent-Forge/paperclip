@@ -77,7 +77,7 @@ export async function runJanitorModule(
     throw new Error(`Unknown janitor module: ${moduleId}`);
   }
 
-  const scriptPath = path.join(__moduleDir, "..", "..", "modules", entry.scriptName);
+  const scriptPath = path.join(__moduleDir, "..", "..", "built-ins", "janitor-local", entry.scriptName);
   const start = Date.now();
 
   try {

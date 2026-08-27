@@ -57,7 +57,7 @@ function redactJanitorText(value: string): string {
 }
 
 function asJanitorModuleIds(value: unknown): JanitorModuleId[] {
-  const ids = asStringArray(value);
+  const ids = typeof value === "string" ? [value] : asStringArray(value);
   if (!ids || ids.length === 0) {
     return JANITOR_MODULES.map((m) => m.id);
   }

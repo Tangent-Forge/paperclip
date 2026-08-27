@@ -83,14 +83,13 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
-  execute as janitorExecute,
-  testEnvironment as janitorTestEnvironment,
-} from "@paperclipai/adapter-janitor-local/server";
-import {
   agentConfigurationDoc as janitorAgentConfigurationDoc,
+  execute as janitorExecute,
+  getConfigSchema as getJanitorConfigSchema,
   models as janitorModels,
   modelProfiles as janitorModelProfiles,
-} from "@paperclipai/adapter-janitor-local";
+  testEnvironment as janitorTestEnvironment,
+} from "./janitor-local/index.js";
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
@@ -440,6 +439,7 @@ const janitorLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: false,
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: janitorAgentConfigurationDoc,
+  getConfigSchema: getJanitorConfigSchema,
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();

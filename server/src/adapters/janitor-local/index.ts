@@ -1,4 +1,8 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema, AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+
+export { execute } from "./execute.js";
+export { listJanitorModules } from "./modules.js";
+export { testEnvironment } from "./test.js";
 
 export const type = "janitor_local";
 export const label = "Janitor (local WSL)";
@@ -20,6 +24,66 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   },
 ];
 
+export function getConfigSchema(): AdapterConfigSchema {
+  return {
+    fields: [
+      {
+        key: "cwd",
+        label: "Workspace root",
+        type: "text",
+        required: true,
+        hint: "Absolute path to the workspace that Janitor may inspect.",
+      },
+      {
+        key: "modules",
+        label: "Audit module",
+        type: "select",
+        options: [
+          { value: "workspace", label: "Workspace audit" },
+          { value: "storage", label: "Storage scan" },
+          { value: "security", label: "Security scan" },
+          { value: "performance", label: "Performance checks" },
+          { value: "dev_tools", label: "Development tools inventory" },
+          { value: "review_knowledge", label: "Knowledge ingest review" },
+        ],
+        hint: "Leave unset to run every module. The standard form selects one module; raw configuration may provide an array.",
+      },
+      {
+        key: "dryRun",
+        label: "Read-only dry run",
+        type: "toggle",
+        default: true,
+        hint: "Keep enabled for audits. Active mode requires a scoped board approval.",
+      },
+      {
+        key: "approvalRequired",
+        label: "Require board approval",
+        type: "toggle",
+        default: true,
+        hint: "Active mode fails closed if this is disabled.",
+      },
+      {
+        key: "reportDir",
+        label: "Report directory",
+        type: "text",
+        hint: "Optional path inside the workspace. Defaults to .janitor/reports.",
+      },
+      {
+        key: "maxStorageAgeDays",
+        label: "Maximum storage age in days",
+        type: "number",
+        default: 90,
+      },
+      {
+        key: "timeoutSec",
+        label: "Module timeout in seconds",
+        type: "number",
+        default: 300,
+      },
+    ],
+  };
+}
+
 export const agentConfigurationDoc = `# janitor_local agent configuration
 
 Adapter: janitor_local
@@ -39,7 +103,7 @@ Source modules ported from:
 - cwd (string, required): absolute path to the workspace root to audit
 - model (string, optional): local model id or "lmo:auto" for LMO routing
 - lmoUrl (string, optional): base URL for tangent-forge-lmo if using lmo:auto (default: http://127.0.0.1:8000)
-- modules (string[], optional): which audit modules to run — defaults to all
+- modules (string or string[], optional): which audit modules to run — defaults to all
     choices: ["workspace", "storage", "security", "performance", "dev_tools", "review_knowledge"]
 - reportDir (string, optional): where to write HTML/Markdown audit reports (default: {cwd}/.janitor/reports)
 - dryRun (boolean, optional, default true): when true, no files are modified or deleted

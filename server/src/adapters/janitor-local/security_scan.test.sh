@@ -9,8 +9,8 @@
 #   the script BEFORE reaching the .env and key-file sections.
 # - The wrapper interpreted exit 141 as `adapter_failed`, putting the agent
 #   in `status=error`.
-# - Fix: `trap '' PIPE` + `{ ...; } || true` wrappers around the head/while
-#   and find/while pipelines.
+# - Fix: list matching files instead of matching lines and tolerate the bounded
+#   head/while pipeline closing early.
 #
 # To reliably reproduce the SIGPIPE timing, the fixture writes a LARGE
 # number of matches (≥10k lines for the sk- pattern) so grep's output buffer
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MODULE="$SCRIPT_DIR/../modules/security_scan.sh"
+MODULE="$SCRIPT_DIR/../../built-ins/janitor-local/security_scan.sh"
 
 if [[ ! -f "$MODULE" ]]; then
   echo "FAIL: module not found at $MODULE"
