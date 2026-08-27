@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   agentRuntimeState,
   budgetPolicies,
@@ -63,6 +64,10 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+    resolveExecutionAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
   };
 });
 
@@ -115,6 +120,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);

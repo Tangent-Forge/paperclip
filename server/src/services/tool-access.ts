@@ -118,6 +118,7 @@ import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
+import { SYNTHETIC_TODO_KV_STDIO_TEMPLATE } from "./tool-stdio-fixtures.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -282,6 +283,7 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
   },
   "paperclip.synthetic-todo-kv": {
     name: "Paperclip Synthetic Todo / KV fixture",
+    ...SYNTHETIC_TODO_KV_STDIO_TEMPLATE,
     tools: [
       { name: "list_items", description: "List synthetic todo items.", annotations: { readOnlyHint: true } },
       { name: "create_item", description: "Create a synthetic todo item.", annotations: { readOnlyHint: false } },

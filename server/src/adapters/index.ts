@@ -10,6 +10,7 @@ export {
   registerServerAdapter,
   unregisterServerAdapter,
   requireServerAdapter,
+  resolveExecutionAdapter,
 } from "./registry.js";
 export type {
   ServerAdapterModule,

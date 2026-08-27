@@ -1,11 +1,14 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  getServerAdapter,
+  resolveExecutionAdapter,
   listAdapterModels,
   listAdapterModelProfiles,
   registerServerAdapter,
@@ -96,6 +99,86 @@ describe("server adapter registry", () => {
     expect(() => requireServerAdapter("external_test")).toThrow(
       "Unknown adapter type: external_test",
     );
+  });
+
+  // Regression: getServerAdapter() used to return processAdapter for any
+  // unregistered type. An agent whose adapter simply was not deployed to the
+  // build then failed with "Process adapter missing command" — a message that
+  // blames the agent's config for a missing build artifact.
+  it("fails loudly instead of falling back to the process adapter for an unregistered type", () => {
+    expect(findServerAdapter("not_deployed_to_this_build")).toBeNull();
+
+    expect(() => getServerAdapter("not_deployed_to_this_build")).toThrow(
+      /Unknown adapter type: not_deployed_to_this_build/,
+    );
+    expect(() => getServerAdapter("not_deployed_to_this_build")).not.toThrow(
+      /Process adapter missing command/,
+    );
+
+    let message = "";
+    try {
+      getServerAdapter("not_deployed_to_this_build");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    // The type must be named, and the message must point at the build rather
+    // than at the agent's configuration.
+    expect(message).toContain("not_deployed_to_this_build");
+    expect(message).toContain("not registered on this build");
+    // Registered types are listed so the reader can see what the build shipped.
+    expect(message).toContain("process");
+    expect(message).toContain("claude_local");
+  });
+
+  it("keeps resolving the process and http builtins through getServerAdapter", () => {
+    expect(getServerAdapter("process").type).toBe("process");
+    expect(getServerAdapter("http").type).toBe("http");
+  });
+
+  it("resolves registered external adapters through getServerAdapter", () => {
+    registerServerAdapter(externalAdapter);
+
+    expect(getServerAdapter("external_test")).toBe(externalAdapter);
+  });
+
+  // Regression: making getServerAdapter() fail loudly also killed
+  // agents that use the adapter type as a label and carry the real contract in
+  // `command` — kimi_local and qwen_local were executing through the process
+  // adapter fallback and would have started failing with "Unknown adapter
+  // type" on the next restart. The execution path splits the two cases.
+  describe("resolveExecutionAdapter", () => {
+    it("prefers the registered adapter over any command in the config", () => {
+      registerServerAdapter(externalAdapter);
+
+      expect(resolveExecutionAdapter("external_test", { command: "should-be-ignored" }))
+        .toBe(externalAdapter);
+    });
+
+    it("falls back to the process adapter for an unregistered type that has a command", () => {
+      expect(findServerAdapter("kimi_local")).toBeNull();
+
+      expect(resolveExecutionAdapter("kimi_local", { command: "kimi-code" }).type)
+        .toBe("process");
+    });
+
+    it("fails loudly for an unregistered type with no command", () => {
+      expect(() => resolveExecutionAdapter("not_deployed_to_this_build", {})).toThrow(
+        /Unknown adapter type: not_deployed_to_this_build/,
+      );
+      expect(() => resolveExecutionAdapter("not_deployed_to_this_build", null)).toThrow(
+        /not registered on this build/,
+      );
+    });
+
+    it("treats a blank or non-string command as no command", () => {
+      // A whitespace-only command cannot run, so it must not buy the fallback:
+      // the process adapter would reject it with the misleading message that
+      // the loud failure exists to replace.
+      expect(() => resolveExecutionAdapter("not_deployed_to_this_build", { command: "   " }))
+        .toThrow(/Unknown adapter type/);
+      expect(() => resolveExecutionAdapter("not_deployed_to_this_build", { command: 42 }))
+        .toThrow(/Unknown adapter type/);
+    });
   });
 
   it("allows external plugin to override a built-in adapter type", () => {
@@ -268,7 +351,8 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: {},
+        // MC-0.15: cheap must apply an explicit model (DEFAULT_CODEX_LOCAL_MODEL), not {}.
+        adapterConfig: expect.objectContaining({ model: DEFAULT_CODEX_LOCAL_MODEL }),
         source: "adapter_default",
       }),
     ]);

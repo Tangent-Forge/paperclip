@@ -2336,6 +2336,7 @@ export {
 
 export {
   BUILTIN_ROUTINE_VARIABLE_NAMES,
+  buildRoutineVariableContext,
   extractRoutineVariableNames,
   getBuiltinRoutineVariableValues,
   interpolateRoutineTemplate,

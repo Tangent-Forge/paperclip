@@ -6,9 +6,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
+  instanceUserRoles,
   issueCreateIdempotencyKeys,
   issues,
 } from "@paperclipai/db";
@@ -19,6 +22,7 @@ import {
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { boardAuthService } from "../services/board-auth.js";
 import {
   ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS,
   issueService,
@@ -38,10 +42,33 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("issue create deduplication routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  // PAP-1975 removed local_trusted's implicit board grant, so these
+  // supertest requests (which never went through a real browser or CLI) now
+  // need an explicit board credential like any other caller — minted once
+  // via the same service real board API keys use, not reimplemented here.
+  let boardToken!: string;
+  let boardUserId!: string;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-create-deduplication-routes-");
     db = createDb(tempDb.connectionString);
+
+    boardUserId = randomUUID();
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: boardUserId,
+      name: "Test Board",
+      email: `test-board-${boardUserId}@example.invalid`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(instanceUserRoles).values({ userId: boardUserId, role: "instance_admin" });
+    const key = await boardAuthService(db).createNamedBoardApiKey({
+      userId: boardUserId,
+      name: "issue-create-deduplication-routes.test.ts",
+    });
+    boardToken = key.token;
   }, 20_000);
 
   afterEach(async () => {
@@ -50,6 +77,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -74,6 +102,19 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    // assertCompanyAccess gates on req.actor.companyIds regardless of
+    // isInstanceAdmin (that flag only bypasses the later active/viewer
+    // membership-role check, not this initial company-visibility gate) —
+    // give the test board actor real membership in every company it seeds,
+    // matching what board-claim.ts's real ownership-claim flow does for a
+    // genuine human board owner.
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
     return companyId;
   }
 
@@ -94,10 +135,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Prepare release", idempotencyKey: "run-1:prepare-release" })
       .expect(201);
     const replay = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({
         parentId: parent.id,
         title: "Different retry payload",
@@ -141,6 +184,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const recreated = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Expired retry creates new work", idempotencyKey })
       .expect(201);
 
@@ -161,10 +205,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Create   a single PR" })
       .expect(201);
     const duplicate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "  create a SINGLE pr  " })
       .expect(200);
 
@@ -183,9 +229,11 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     const [keyed, titleOnly] = await Promise.all([
       request(app)
         .post(`/api/companies/${companyId}/issues`)
+        .set("Authorization", `Bearer ${boardToken}`)
         .send({ parentId: parent.id, title: "Coordinate launch", idempotencyKey: "run-2:coordinate-launch" }),
       request(app)
         .post(`/api/companies/${companyId}/issues`)
+        .set("Authorization", `Bearer ${boardToken}`)
         .send({ parentId: parent.id, title: "Coordinate launch" }),
     ]);
 
@@ -202,6 +250,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const replay = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Different title", idempotencyKey: "run-2:coordinate-launch" })
       .expect(200);
     expect(replay.body).toMatchObject({
@@ -218,10 +267,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const first = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Investigate incident" })
       .expect(201);
     const duplicate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Investigate incident", allowDuplicate: true })
       .expect(201);
 
@@ -277,10 +328,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const recreatedOld = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Retry old work" })
       .expect(201);
     const recreatedClosed = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ parentId: parent.id, title: "Retry closed work" })
       .expect(201);
 
@@ -314,6 +367,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const response = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .set("X-Paperclip-Run-Id", runId)
       .send({ parentId: parent.id, title: "Attributed create" })
       .expect(201);

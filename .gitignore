@@ -59,6 +59,13 @@ diagnostics/
 # Playwright
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+# Several tests/e2e/*.spec.ts files (smoke-lab, planning-mode, mcp-user-stories,
+# applications-crud, apps-dark-mode-shots, prosumer-mcp-flow, app-not-connected)
+# write their own evidence screenshots to a repo-root-relative "test-results/..."
+# path (independent of Playwright's own outputDir, which is scoped under
+# tests/e2e/ above and already ignored) — this was never actually ignored,
+# just never noticed because CI runs from a fresh checkout that's discarded.
+/test-results/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 test-results/issue-detail-perf/

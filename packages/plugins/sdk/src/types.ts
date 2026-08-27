@@ -1445,6 +1445,10 @@ export interface PluginIssuesClient {
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    /** Durable company-scoped key for retry/concurrency-safe issue creation. */
+    idempotencyKey?: string | null;
+    /** Set false to reuse a recent open issue with the same normalized title. */
+    allowDuplicate?: boolean;
     actor?: PluginIssueMutationActor;
   }): Promise<Issue>;
   update(

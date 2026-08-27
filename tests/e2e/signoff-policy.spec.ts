@@ -1,4 +1,11 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant. This spec
+// uses two separate request surfaces that both need it: standalone
+// pwRequest.newContext() calls for setup/teardown (handled directly below
+// via readE2eBoardCredential), and the browser `page`/`context` used to
+// view issues in the UI (handled by the fixture's context override).
+import { request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect } from "./fixtures/board-auth.js";
+import { readE2eBoardCredential } from "./board-key-bootstrap.js";
 
 /**
  * E2E: Signoff execution policy flow.
@@ -14,7 +21,8 @@ import { test, expect, request as pwRequest, type APIRequestContext } from "@pla
  * Requires local_trusted deployment mode (set in playwright.config.ts webServer env).
  *
  * Agent auth flow:
- *   - Board request (local_trusted auto-auth) handles setup/teardown.
+ *   - Board request (e2e-only board API key, see board-key-bootstrap.ts —
+ *     PAP-1975 removed local_trusted's implicit auto-auth) handles setup/teardown.
  *   - Agent-specific actions use API keys + heartbeat run IDs.
  *   - Reviewers/approvers invoke heartbeat runs (gets run IDs) then PATCH
  *     directly without checkout (checkout would force in_progress, breaking
@@ -377,7 +385,16 @@ test.describe("Signoff execution policy", () => {
   let ctx: TestContext;
 
   test.beforeAll(async () => {
-    const boardRequest = await pwRequest.newContext({ baseURL: BASE_URL });
+    const credential = readE2eBoardCredential();
+    if (!credential) {
+      throw new Error(
+        "signoff-policy.spec.ts: no e2e board credential found — global-setup.ts should have provisioned one.",
+      );
+    }
+    const boardRequest = await pwRequest.newContext({
+      baseURL: BASE_URL,
+      extraHTTPHeaders: { Authorization: `Bearer ${credential.token}` },
+    });
     ctx = await setupCompany(boardRequest);
   });
 

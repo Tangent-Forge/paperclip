@@ -1,4 +1,7 @@
-import { expect, test } from "@playwright/test";
+// PAP-1975 removed local_trusted's implicit board/admin grant. This spec's
+// onboarding wizard flow creates a company, which now requires real board
+// authority. See fixtures/board-auth.ts and board-key-bootstrap.ts.
+import { expect, test } from "./fixtures/board-auth.js";
 import {
   expectLandsOnFirstTaskWithoutDashboardBounce,
   instrumentNavLog,

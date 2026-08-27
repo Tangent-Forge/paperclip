@@ -3,6 +3,7 @@ import {
   listAdapterModelProfiles,
   type AdapterModelProfileDefinition,
 } from "../adapters/index.js";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
@@ -21,7 +22,7 @@ const cheapProfile: AdapterModelProfileDefinition = {
 };
 
 describe("heartbeat model profile application", () => {
-  it("keeps Codex on its primary model when cheap has no explicit model override", async () => {
+  it("applies cheap profile's explicit default model over Codex's primary model", async () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
       agentRuntimeConfig: {},
@@ -43,7 +44,7 @@ describe("heartbeat model profile application", () => {
       fallbackReason: null,
       adapterConfig: {},
     });
-    expect(merged).toEqual({ model: "primary" });
+    expect(merged).toEqual({ model: DEFAULT_CODEX_LOCAL_MODEL });
   });
 
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {

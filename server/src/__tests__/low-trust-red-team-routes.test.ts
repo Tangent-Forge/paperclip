@@ -5,6 +5,7 @@ import request from "supertest";
 import { WebSocketServer } from "ws";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -1002,7 +1003,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(res.body.error).toBe("Low-trust boundary root issue scopes do not overlap.");
   });
 
-  it("restricts low-trust self inspection without changing standard-agent visibility", async () => {
+  it("restricts low-trust self inspection more narrowly than the standard agent-detail config suppression", async () => {
     const fixture = await seedLowTrustFixture(db);
     await db.insert(companyMemberships).values({
       companyId: fixture.company.id,
@@ -1068,7 +1069,19 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const standardActor = agentActor(fixture, fixture.agents.standard.id);
     const standardRes = await request(createApp(db, { ...standardActor, runId: null })).get("/api/agents/me");
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-    expect(JSON.stringify(standardRes.body)).toContain(fixture.canaries.agentConfig);
+    // Config redaction is actor-aware: configuration-read actors (board,
+    // agent_config:read grant holders) see real values on agent detail
+    // reads, while /agents/me always suppresses adapterConfig/runtimeConfig
+    // — self-inspection of the real values goes through
+    // GET /agents/:id/configuration instead. This assertion only confirms
+    // the canary doesn't leak via /agents/me; the low-trust-specific
+    // restrictions (permissions/access hidden, peer config and bundle reads
+    // forbidden) are what the rest of this test actually exercises.
+    expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
+    expect(standardRes.body).toHaveProperty("adapterConfig", REDACTED_EVENT_VALUE);
+    expect(standardRes.body).toHaveProperty("runtimeConfig", REDACTED_EVENT_VALUE);
+    expect(standardRes.body).toHaveProperty("permissions");
+    expect(standardRes.body).toHaveProperty("access");
 
     const issueScopedLowTrustRes = await request(createApp(db, standardActor)).get("/api/agents/me");
     expect(issueScopedLowTrustRes.status, JSON.stringify(issueScopedLowTrustRes.body)).toBe(200);

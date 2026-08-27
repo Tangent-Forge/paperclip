@@ -127,8 +127,7 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("--output-format");
       expect(capture.argv).toContain("stream-json");
       expect(capture.argv).toContain("--prompt");
-      expect(capture.argv).toContain("--approval-mode");
-      expect(capture.argv).toContain("yolo");
+      expect(capture.argv).toContain("--dangerously-skip-permissions");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(promptArg).toContain("Follow the paperclip heartbeat.");
@@ -157,7 +156,7 @@ describe("gemini execute", () => {
     }
   });
 
-  it("always passes --approval-mode yolo", async () => {
+  it("always passes --dangerously-skip-permissions", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
@@ -185,8 +184,7 @@ describe("gemini execute", () => {
       });
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.argv).toContain("--approval-mode");
-      expect(capture.argv).toContain("yolo");
+      expect(capture.argv).toContain("--dangerously-skip-permissions");
       expect(capture.argv).not.toContain("--policy");
       expect(capture.argv).not.toContain("--allow-all");
       expect(capture.argv).not.toContain("--allow-read");

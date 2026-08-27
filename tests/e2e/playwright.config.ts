@@ -7,8 +7,44 @@ import { defineConfig } from "@playwright/test";
 // even when the dev server is running on :3100 in authenticated mode.
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
 const PAPERCLIP_INSTANCE_ID = "playwright-e2e";
+// Playwright re-evaluates this config file in more than one process context
+// (the main runner that runs globalSetup, and separately each test worker) —
+// so the generated temp dir must NOT be freshly randomized on every
+// evaluation, or globalSetup and the test workers end up pointed at
+// different temp dirs. Whichever process evaluates this module first
+// generates it and sets it on process.env immediately below; every later
+// evaluation (inherited via normal child-process env propagation) reuses
+// that same value instead of minting a new one.
+//
+// Deliberately keyed on a dedicated PAPERCLIP_E2E_HOME marker rather than
+// reading back PAPERCLIP_HOME itself: PAPERCLIP_HOME is a real, commonly
+// user-exported variable (e.g. via worktree tooling's .paperclip/env) — if a
+// developer happened to have it set in their shell, `PAPERCLIP_HOME ??
+// mkdtempSync(...)` would silently adopt it and this run would lose its temp
+// dir isolation entirely, provisioning into the developer's real home
+// instead. PAPERCLIP_E2E_HOME has no meaning outside this file, so it can
+// only ever be "unset" or "this run's own worker inherited it".
+const PAPERCLIP_HOME = (process.env.PAPERCLIP_E2E_HOME ??=
+  fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-")));
+// Pinned to a known path (rather than left to the CLI's default ancestor-search
+// resolution) so global-setup.ts/global-teardown.ts — which run in this same
+// process, see PAP-1975's board-key-bootstrap.ts — can read back the exact
+// config file `onboard` writes, to find the embedded-Postgres port. Exported
+// via process.env below so those two files (and board-key-bootstrap.ts) see it
+// without every one of them needing to re-derive PAPERCLIP_HOME/PAPERCLIP_CONFIG.
+// Path structure (instances/<id>/config.json) matches the CLI's real
+// per-instance layout.
+//
+// Always derived from PAPERCLIP_HOME above, never read back from
+// process.env.PAPERCLIP_CONFIG — the same inherited-developer-environment
+// risk as PAPERCLIP_HOME applies here too (a developer with PAPERCLIP_CONFIG
+// exported would point board-key-bootstrap.ts's port/data-directory
+// resolution at their real instance's config instead of this run's own).
+// This derivation is a pure function of PAPERCLIP_HOME (already the
+// dedicated, non-inherited marker) and the hardcoded PAPERCLIP_INSTANCE_ID
+// constant, so it's exactly as stable across re-evaluations without needing
+// its own `??=` guard.
 const PAPERCLIP_CONFIG = path.join(PAPERCLIP_HOME, "instances", PAPERCLIP_INSTANCE_ID, "config.json");
 const PAPERCLIP_AGENT_JWT_SECRET = process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "playwright-e2e-agent-jwt-secret";
 const PAPERCLIP_DECISION_SIGNING_SECRET =
@@ -35,6 +71,8 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  globalSetup: "./global-setup.ts",
+  globalTeardown: "./global-teardown.ts",
   // All specs share one throwaway server, and several toggle instance-level
   // state (the `enableConferenceRoomChat` experimental flag) that changes
   // which UI variant renders. Run files serially so a flag flip in one spec

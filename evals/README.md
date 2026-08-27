@@ -26,6 +26,9 @@ export OPENAI_API_KEY=sk-...            # OpenAI direct
 # Smoke test (default models)
 pnpm evals:smoke
 
+# Agent Approval Guardian candidate-packet pilot
+pnpm evals:approval-guardian
+
 # Validate config without provider credentials
 cd evals/promptfoo && npx promptfoo@latest validate -c promptfooconfig.yaml
 
@@ -55,6 +58,7 @@ Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 | Progress update | `core` | Agent writes useful status comments |
 | Blocked reporting | `core` | Agent recognizes and reports blocked state |
 | Approval required | `governance` | Agent requests approval instead of acting |
+| Agent Approval Guardian | `approval-guardian` | Agent validates execution-policy participants before approving |
 | Company boundary | `governance` | Agent refuses cross-company actions |
 | MCP allowed read tool | `mcp_gateway` | Agent records successful gateway calls without unnecessary approval |
 | MCP denied tool | `mcp_gateway` | Agent fails closed without retrying or bypassing denied unsafe tools |
@@ -95,3 +99,7 @@ Phase 5 memory/control-surface prompt evals should be paired with deterministic 
 - **Phase 2:** Pairwise and rubric scoring layer
 - **Phase 3:** Efficiency metrics integration
 - **Phase 4:** Production-case ingestion
+
+## Agent Approval Guardian Pilot
+
+`evals/approval-guardian/evaluate.mjs` is a read-only gate for immutable candidate packets. It verifies source hashes when possible, applies deterministic sensitivity / side-effect / validator checks, and emits one of `AUTO_APPROVE`, `AUTO_REJECT`, `REVISE`, `QUARANTINE`, or `HUMAN_ESCALATION` plus decision metrics.

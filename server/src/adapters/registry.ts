@@ -83,6 +83,14 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
+  agentConfigurationDoc as janitorAgentConfigurationDoc,
+  execute as janitorExecute,
+  getConfigSchema as getJanitorConfigSchema,
+  models as janitorModels,
+  modelProfiles as janitorModelProfiles,
+  testEnvironment as janitorTestEnvironment,
+} from "./janitor-local/index.js";
+import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
@@ -421,6 +429,19 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const janitorLocalAdapter: ServerAdapterModule = {
+  type: "janitor_local",
+  execute: janitorExecute,
+  testEnvironment: janitorTestEnvironment,
+  models: janitorModels,
+  modelProfiles: janitorModelProfiles,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: janitorAgentConfigurationDoc,
+  getConfigSchema: getJanitorConfigSchema,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -445,6 +466,7 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    janitorLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
@@ -565,16 +587,80 @@ export function unregisterServerAdapter(type: string): void {
   adaptersByType.delete(type);
 }
 
+/**
+ * Build the message used when an adapter type cannot be resolved.
+ *
+ * The registered-type list is the diagnostic that matters: the usual cause is
+ * an adapter that ships to one lineage but not another, so the reader needs to
+ * see that the type is absent from *this build* rather than mistyped in the
+ * agent's config. The `Unknown adapter type: <type>` prefix is a stable
+ * contract — routes and tests match on it.
+ */
+function unknownAdapterTypeMessage(type: string): string {
+  const registered = Array.from(adaptersByType.keys()).sort().join(", ");
+  return `Unknown adapter type: ${type} — not registered on this build. Registered adapter types: ${registered}`;
+}
+
 export function requireServerAdapter(type: string): ServerAdapterModule {
   const adapter = findActiveServerAdapter(type);
   if (!adapter) {
-    throw new Error(`Unknown adapter type: ${type}`);
+    throw new Error(unknownAdapterTypeMessage(type));
   }
   return adapter;
 }
 
+/**
+ * Resolve the adapter used to execute a run.
+ *
+ * This used to fall back to `processAdapter` for unregistered types. That
+ * silently turned "the adapter was never deployed to this build" into a
+ * `Process adapter missing command` failure deep inside the process adapter —
+ * non-process adapter configs carry no `command` key — which points the reader
+ * at the agent's configuration instead of at the missing build artifact.
+ * It now shares `requireServerAdapter` semantics so the failure names the type.
+ *
+ * Soft-resolving callers (e.g. session codec lookup, which must keep working
+ * for rows referencing retired adapters) should use `findActiveServerAdapter`.
+ *
+ * Run execution should use `resolveExecutionAdapter`, which keeps the one
+ * fallback that is still load-bearing.
+ */
 export function getServerAdapter(type: string): ServerAdapterModule {
-  return findActiveServerAdapter(type) ?? processAdapter;
+  return requireServerAdapter(type);
+}
+
+/**
+ * Resolve the adapter that executes a run, given the agent's effective config.
+ *
+ * Two different situations produce an adapter type that is not in the registry,
+ * and they need opposite handling:
+ *
+ *  - The adapter was never deployed to this build. The
+ *    config carries no `command`, so the old blanket fallback to the process
+ *    adapter surfaced `Process adapter missing command` — blaming the agent's
+ *    configuration for a missing build artifact. These must fail by name.
+ *  - The agent uses its adapter type purely as a label and carries the real
+ *    contract in `command` (`kimi_local`, `qwen_local` on this build). These
+ *    have always executed through the process adapter and must keep working;
+ *    failing them loudly would be a regression, not a diagnostic.
+ *
+ * A configured `command` is exactly what distinguishes the two, and it is the
+ * same value `processAdapter` itself requires, so the fallback can only select
+ * an adapter that is able to run.
+ */
+export function resolveExecutionAdapter(
+  type: string,
+  config: Record<string, unknown> | null | undefined,
+): ServerAdapterModule {
+  const registered = findActiveServerAdapter(type);
+  if (registered) return registered;
+
+  const command = config?.command;
+  if (typeof command === "string" && command.trim() !== "") {
+    return processAdapter;
+  }
+
+  throw new Error(unknownAdapterTypeMessage(type));
 }
 
 /**

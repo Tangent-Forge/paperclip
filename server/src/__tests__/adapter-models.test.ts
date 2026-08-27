@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
 import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
-import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_MODEL,
+  models as codexFallbackModels,
+} from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
@@ -54,6 +57,7 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(false);
+    expect(models.some((model) => model.id === DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

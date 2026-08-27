@@ -8,11 +8,14 @@ import {
   agentRuntimeState,
   agents,
   agentWakeupRequests,
+  authUsers,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceUserRoles,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -25,6 +28,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { issueRoutes } from "../routes/issues.js";
+import { boardAuthService } from "../services/board-auth.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -53,6 +57,10 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+    resolveExecutionAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
   };
 });
 
@@ -70,10 +78,33 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  // PAP-1975 removed local_trusted's implicit board grant, so these
+  // supertest requests (which never went through a real browser or CLI) now
+  // need an explicit board credential like any other caller — minted once
+  // via the same service real board API keys use, not reimplemented here.
+  let boardToken!: string;
+  let boardUserId!: string;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-onboarding-first-task-routes-");
     db = createDb(tempDb.connectionString);
+
+    boardUserId = randomUUID();
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: boardUserId,
+      name: "Test Board",
+      email: `test-board-${boardUserId}@example.invalid`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(instanceUserRoles).values({ userId: boardUserId, role: "instance_admin" });
+    const key = await boardAuthService(db).createNamedBoardApiKey({
+      userId: boardUserId,
+      name: "issue-onboarding-first-task-routes.test.ts",
+    });
+    boardToken = key.token;
   }, 20_000);
 
   afterEach(async () => {
@@ -97,6 +128,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -120,6 +152,19 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
       name: "Paperclip",
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+    // assertCompanyAccess gates on req.actor.companyIds regardless of
+    // isInstanceAdmin (that flag only bypasses the later active/viewer
+    // membership-role check, not this initial company-visibility gate) —
+    // give the test board actor real membership in every company it seeds,
+    // matching what board-claim.ts's real ownership-claim flow does for a
+    // genuine human board owner.
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "owner",
     });
     return companyId;
   }
@@ -157,6 +202,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
 
     const created = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ title: "Get started", onboardingFirstTask: true, assigneeAgentId: agentId })
       .expect(201);
 
@@ -188,6 +234,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
 
     const created = await request(app)
       .post(`/api/companies/${companyId}/issues`)
+      .set("Authorization", `Bearer ${boardToken}`)
       .send({ title: "Race loser", onboardingFirstTask: true, assigneeAgentId: agentId })
       .expect(201);
 
@@ -208,6 +255,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
       ["Kick off A", "Kick off B", "Kick off C"].map((title) =>
         request(app)
           .post(`/api/companies/${companyId}/issues`)
+          .set("Authorization", `Bearer ${boardToken}`)
           .send({ title, onboardingFirstTask: true }),
       ),
     );

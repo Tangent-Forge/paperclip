@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../index.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
@@ -61,9 +62,36 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides for manual models", () => {
+  it("ignores fast mode for manual models until support is proven", () => {
     const result = buildCodexExecArgs({
       model: "future-codex-model",
+      fastMode: true,
+    });
+
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain(
+      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4",
+    );
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "future-codex-model",
+      "-",
+    ]);
+  });
+
+  it("falls blank/omitted model config through to DEFAULT_CODEX_LOCAL_MODEL with --model", () => {
+    for (const config of [{}, { model: "" }, { model: "   " }, { model: null }, { model: undefined }]) {
+      const result = buildCodexExecArgs(config as Record<string, unknown>);
+      expect(result.model).toBe(DEFAULT_CODEX_LOCAL_MODEL);
+      expect(result.args).toEqual(["exec", "--json", "--model", DEFAULT_CODEX_LOCAL_MODEL, "-"]);
+    }
+  });
+
+  it("enables Codex fast mode overrides when model is omitted (resolved default)", () => {
+    const result = buildCodexExecArgs({
       fastMode: true,
     });
 
@@ -74,26 +102,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "future-codex-model",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
-      "-",
-    ]);
-  });
-
-  it("enables Codex fast mode overrides when model is omitted (CLI default)", () => {
-    const result = buildCodexExecArgs({
-      fastMode: true,
-    });
-
-    expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
-    expect(result.args).toEqual([
-      "exec",
-      "--json",
+      DEFAULT_CODEX_LOCAL_MODEL,
       "-c",
       'service_tier="fast"',
       "-c",
@@ -111,7 +120,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4",
     );
     expect(result.args).toEqual([
       "exec",

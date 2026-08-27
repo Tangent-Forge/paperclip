@@ -176,7 +176,7 @@ const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
  * auto-built on install, so it is recomputed per request in `listBundledPlugins`
  * rather than cached.
  */
-type DiscoveredBundledPlugin = {
+export type DiscoveredBundledPlugin = {
   entry: Omit<AvailableBundledPlugin, "hasBuiltEntrypoints">;
   packageRoot: string;
   pkgJson: Record<string, unknown>;
@@ -230,7 +230,8 @@ async function findPackageJsonFiles(root: string, maxDepth = 4): Promise<string[
   return packageJsonFiles;
 }
 
-function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
+/** Exported for the bundled-manifest contract test; see `discoverBundledPlugins`. */
+export function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
   const paperclipPlugin = pkgJson.paperclipPlugin;
   if (
     !paperclipPlugin
@@ -289,7 +290,15 @@ function isExperimentalBundledPlugin(packageRoot: string, packageName: string): 
   );
 }
 
-async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
+/**
+ * Exported so the bundled-manifest contract test can enumerate plugins through
+ * the same predicate the Plugin Manager uses. A test that reimplemented this
+ * scan would silently stop covering any plugin added in a directory shape the
+ * copy did not anticipate -- the exact failure mode that test exists to catch.
+ *
+ * @see server/src/__tests__/bundled-plugin-manifests.test.ts
+ */
+export async function discoverBundledPlugins(): Promise<DiscoveredBundledPlugin[]> {
   const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
   const bundledPlugins: DiscoveredBundledPlugin[] = [];
   for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
@@ -2853,17 +2862,17 @@ export function pluginRoutes(
 
     // Step 6: Record the delivery in the database
     const startedAt = new Date();
-    const [delivery] = await db
-      .insert(pluginWebhookDeliveries)
-      .values({
-        pluginId: plugin.id,
-        webhookKey: endpointKey,
-        status: "pending",
-        payload,
-        headers: rawHeaders,
-        startedAt,
-      })
-      .returning({ id: pluginWebhookDeliveries.id });
+    const deliveryExternalId = rawHeaders["linear-delivery"]?.trim() || null;
+    const delivery = await registry.createWebhookDelivery(plugin.id, endpointKey, null, {
+      externalId: deliveryExternalId ?? undefined,
+      payload,
+      headers: rawHeaders,
+      startedAt,
+    });
+    if (!delivery) {
+      res.status(500).json({ error: "Failed to record webhook delivery" });
+      return;
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
@@ -3163,6 +3172,7 @@ export function pluginRoutes(
     let recentWebhookDeliveries: Array<{
       id: string;
       webhookKey: string;
+      externalId: string | null;
       status: string;
       durationMs: number | null;
       error: string | null;
@@ -3176,6 +3186,7 @@ export function pluginRoutes(
         .select({
           id: pluginWebhookDeliveries.id,
           webhookKey: pluginWebhookDeliveries.webhookKey,
+          externalId: pluginWebhookDeliveries.externalId,
           status: pluginWebhookDeliveries.status,
           durationMs: pluginWebhookDeliveries.durationMs,
           error: pluginWebhookDeliveries.error,
@@ -3188,16 +3199,24 @@ export function pluginRoutes(
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 
-      recentWebhookDeliveries = deliveries.map((d) => ({
-        id: d.id,
-        webhookKey: d.webhookKey,
-        status: d.status,
-        durationMs: d.durationMs,
-        error: d.error,
-        startedAt: d.startedAt ? d.startedAt.toISOString() : null,
-        finishedAt: d.finishedAt ? d.finishedAt.toISOString() : null,
-        createdAt: d.createdAt.toISOString(),
-      }));
+      recentWebhookDeliveries = [];
+      for (const delivery of deliveries) {
+        const resolvedDelivery = delivery.externalId
+          ? delivery
+          : (await registry.backfillWebhookDeliveryExternalId(delivery.id)) ?? delivery;
+
+        recentWebhookDeliveries.push({
+          id: resolvedDelivery.id,
+          webhookKey: resolvedDelivery.webhookKey,
+          externalId: resolvedDelivery.externalId ?? null,
+          status: resolvedDelivery.status,
+          durationMs: resolvedDelivery.durationMs,
+          error: resolvedDelivery.error,
+          startedAt: resolvedDelivery.startedAt ? resolvedDelivery.startedAt.toISOString() : null,
+          finishedAt: resolvedDelivery.finishedAt ? resolvedDelivery.finishedAt.toISOString() : null,
+          createdAt: resolvedDelivery.createdAt.toISOString(),
+        });
+      }
     } catch {
       // Webhook data unavailable — leave empty
     }

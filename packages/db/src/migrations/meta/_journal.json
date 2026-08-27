@@ -1583,6 +1583,13 @@
       "when": 1787643806702,
       "tag": "9004_delivery_route_contract_retry_bounds",
       "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1787643806704,
+      "tag": "9005_restore_instance_scoped_environments",
+      "breakpoints": true
     }
   ]
 }

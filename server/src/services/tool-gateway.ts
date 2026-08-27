@@ -63,6 +63,7 @@ import {
   type ToolRuntimeSupervisorOptions,
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
+import { SYNTHETIC_TODO_KV_STDIO_TEMPLATE } from "./tool-stdio-fixtures.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import {
   canonicalToolArguments,
@@ -283,9 +284,7 @@ const BUILTIN_LOCAL_STDIO_RUNTIME_TEMPLATES: Record<string, Omit<LocalStdioRunti
     envKeys: [],
   },
   "paperclip.synthetic-todo-kv": {
-    command: null,
-    args: [],
-    envKeys: [],
+    ...SYNTHETIC_TODO_KV_STDIO_TEMPLATE,
   },
 };
 

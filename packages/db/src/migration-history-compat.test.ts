@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
@@ -21,6 +22,14 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const cleanups: Array<() => Promise<void>> = [];
 
+async function migrationHash(migrationFile: string): Promise<string> {
+  const content = await fs.promises.readFile(
+    new URL(`./migrations/${migrationFile}`, import.meta.url),
+    "utf8",
+  );
+  return createHash("sha256").update(content).digest("hex");
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     await cleanups.pop()?.();
@@ -28,7 +37,7 @@ afterEach(async () => {
 });
 
 describe("historical migration compatibility", () => {
-  it("recognizes exactly the two approved historical TF hashes", () => {
+  it("recognizes exactly the approved historical TF hashes", () => {
     expect([...HISTORICAL_MIGRATION_HASHES.entries()]).toEqual([
       [
         "a064370e835d3a33f66187f373c32f9e1707f1ebeeda5ae59f7f0411d26b2754",
@@ -37,6 +46,10 @@ describe("historical migration compatibility", () => {
       [
         "8247dcc646e22c135b19896af4bbeca5f62554c0abac9bda57a923afdb8eaae9",
         "9003_restore_company_scoped_environments.sql",
+      ],
+      [
+        "4ed32969bf2be72afc4b7cca484de545fd7fb111ec420832938cc6bad6755e95",
+        "historical 0103_environments_company_id_reconciliation.sql",
       ],
     ]);
   });
@@ -49,6 +62,7 @@ describe("historical migration compatibility", () => {
 
     expect(migrationFiles).not.toContain("9002_evidence_provenance_registry.sql");
     expect(migrationFiles).not.toContain("9003_restore_company_scoped_environments.sql");
+    expect(migrationFiles).not.toContain("historical 0103_environments_company_id_reconciliation.sql");
 
     const resolution = resolveMigrationHistoryHashes(
       [...HISTORICAL_MIGRATION_HASHES.keys()],
@@ -57,6 +71,7 @@ describe("historical migration compatibility", () => {
     expect(resolution.appliedMigrations).toEqual([
       "9002_evidence_provenance_registry.sql",
       "9003_restore_company_scoped_environments.sql",
+      "historical 0103_environments_company_id_reconciliation.sql",
     ]);
     expect(migrationFiles).not.toEqual(expect.arrayContaining(resolution.appliedMigrations));
   });
@@ -145,7 +160,8 @@ describeEmbeddedPostgres("historical migration compatibility against migration r
       await sql.unsafe(
         `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
           ('a064370e835d3a33f66187f373c32f9e1707f1ebeeda5ae59f7f0411d26b2754', 1785391098075),
-          ('8247dcc646e22c135b19896af4bbeca5f62554c0abac9bda57a923afdb8eaae9', 1785391098109)`,
+          ('8247dcc646e22c135b19896af4bbeca5f62554c0abac9bda57a923afdb8eaae9', 1785391098109),
+          ('4ed32969bf2be72afc4b7cca484de545fd7fb111ec420832938cc6bad6755e95', 1787643806703)`,
       );
     } finally {
       await sql.end();
@@ -165,5 +181,64 @@ describeEmbeddedPostgres("historical migration compatibility against migration r
     await expect(inspectMigrations(database.connectionString)).rejects.toThrow(
       "Unrecognized migration history hash(es): unknown-history-hash",
     );
+  }, 60_000);
+
+  it("repairs a post-0105 company-scope regression with a forward migration", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-migration-env-forward-repair-");
+    cleanups.push(database.cleanup);
+
+    await applyPendingMigrations(database.connectionString);
+    const repairMigration = "9005_restore_instance_scoped_environments.sql";
+    const repairHash = await migrationHash(repairMigration);
+
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await sql.unsafe(`ALTER TABLE "environments" ADD COLUMN "company_id" uuid`);
+      await sql.unsafe(`CREATE INDEX "environments_company_status_idx" ON "environments" ("company_id", "status")`);
+      await sql.unsafe(`CREATE UNIQUE INDEX "environments_company_driver_idx" ON "environments" ("company_id", "driver") WHERE "driver" = 'local'`);
+      await sql.unsafe(`CREATE INDEX "environments_company_name_idx" ON "environments" ("company_id", "name")`);
+      await sql.unsafe(`CREATE UNIQUE INDEX "environments_company_managed_sandbox_idx" ON "environments" ("company_id") WHERE "driver" = 'sandbox' AND ("metadata" ->> 'managedByPaperclip')::boolean = true`);
+      await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${repairHash}`;
+      await sql.unsafe(
+        `INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES
+          ('4ed32969bf2be72afc4b7cca484de545fd7fb111ec420832938cc6bad6755e95', 1787643806703)`,
+      );
+    } finally {
+      await sql.end();
+    }
+
+    const before = await inspectMigrations(database.connectionString);
+    expect(before).toMatchObject({
+      status: "needsMigrations",
+      pendingMigrations: expect.arrayContaining([repairMigration]),
+    });
+
+    await applyPendingMigrations(database.connectionString);
+
+    const verifySql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const columns = await verifySql.unsafe<{ column_name: string }[]>(
+        `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'environments'`,
+      );
+      const indexes = await verifySql.unsafe<{ indexname: string }[]>(
+        `SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'environments'`,
+      );
+      expect(columns.map((row) => row.column_name)).not.toContain("company_id");
+      expect(indexes.map((row) => row.indexname)).not.toEqual(expect.arrayContaining([
+        "environments_company_status_idx",
+        "environments_company_driver_idx",
+        "environments_company_name_idx",
+        "environments_company_managed_sandbox_idx",
+      ]));
+      expect(indexes.map((row) => row.indexname)).toEqual(expect.arrayContaining([
+        "environments_status_idx",
+        "environments_local_driver_idx",
+        "environments_name_idx",
+        "environments_managed_sandbox_idx",
+      ]));
+    } finally {
+      await verifySql.end();
+    }
+    expect((await inspectMigrations(database.connectionString)).status).toBe("upToDate");
   }, 60_000);
 });

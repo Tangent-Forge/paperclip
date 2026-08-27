@@ -5569,6 +5569,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
 
   afterEach(async () => {
     await resetRuntimeServicesForTests();
+    // Activity rows reference companies and issues, so they must go first or
+    // the deletes below fail on a foreign key. Runtime code paths under test
+    // here write them (see `logActivity` calls in services/workspace-runtime.ts).
+    await db.delete(activityLog);
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -6596,6 +6600,11 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Startup reconciliation logs `workspace_runtime.exposure_reservation_drift`
+    // against a company (services/workspace-runtime.ts). Without this delete the
+    // company delete below fails on activity_log's foreign key. Drift detection
+    // is timing-dependent, so the failure is intermittent rather than constant.
+    await db.delete(activityLog);
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);

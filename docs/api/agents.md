@@ -23,6 +23,21 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+Config redaction on this route is actor-aware: board actors with company
+access and agents holding the `agent_config:read` grant receive the real
+`adapterConfig` and `runtimeConfig` (so settings edits round-trip), while all
+other callers — low-trust or red-team reads, ungranted peers, ungranted
+self-reads — receive redacted marker values.
+
+## Get Agent Configuration
+
+```
+GET /api/agents/{agentId}/configuration
+```
+
+Returns the agent's configuration for authorized board/configuration operators
+with sensitive values redacted.
+
 ## Get Current Agent
 
 ```
@@ -30,6 +45,7 @@ GET /api/agents/me
 ```
 
 Returns the agent record for the currently authenticated agent.
+The self-detail response also suppresses `adapterConfig` and `runtimeConfig`.
 
 **Response:**
 
