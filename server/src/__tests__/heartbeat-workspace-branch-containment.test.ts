@@ -103,6 +103,11 @@ vi.mock("../adapters/index.js", async (importOriginal) => {
       execute: adapterExecute,
       supportsLocalAgentJwt: false,
     }),
+    resolveExecutionAdapter: () => ({
+      type: "codex_local",
+      execute: adapterExecute,
+      supportsLocalAgentJwt: false,
+    }),
     findActiveServerAdapter: () => ({
       type: "codex_local",
       execute: adapterExecute,
