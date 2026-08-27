@@ -14,6 +14,10 @@ export const HISTORICAL_MIGRATION_HASHES = new Map<string, string>([
     "8247dcc646e22c135b19896af4bbeca5f62554c0abac9bda57a923afdb8eaae9",
     "9003_restore_company_scoped_environments.sql",
   ],
+  [
+    "4ed32969bf2be72afc4b7cca484de545fd7fb111ec420832938cc6bad6755e95",
+    "historical 0103_environments_company_id_reconciliation.sql",
+  ],
 ]);
 
 // Upstream's migration runner also has one historical filename alias used by
