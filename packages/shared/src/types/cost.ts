@@ -25,6 +25,10 @@ export interface CostEvent {
 export interface CostSummary {
   companyId: string;
   spendCents: number;
+  /** count of metered_api cost events with costStatus 'unpriced' — costUsd was never
+   * reported by the adapter, so costCents is 0 here too. Already included in
+   * spendCents as $0; do not read a low spendCents as "cheap" without checking this. */
+  unpricedMeteredRunCount: number;
   budgetCents: number;
   utilizationPercent: number;
 }
@@ -44,7 +48,13 @@ export interface IssueCostSummary {
   runtimeMs: number;
 }
 
-export interface CostByAgent {
+/** of a group's apiRunCount, how many never got a priced cost event (costStatus 'unpriced') —
+ * already counted as costCents: 0 above; do not read a low costCents as "cheap" without checking this. */
+export interface UnpricedMeteredRunCount {
+  unpricedMeteredRunCount: number;
+}
+
+export interface CostByAgent extends UnpricedMeteredRunCount {
   agentId: string;
   agentName: string | null;
   agentStatus: string | null;
@@ -59,7 +69,7 @@ export interface CostByAgent {
   subscriptionOutputTokens: number;
 }
 
-export interface CostByProviderModel {
+export interface CostByProviderModel extends UnpricedMeteredRunCount {
   provider: string;
   biller: string;
   billingType: BillingType;
@@ -75,7 +85,7 @@ export interface CostByProviderModel {
   subscriptionOutputTokens: number;
 }
 
-export interface CostByBiller {
+export interface CostByBiller extends UnpricedMeteredRunCount {
   biller: string;
   costCents: number;
   inputTokens: number;
@@ -91,7 +101,7 @@ export interface CostByBiller {
 }
 
 /** per-agent breakdown by provider + model, for identifying token-hungry agents */
-export interface CostByAgentModel {
+export interface CostByAgentModel extends UnpricedMeteredRunCount {
   agentId: string;
   agentName: string | null;
   provider: string;

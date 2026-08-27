@@ -51,6 +51,16 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  // A metered_api run whose adapter never reported a costUsd gets
+  // costStatus 'unpriced' and costCents 0 (see resolveLedgerCostStatus /
+  // normalizeBilledCostCents in heartbeat.ts) — identical on the wire to a
+  // genuinely free subscription_included run. This surfaces that count
+  // alongside every cost breakdown so "$0" isn't silently read as "free".
+  const unpricedMeteredRunExpr = sql<number>`count(distinct case
+    when ${costEvents.billingType} = ${METERED_BILLING_TYPE}
+      and ${costEvents.costStatus} = 'unpriced'
+    then ${costEvents.heartbeatRunId}
+  end)::int`;
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
@@ -115,9 +125,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [{ total, unpricedMeteredRunCount }] = await db
         .select({
           total: sumAsNumber(costEvents.costCents),
+          unpricedMeteredRunCount: unpricedMeteredRunExpr,
         })
         .from(costEvents)
         .where(and(...conditions));
@@ -131,6 +142,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return {
         companyId,
         spendCents,
+        unpricedMeteredRunCount: Number(unpricedMeteredRunCount ?? 0),
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
       };
@@ -301,6 +313,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.inputTokens} else 0 end), 0)::double precision`,
           subscriptionOutputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::double precision`,
+          unpricedMeteredRunCount: unpricedMeteredRunExpr,
         })
         .from(costEvents)
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
@@ -334,6 +347,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.inputTokens} else 0 end), 0)::double precision`,
           subscriptionOutputTokens:
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::double precision`,
+          unpricedMeteredRunCount: unpricedMeteredRunExpr,
         })
         .from(costEvents)
         .where(and(...conditions))
@@ -365,6 +379,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::double precision`,
           providerCount: sql<number>`count(distinct ${costEvents.provider})::int`,
           modelCount: sql<number>`count(distinct ${costEvents.model})::int`,
+          unpricedMeteredRunCount: unpricedMeteredRunExpr,
         })
         .from(costEvents)
         .where(and(...conditions))
@@ -443,6 +458,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           inputTokens: sumAsNumber(costEvents.inputTokens),
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
+          unpricedMeteredRunCount: unpricedMeteredRunExpr,
         })
         .from(costEvents)
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
