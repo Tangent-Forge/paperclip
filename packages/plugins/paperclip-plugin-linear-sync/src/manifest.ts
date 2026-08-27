@@ -1,10 +1,31 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { ADMISSION_LINEAR_STATE_NAME, API_ROUTE_KEYS, JOB_KEYS, PLUGIN_ID, WEBHOOK_KEYS } from "./constants.js";
 
+function secretRefSchema(description: string) {
+  return {
+    anyOf: [
+      // Keep persisted legacy UUID strings discoverable by the host's secret
+      // handling while readConfig() upgrades them for the SDK RPC boundary.
+      { type: "string", minLength: 1, format: "secret-ref" },
+      {
+        type: "object",
+        properties: {
+          type: { const: "secret_ref" },
+          secretId: { type: "string", minLength: 1 },
+          version: { anyOf: [{ type: "integer", minimum: 1 }, { const: "latest" }] },
+        },
+        required: ["type", "secretId"],
+        additionalProperties: false,
+      },
+    ],
+    description,
+  };
+}
+
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.1",
+  version: "0.1.2",
   displayName: "Linear Sync",
   description: "Deterministic Linear-to-Paperclip intake sync with dedupe, bounded polling, retries, incidents, and observability.",
   author: "Paperclip",
@@ -38,8 +59,8 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       enabled: { type: "boolean", default: false },
       companyId: { type: "string", description: "Company to sync when the scheduled poller runs." },
-      linearApiKeySecretRef: { type: "string", format: "secret-ref", description: "Secret reference for the Linear API key." },
-      linearWebhookSigningSecretRef: { type: "string", format: "secret-ref", description: "Optional secret reference used to verify Linear webhook signatures." },
+      linearApiKeySecretRef: secretRefSchema("Secret reference for the Linear API key."),
+      linearWebhookSigningSecretRef: secretRefSchema("Optional secret reference used to verify Linear webhook signatures."),
       linearGraphqlUrl: { type: "string", default: "https://api.linear.app/graphql" },
       candidateStatusNames: { type: "array", items: { type: "string" }, default: [ADMISSION_LINEAR_STATE_NAME] },
       maxIssuesPerRun: { type: "integer", minimum: 1, maximum: 100, default: 25 },
