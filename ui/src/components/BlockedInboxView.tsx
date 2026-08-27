@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, Issue } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
+import { approvalsApi } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
@@ -13,6 +15,8 @@ import {
   countBlockedInboxLanes,
   formatStoppedAge,
   groupBlockedInboxRows,
+  orphanApprovalMatchesSearch,
+  selectPendingHumanApprovals,
   sortBlockedInboxRows,
   type BlockedInboxGroupBy,
   type BlockedInboxIssueRow,
@@ -23,6 +27,7 @@ import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
+import { approvalLabel, defaultTypeIcon, typeIcon } from "./ApprovalPayload";
 import { Button } from "@/components/ui/button";
 
 interface BlockedInboxViewProps {
@@ -81,6 +86,32 @@ export function BlockedInboxView({
       }),
   });
 
+  // Board-decision approvals routed from a stale ledger ask or a blocked issue with no
+  // recorded blocker are never linked to a live issue, so they're invisible to the query
+  // above — it only ever surfaces attention rows for real Issue records. Fetch them
+  // separately and merge into the human lane so "Human Decisions" actually reflects every
+  // pending item that needs a person's Approve/Reject, not just the issue-linked subset.
+  const {
+    data: unlinkedApprovals = [] as Approval[],
+    isLoading: isLoadingUnlinkedApprovals,
+  } = useQuery({
+    queryKey: queryKeys.approvals.listUnlinked(companyId),
+    queryFn: () => approvalsApi.listUnlinked(companyId),
+    enabled: lane === "human" || lane === "all",
+  });
+
+  const orphanApprovals = useMemo(
+    () => selectPendingHumanApprovals(unlinkedApprovals),
+    [unlinkedApprovals],
+  );
+  const filteredOrphanApprovals = useMemo(
+    () =>
+      orphanApprovals
+        .filter((approval) => orphanApprovalMatchesSearch(approval, approvalLabel(approval.type, approval.payload), searchQuery))
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    [orphanApprovals, searchQuery],
+  );
+
   const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
   const laneCounts = useMemo(() => countBlockedInboxLanes(issues), [issues]);
   const laneRows = useMemo(
@@ -125,7 +156,9 @@ export function BlockedInboxView({
     });
   };
 
-  if (isLoading) {
+  const isLoadingHumanLane = isLoading || ((lane === "human" || lane === "all") && isLoadingUnlinkedApprovals);
+
+  if (isLoadingHumanLane) {
     return (
       <div data-testid="blocked-inbox-loading" className="space-y-3" aria-busy="true">
         {Array.from({ length: 3 }).map((_, groupIdx) => (
@@ -181,7 +214,7 @@ export function BlockedInboxView({
     );
   }
 
-  if (laneRows.length === 0) {
+  if (laneRows.length === 0 && orphanApprovals.length === 0) {
     return (
       <div
         data-testid="blocked-inbox-empty"
@@ -204,7 +237,7 @@ export function BlockedInboxView({
     );
   }
 
-  if (groups.length === 0) {
+  if (groups.length === 0 && filteredOrphanApprovals.length === 0) {
     return (
       <div className="space-y-3">
         <div
@@ -220,12 +253,24 @@ export function BlockedInboxView({
   return (
     <div data-testid="blocked-inbox" className="space-y-3">
       <div className="flex flex-wrap gap-2 text-xs text-muted-foreground" data-testid="blocked-inbox-lane-counts">
-        <span>Human Decisions {laneCounts.human}</span>
+        <span>Human Decisions {laneCounts.human + orphanApprovals.length}</span>
         <span aria-hidden="true">·</span>
         <span>Agent Operations {laneCounts.agentOperations}</span>
         <span aria-hidden="true">·</span>
         <span>External Waits {laneCounts.external}</span>
       </div>
+      {filteredOrphanApprovals.length > 0 && (
+        <div className="overflow-hidden rounded-xl" data-testid="blocked-inbox-orphan-approvals">
+          <div className="px-3 sm:px-4">
+            <IssueGroupHeader label={`Needs decision · ${filteredOrphanApprovals.length}`} />
+          </div>
+          <div>
+            {filteredOrphanApprovals.map((approval) => (
+              <OrphanApprovalRow key={approval.id} approval={approval} />
+            ))}
+          </div>
+        </div>
+      )}
       <div className="overflow-hidden rounded-xl">
         {groupBy === "none" ? (
           sortedRows.map((row) => (
@@ -275,6 +320,35 @@ export function BlockedInboxView({
         )}
       </div>
     </div>
+  );
+}
+
+// A pending approval with no linked issue — see the `unlinkedApprovals` query above.
+// Renders as a lightweight row (not IssueRow, which requires a real Issue to link to)
+// pointing at the approval's own detail page, where it can be approved or rejected.
+function OrphanApprovalRow({ approval }: { approval: Approval }) {
+  const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
+  const label = approvalLabel(approval.type, approval.payload);
+  // `createdAt` arrives as an ISO string over the wire despite the `Date` type; normalize
+  // through `new Date(...)` the same way Approvals.tsx does before formatting.
+  const stoppedAge = formatStoppedAge(new Date(approval.createdAt).toISOString());
+
+  return (
+    <Link
+      to={`/approvals/${approval.id}`}
+      className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5 last:border-b-0 hover:bg-accent/40 sm:px-4"
+      data-testid="blocked-inbox-orphan-approval-row"
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+      <span className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+        <BlockedReasonChip reason="pending_board_decision" severity="medium" className="hidden sm:inline-flex" />
+        <span className="hidden w-[150px] min-w-0 items-center sm:inline-flex">
+          <Identity name="Board" size="xs" />
+        </span>
+        <span className="hidden w-[5.75rem] text-right sm:inline">{stoppedAge}</span>
+      </span>
+    </Link>
   );
 }
 

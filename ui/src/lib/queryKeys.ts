@@ -166,6 +166,8 @@ export const queryKeys = {
   approvals: {
     list: (companyId: string, status?: string) =>
       ["approvals", companyId, status] as const,
+    listUnlinked: (companyId: string, status?: string) =>
+      ["approvals", "unlinked", companyId, status] as const,
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,

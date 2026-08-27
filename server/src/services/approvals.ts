@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, issueApprovals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -79,9 +79,22 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    // `unlinkedOnly` selects approvals with no row in `issue_approvals` — i.e. approvals
+    // that were never tied to a live issue (e.g. board-decision approvals routed from a
+    // stale ledger ask or a blocked-with-no-blocker issue by scripts/route_decisions.py).
+    // These can never surface through the Issue-driven blocked-inbox attention computation
+    // in issues.ts, since that pipeline only ever iterates real Issue rows.
+    list: (companyId: string, status?: string, options?: { unlinkedOnly?: boolean }) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
+      if (options?.unlinkedOnly) {
+        conditions.push(sql`
+          NOT EXISTS (
+            SELECT 1 FROM ${issueApprovals}
+            WHERE ${issueApprovals.approvalId} = ${approvals.id}
+          )
+        `);
+      }
       return db.select().from(approvals).where(and(...conditions));
     },
 
