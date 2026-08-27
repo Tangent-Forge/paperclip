@@ -46,5 +46,10 @@ describe("agent permissions service", () => {
       canCreateSkills: false,
       canAssignTasks: false,
     }).canCreateSkills).toBe(false);
+    expect(updateAgentPermissionsSchema.parse({
+      canCreateAgents: false,
+      canAssignTasks: true,
+      canCreateTasks: true,
+    }).canCreateTasks).toBe(true);
   });
 });
