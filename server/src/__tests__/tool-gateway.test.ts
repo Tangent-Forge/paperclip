@@ -1263,6 +1263,74 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
   });
 
+  it("installs and executes the built-in safe Todo/KV fixture through the real stdio gateway", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const access = toolAccessService(db);
+    const install = await access.installExample(company.id, "safe-read-only-todo-kv", {
+      actorType: "user",
+      actorId: "board-user",
+    });
+
+    expect(install.connection.config).toMatchObject({
+      templateId: "paperclip.synthetic-todo-kv",
+    });
+
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tools = await gateway.listToolsForSession(session.token);
+    const listItems = tools.find((tool) => tool.upstreamToolName === "list_items");
+    const createItemName = expectedConnectedToolName({
+      applicationKey: install.application.applicationKey,
+      connectionId: install.connection.id,
+      toolName: "create_item",
+    });
+
+    expect(listItems).toMatchObject({
+      providerType: "mcp_local_stdio",
+      risk: "read",
+      connectionId: install.connection.id,
+    });
+    expect(tools.map((tool) => tool.upstreamToolName)).not.toContain("create_item");
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: listItems!.name,
+      parameters: {},
+    })).resolves.toMatchObject({
+      status: "completed",
+      result: {
+        data: {
+          structuredContent: {
+            items: [
+              { id: "todo-1", title: "Review Paperclip tools", done: false },
+              { id: "todo-2", title: "Verify default-deny policy", done: true },
+            ],
+          },
+          transport: "local_stdio",
+          spawnedLocalProcess: true,
+        },
+      },
+    });
+    await gateway.executeTool({
+      sessionToken: session.token,
+      tool: createItemName,
+      parameters: { title: "Must stay denied" },
+    }).then(
+      () => {
+        throw new Error("Expected the write tool to stay hidden");
+      },
+      (error) => expectGatewayError(error, 404, "tool_not_found"),
+    );
+
+    const [slot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.connectionId, install.connection.id));
+    expect(slot).toMatchObject({
+      status: "idle",
+      commandTemplateKey: "paperclip.synthetic-todo-kv",
+      healthStatus: "ok",
+    });
+  });
+
   it("passes only approved env values to local stdio MCP processes", async () => {
     const previousDatabaseUrl = process.env.DATABASE_URL;
     process.env.DATABASE_URL = "postgres://server-secret.example/paperclip";
