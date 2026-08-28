@@ -801,6 +801,71 @@ describeEmbeddedPostgres("attention service", () => {
   // PAP-17287: a collapsed queue row offers Accept/Reject before anything fetches
   // the interaction, so the audience the resolution routes will enforce has to
   // ship with the feed item.
+  it("keeps pending cards on done/cancelled issues out of board attention", async () => {
+    const { companyId, workerId } = await seedCompany("ORP");
+    const openIssueId = await insertIssue({
+      companyId,
+      identifier: "ORP-1",
+      title: "Still open",
+      status: "in_progress",
+    });
+    const doneIssueId = await insertIssue({
+      companyId,
+      identifier: "ORP-2",
+      title: "Already shipped",
+      status: "done",
+    });
+    const cancelledIssueId = await insertIssue({
+      companyId,
+      identifier: "ORP-3",
+      title: "Retired",
+      status: "cancelled",
+    });
+    // All three rows are pending in the table. Only the open one is actionable:
+    // resolve and withdraw both refuse on a closed issue without writing, so a
+    // card left behind by a close that predates the per-transition expiry would
+    // otherwise render forever and 409 on every button.
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: openIssueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Live question",
+        createdByAgentId: workerId,
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: doneIssueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Orphaned by completion",
+        createdByAgentId: workerId,
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: cancelledIssueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Orphaned by cancellation",
+        createdByAgentId: workerId,
+        payload: { version: 1, questions: [] },
+      },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const titles = feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.title);
+
+    expect(titles).toEqual(["Live question"]);
+  });
+
   it("ships the effective resolver audience with each interaction row", async () => {
     const { companyId, workerId, reviewerId } = await seedCompany("ARA");
     const issueId = await insertIssue({

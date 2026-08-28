@@ -103,6 +103,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
@@ -1181,9 +1182,20 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: issueThreadInteractions.updatedAt,
         })
         .from(issueThreadInteractions)
+        // Defense in depth against orphaned cards. The authoritative clear is
+        // expirePendingInteractionsForTerminalIssue on the close transition, but
+        // that only ever fires forward: a row left pending by a close that
+        // predates it (or by any future path that bypasses issueService.update)
+        // is unreachable, because every resolve/withdraw route refuses on a
+        // closed issue *without* writing. Such a card then renders here as live
+        // and permanently un-actionable. Filtering on the issue's own status
+        // makes the feed agree with the issue-detail view, which already
+        // presents these as expired/issue_closed.
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          notInArray(issues.status, [...TERMINAL_ISSUE_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       // Addressee invokability needs the org graph; the audience line also needs
