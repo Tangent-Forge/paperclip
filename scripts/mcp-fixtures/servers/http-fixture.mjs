@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import http from "node:http";
+import { installLifecycle } from "./lifecycle.mjs";
 import {
   MCP_FIXTURE_PROTOCOL_VERSION,
   createFixtureState,
@@ -88,6 +89,16 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, 500, { ok: false, error: { code: "fixture_error", message: String(error?.message ?? error) } });
   }
+});
+
+// The Smoke Lab sidecar spawns this fixture detached and unref'd, so nothing
+// upstream tears it down when the server exits. Without this it outlives the
+// parent forever, holding a loopback port.
+installLifecycle({
+  onShutdown: () => new Promise((resolve) => {
+    server.closeAllConnections?.();
+    server.close(() => resolve());
+  }),
 });
 
 server.listen(port, host, () => {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { installLifecycle } from "./lifecycle.mjs";
 import {
   MCP_FIXTURE_PROTOCOL_VERSION,
   createFixtureState,
@@ -74,6 +75,8 @@ async function handleRequest(request) {
   return { id: request.id ?? null, ok: false, error: { code: "unknown_method", message: `Unknown method ${request.method}` } };
 }
 
+const shutdown = installLifecycle();
+
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", async (line) => {
@@ -87,3 +90,7 @@ rl.on("line", async (line) => {
     process.stdout.write(`${JSON.stringify({ id, ok: false, error: { code: "bad_request", message: String(error?.message ?? error) } })}\n`);
   }
 });
+
+// Our parent closing stdin is the normal end-of-life signal for a stdio server.
+rl.on("close", () => shutdown("stdin-closed"));
+process.stdin.on("error", () => shutdown("stdin-error"));

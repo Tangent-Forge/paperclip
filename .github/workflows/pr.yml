@@ -77,6 +77,9 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Test MCP fixture lifecycle
+        run: node --test ./scripts/__tests__/mcp-fixture-lifecycle.test.mjs
+
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
 
