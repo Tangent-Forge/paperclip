@@ -116,9 +116,9 @@ describe("email ingest router helpers", () => {
     const secondHeaders = secondInit.headers as Record<string, string>;
     const body = String(firstInit.body);
     const timestamp = headers["X-Paperclip-Timestamp"];
-    // Server-side github_hmac verification covers the raw body only; the
-    // timestamp header is informational (see src/index.ts contract comment).
-    const expectedSignature = await hmacHex("secret", body);
+    // hmac_sha256 trigger mode: HMAC over `${timestamp}.${rawBody}`, replay
+    // window enforced server-side (see src/index.ts contract comment).
+    const expectedSignature = await hmacHex("secret", `${timestamp}.${body}`);
 
     expect(firstUrl).toBe("https://paperclip.example.test/fire");
     expect(headers["Idempotency-Key"]).toMatch(/^mail_[0-9a-f]{8}$/);
