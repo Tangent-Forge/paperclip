@@ -18,6 +18,7 @@ import {
   sweepAbandonedImportTransferSpools,
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
+import { sweepOrphanedTerminalIssueInteractions } from "./services/issue-thread-interactions.js";
 import { healthRoutes } from "./routes/health.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -907,6 +908,21 @@ export async function createApp(
     })
     .finally(() => {
       sweepImportTransferSpools();
+    });
+  // Startup only: drain decision cards stranded pending on issues that are
+  // already done/cancelled. The per-transition expiry is forward-only, so any
+  // issue closed before it shipped (or by a path that bypasses
+  // issueService.update) still carries a card the Decisions tab shows as live
+  // and that every resolve/withdraw route refuses to clear. Idempotent -- the
+  // expiry's status='pending' guard makes a clean boot a no-op.
+  void sweepOrphanedTerminalIssueInteractions(db)
+    .then((result) => {
+      if (result.expired > 0) {
+        logger.warn(result, "expired decision cards stranded on closed issues");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "orphaned terminal-issue interaction sweep failed");
     });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");

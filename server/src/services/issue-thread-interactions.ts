@@ -3428,3 +3428,48 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
   };
 }
+
+/**
+ * One-shot repair for decision cards that outlived their issue.
+ *
+ * `expirePendingInteractionsForTerminalIssue` only ever fires on the close
+ * transition itself, so it is forward-only by construction: a row left pending
+ * by a close that predates it -- or by any path that reaches a terminal status
+ * without going through issueService.update -- is stranded permanently. Nothing
+ * can clear it afterwards, because resolve and withdraw both refuse on a closed
+ * issue *without* writing, while the attention feed reads the raw pending
+ * status. The card renders as live and every button on it 409s.
+ *
+ * Running this at startup drains that backlog using the same expiry path as the
+ * transition, so linked tool-action requests and secret proposals are revoked
+ * rather than left executable behind a card that no longer exists. The
+ * `status = 'pending'` guard inside the expiry makes re-runs no-ops, so this is
+ * safe to run on every boot.
+ */
+export async function sweepOrphanedTerminalIssueInteractions(db: Db) {
+  const stranded = await db
+    .selectDistinct({
+      id: issues.id,
+      companyId: issues.companyId,
+      status: issues.status,
+    })
+    .from(issueThreadInteractions)
+    .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+    .where(and(
+      eq(issueThreadInteractions.status, "pending"),
+      inArray(issues.status, ["done", "cancelled"]),
+    ));
+
+  let expired = 0;
+  const issuesRepaired: string[] = [];
+  for (const issue of stranded) {
+    // Per issue, so one bad row cannot strand the rest of the backlog.
+    const rows = await issueThreadInteractionService(db)
+      .expirePendingInteractionsForTerminalIssue(issue, {});
+    if (rows.length > 0) {
+      expired += rows.length;
+      issuesRepaired.push(issue.id);
+    }
+  }
+  return { issues: issuesRepaired.length, expired, issueIds: issuesRepaired };
+}
