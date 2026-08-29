@@ -170,12 +170,14 @@ export default {
     // Keep this compatible with Python json.dumps(sort_keys=True, separators=(",", ":")).
     const sortedJson = JSON.stringify(sortObjectKeys(payload));
     const ts = Math.floor(Date.now() / 1000).toString();
-    // Contract (verified against server/src/services/routines.ts `github_hmac`
-    // verification, 2026-08-29): the HMAC covers the RAW BODY ONLY. The
-    // previous `${ts}.${body}` signing input matched no server-side mode and
-    // produced 401s on every delivery — the timestamp header stays as an
-    // informational field the server does not verify.
-    const sig = await hmacHex(env.PAPERCLIP_TRIGGER_SECRET, sortedJson);
+    // Contract (verified against the LIVE trigger row + firePublicTrigger's
+    // catch-all branch, 2026-08-29): this trigger's signing_mode is
+    // hmac_sha256, verified as HMAC(secret, `${timestamp}.${rawBody}`) with a
+    // replay window (replay_window_sec, default 300). The timestamp header is
+    // REQUIRED and verified — do NOT switch to raw-body-only signing; that is
+    // the github_hmac mode, a different branch, and it 401s here (deployed
+    // and rolled back 2026-08-29, version 12541a76 -> 69be04b2).
+    const sig = await hmacHex(env.PAPERCLIP_TRIGGER_SECRET, `${ts}.${sortedJson}`);
 
     const res = await fetch(env.PAPERCLIP_TRIGGER_URL, {
       method: "POST",
