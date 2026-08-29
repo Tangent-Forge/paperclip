@@ -20,6 +20,7 @@ COPY server/package.json server/
 COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
+COPY packages/email-ingest-router-cf/package.json packages/email-ingest-router-cf/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
