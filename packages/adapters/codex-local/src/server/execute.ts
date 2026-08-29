@@ -85,11 +85,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 
 function buildCodexStartupEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // The server process can itself be a previous Paperclip agent invocation.
-  // Managed-home setup must never use that invocation's CODEX_HOME or run
-  // attribution as its shared source. Keep topology and host-home fields that
-  // resolve the managed target, but derive the shared source from ~/.codex.
+  // Do not forward that invocation's run attribution while resolving a shared
+  // source. Its CODEX_HOME remains a valid host-shared override unless the
+  // shared-source guard identifies its resolved path as Paperclip-managed.
+  // Keep topology and host-home fields that resolve the managed target.
   const {
-    CODEX_HOME: _inheritedCodexHome,
     PAPERCLIP_AGENT_ID: _inheritedAgentId,
     PAPERCLIP_RUN_ID: _inheritedRunId,
     PAPERCLIP_TASK_ID: _inheritedTaskId,
