@@ -12,6 +12,40 @@ function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function pathWithinOrEqual(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveInstanceRoot(env: NodeJS.ProcessEnv): string {
+  return path.resolve(
+    resolvePaperclipInstanceRootForAdapter({
+      homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env,
+    }),
+  );
+}
+
+function isManagedPerAgentCodexHome(candidate: string, instanceRoot: string): boolean {
+  const relative = path.relative(instanceRoot, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep);
+  return (
+    segments.length >= 5 &&
+    segments[0] === "companies" &&
+    segments[2] === "agents" &&
+    segments[4] === "codex-home"
+  );
+}
+
+function hasRunAttributionFingerprint(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    nonEmpty(env.PAPERCLIP_RUN_ID) &&
+    (nonEmpty(env.PAPERCLIP_AGENT_ID) || nonEmpty(env.PAPERCLIP_TASK_ID)),
+  );
+}
+
 export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
@@ -21,6 +55,27 @@ export function resolveSharedCodexHomeDir(
 ): string {
   const fromEnv = nonEmpty(env.CODEX_HOME);
   return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".codex");
+}
+
+async function resolveSharedCodexSourceHomeDir(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<string> {
+  const fallback = path.join(os.homedir(), ".codex");
+  const configured = nonEmpty(env.CODEX_HOME);
+  if (!configured) return fallback;
+
+  const candidate = path.resolve(configured);
+  const resolved = await fs.realpath(candidate).catch(() => candidate);
+  const instanceRoot = resolveInstanceRoot(env);
+  if (!isManagedPerAgentCodexHome(resolved, instanceRoot)) return candidate;
+
+  const attribution = hasRunAttributionFingerprint(env) ? "run-attributed " : "";
+  await onLog(
+    "stdout",
+    `[paperclip] Ignoring ${attribution}CODEX_HOME as a shared Codex source because it resolves to a Paperclip-managed per-agent home; using the host shared default.\n`,
+  );
+  return fallback;
 }
 
 function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
@@ -52,7 +107,16 @@ async function isExpectedSymlink(target: string, source: string): Promise<boolea
   const linkedPath = await fs.readlink(target).catch(() => null);
   if (!linkedPath) return false;
 
-  return path.resolve(path.dirname(target), linkedPath) === path.resolve(source);
+  if (path.resolve(path.dirname(target), linkedPath) !== path.resolve(source)) return false;
+
+  // A textual match alone is not healthy: a source removal, cycle, or ELOOP
+  // can leave a managed home pointing at an unusable auth.json. This only
+  // resolves link metadata; it never reads credential content.
+  const [resolvedTarget, resolvedSource] = await Promise.all([
+    fs.realpath(target).catch(() => null),
+    fs.realpath(source).catch(() => null),
+  ]);
+  return resolvedTarget !== null && resolvedTarget === resolvedSource;
 }
 
 async function createExpectedSymlink(target: string, source: string): Promise<void> {
@@ -66,8 +130,10 @@ async function createExpectedSymlink(target: string, source: string): Promise<vo
 }
 
 export async function ensureSymlink(target: string, source: string): Promise<void> {
+  const sourceResolves = await fs.realpath(source).then(() => true).catch(() => false);
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
+    if (!sourceResolves) return;
     await ensureParentDir(target);
     await createExpectedSymlink(target, source);
     return;
@@ -84,7 +150,7 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
     // (and behave inconsistently on Windows). A directory at this path is not
     // a Paperclip-written stale copy and warrants operator inspection rather
     // than silent removal.
-    if (existing.isDirectory()) return;
+    if (existing.isDirectory() || !sourceResolves) return;
     await fs.unlink(target);
     await createExpectedSymlink(target, source);
     return;
@@ -93,6 +159,7 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
   if (await isExpectedSymlink(target, source)) return;
 
   await fs.unlink(target);
+  if (!sourceResolves) return;
   await createExpectedSymlink(target, source);
 }
 
@@ -135,7 +202,7 @@ export async function seedCodexHome(
 ): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
-  const sourceHome = resolveSharedCodexHomeDir(env);
+  const sourceHome = await resolveSharedCodexSourceHomeDir(env, onLog);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
   await fs.mkdir(targetHome, { recursive: true });

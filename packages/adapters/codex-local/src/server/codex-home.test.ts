@@ -243,4 +243,85 @@ describe("codex managed home", () => {
     }
   });
 
+  it("rejects a run-attributed managed per-agent home as the shared source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-managed-source-"));
+    try {
+      const hostHome = path.join(root, "host");
+      const hostSharedHome = path.join(hostHome, ".codex");
+      const paperclipHome = path.join(root, "paperclip-home");
+      const contaminatedPerAgentHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-1",
+        "codex-home",
+      );
+      const contaminatedAlias = path.join(root, "run-scoped-codex-home");
+      const targetHome = path.join(root, "target-home");
+      const logs: string[] = [];
+      await fs.mkdir(hostSharedHome, { recursive: true });
+      await fs.mkdir(contaminatedPerAgentHome, { recursive: true });
+      await fs.symlink(contaminatedPerAgentHome, contaminatedAlias);
+      await fs.writeFile(path.join(hostSharedHome, "auth.json"), '{"fixture":"host"}', "utf8");
+      await fs.writeFile(path.join(contaminatedPerAgentHome, "auth.json"), '{"fixture":"agent"}', "utf8");
+      vi.spyOn(os, "homedir").mockReturnValue(hostHome);
+
+      await seedCodexHome(
+        targetHome,
+        {
+          CODEX_HOME: contaminatedAlias,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+          PAPERCLIP_RUN_ID: "run-1",
+          PAPERCLIP_AGENT_ID: "agent-2",
+        },
+        async (_stream, message) => {
+          logs.push(message);
+        },
+      );
+
+      expect(await fs.realpath(path.join(targetHome, "auth.json"))).toBe(
+        await fs.realpath(path.join(hostSharedHome, "auth.json")),
+      );
+      expect(logs.join("")).toContain("Ignoring run-attributed CODEX_HOME");
+      expect(logs.join("")).not.toContain("agent-1");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a textually expected auth link when it no longer resolves", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-broken-link-"));
+    try {
+      const source = path.join(root, "missing-source.json");
+      const target = path.join(root, "managed-auth.json");
+      await fs.symlink(source, target);
+
+      await ensureSymlink(target, source);
+
+      await expect(fs.lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a textually expected auth link when its source is cyclic", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-cyclic-link-"));
+    try {
+      const source = path.join(root, "source-auth.json");
+      const target = path.join(root, "managed-auth.json");
+      await fs.symlink(target, source);
+      await fs.symlink(source, target);
+
+      await ensureSymlink(target, source);
+
+      await expect(fs.lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
 });
