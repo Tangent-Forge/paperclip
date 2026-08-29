@@ -83,6 +83,25 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function buildCodexStartupEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  // The server process can itself be a previous Paperclip agent invocation.
+  // Managed-home setup must never use that invocation's CODEX_HOME or run
+  // attribution as its shared source. Keep topology and host-home fields that
+  // resolve the managed target, but derive the shared source from ~/.codex.
+  const {
+    CODEX_HOME: _inheritedCodexHome,
+    PAPERCLIP_AGENT_ID: _inheritedAgentId,
+    PAPERCLIP_RUN_ID: _inheritedRunId,
+    PAPERCLIP_TASK_ID: _inheritedTaskId,
+    ...startupEnv
+  } = env;
+  return startupEnv;
+}
+
+function hasInheritedPaperclipRunAttribution(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.PAPERCLIP_AGENT_ID?.trim() || env.PAPERCLIP_RUN_ID?.trim());
+}
+
 function resolveCodexApiBiller(env: Record<string, string>): "openai" | "openrouter" | null {
   if (inferOpenAiCompatibleBiller(env, null) === "openrouter") return "openrouter";
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "openai" : null;
@@ -347,13 +366,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const startupEnv = buildCodexStartupEnv(process.env);
+  if (hasInheritedPaperclipRunAttribution(process.env)) {
+    await onLog(
+      "stdout",
+      "[paperclip] Ignoring inherited Paperclip run attribution while selecting the shared Codex source.\n",
+    );
+  }
   const preparedManagedCodexHome =
     configuredCodexHome
       ? null
-      : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
+      : await prepareManagedCodexHome(startupEnv, onLog, agent.companyId, {
           apiKey: configuredOpenAiApiKey,
         });
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(startupEnv, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   // An explicit per-agent CODEX_HOME override still needs shared credentials
@@ -363,7 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Seed the effective home directly, reusing the symlink-to-shared-source
   // semantics (never a copy — codex refresh tokens rotate and are single-use).
   if (configuredCodexHome) {
-    await seedCodexHome(effectiveCodexHome, process.env, onLog, {
+    await seedCodexHome(effectiveCodexHome, startupEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
     });
   }

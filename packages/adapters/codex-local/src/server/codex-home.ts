@@ -12,11 +12,6 @@ function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function pathWithinOrEqual(candidate: string, parent: string): boolean {
-  const relative = path.relative(parent, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 function resolveInstanceRoot(env: NodeJS.ProcessEnv): string {
   return path.resolve(
     resolvePaperclipInstanceRootForAdapter({
@@ -27,16 +22,18 @@ function resolveInstanceRoot(env: NodeJS.ProcessEnv): string {
   );
 }
 
-function isManagedPerAgentCodexHome(candidate: string, instanceRoot: string): boolean {
+function isManagedCodexHome(candidate: string, instanceRoot: string): boolean {
   const relative = path.relative(instanceRoot, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
   const segments = relative.split(path.sep);
-  return (
+  if (segments[0] !== "companies") return false;
+
+  const isCompanyManagedHome = segments.length >= 3 && segments[2] === "codex-home";
+  const isAgentManagedHome =
     segments.length >= 5 &&
-    segments[0] === "companies" &&
     segments[2] === "agents" &&
-    segments[4] === "codex-home"
-  );
+    segments[4] === "codex-home";
+  return isCompanyManagedHome || isAgentManagedHome;
 }
 
 function hasRunAttributionFingerprint(env: NodeJS.ProcessEnv): boolean {
@@ -68,12 +65,12 @@ async function resolveSharedCodexSourceHomeDir(
   const candidate = path.resolve(configured);
   const resolved = await fs.realpath(candidate).catch(() => candidate);
   const instanceRoot = resolveInstanceRoot(env);
-  if (!isManagedPerAgentCodexHome(resolved, instanceRoot)) return candidate;
+  if (!isManagedCodexHome(resolved, instanceRoot)) return candidate;
 
   const attribution = hasRunAttributionFingerprint(env) ? "run-attributed " : "";
   await onLog(
     "stdout",
-    `[paperclip] Ignoring ${attribution}CODEX_HOME as a shared Codex source because it resolves to a Paperclip-managed per-agent home; using the host shared default.\n`,
+    `[paperclip] Ignoring ${attribution}CODEX_HOME as a shared Codex source because it resolves to a Paperclip-managed home; using the host shared default.\n`,
   );
   return fallback;
 }

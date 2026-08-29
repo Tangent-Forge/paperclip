@@ -293,6 +293,50 @@ describe("codex managed home", () => {
     }
   });
 
+  it("rejects a company-managed home as the shared source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-company-source-"));
+    try {
+      const hostHome = path.join(root, "host");
+      const hostSharedHome = path.join(hostHome, ".codex");
+      const paperclipHome = path.join(root, "paperclip-home");
+      const contaminatedCompanyHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "codex-home",
+      );
+      const targetHome = path.join(root, "target-home");
+      const logs: string[] = [];
+      await fs.mkdir(hostSharedHome, { recursive: true });
+      await fs.mkdir(contaminatedCompanyHome, { recursive: true });
+      await fs.writeFile(path.join(hostSharedHome, "auth.json"), '{"fixture":"host"}', "utf8");
+      await fs.writeFile(path.join(contaminatedCompanyHome, "auth.json"), '{"fixture":"company"}', "utf8");
+      vi.spyOn(os, "homedir").mockReturnValue(hostHome);
+
+      await seedCodexHome(
+        targetHome,
+        {
+          CODEX_HOME: contaminatedCompanyHome,
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+        },
+        async (_stream, message) => {
+          logs.push(message);
+        },
+      );
+
+      expect(await fs.realpath(path.join(targetHome, "auth.json"))).toBe(
+        await fs.realpath(path.join(hostSharedHome, "auth.json")),
+      );
+      expect(logs.join("")).toContain("Paperclip-managed home");
+      expect(logs.join("")).not.toContain("company-1");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("removes a textually expected auth link when it no longer resolves", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-broken-link-"));
     try {

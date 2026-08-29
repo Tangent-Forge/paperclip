@@ -267,6 +267,103 @@ describe("codex execute", () => {
     }
   });
 
+  it("does not inherit an agent CODEX_HOME from the server startup environment", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-inherited-home-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const hostSharedHome = path.join(root, ".codex");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const inheritedAgentHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-from-parent",
+      "codex-home",
+    );
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(hostSharedHome, { recursive: true });
+    await fs.mkdir(inheritedAgentHome, { recursive: true });
+    await fs.writeFile(path.join(hostSharedHome, "auth.json"), '{"fixture":"host"}', "utf8");
+    await fs.writeFile(path.join(inheritedAgentHome, "auth.json"), '{"fixture":"agent"}', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousAgentId = process.env.PAPERCLIP_AGENT_ID;
+    const previousRunId = process.env.PAPERCLIP_RUN_ID;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.CODEX_HOME = inheritedAgentHome;
+    process.env.PAPERCLIP_AGENT_ID = "agent-from-parent";
+    process.env.PAPERCLIP_RUN_ID = "run-from-parent";
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-current",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(managedCodexHome);
+      expect(await fs.realpath(path.join(managedCodexHome, "auth.json"))).toBe(
+        await fs.realpath(path.join(hostSharedHome, "auth.json")),
+      );
+      const warning = logs.map((entry) => entry.chunk).find((chunk) => chunk.includes("run attribution"));
+      expect(warning).toBeDefined();
+      expect(warning ?? "").not.toContain("agent-from-parent");
+      expect(warning ?? "").not.toContain("run-from-parent");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousAgentId === undefined) delete process.env.PAPERCLIP_AGENT_ID;
+      else process.env.PAPERCLIP_AGENT_ID = previousAgentId;
+      if (previousRunId === undefined) delete process.env.PAPERCLIP_RUN_ID;
+      else process.env.PAPERCLIP_RUN_ID = previousRunId;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("emits a command note that Codex auto-applies repo-scoped AGENTS.md files", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-notes-"));
     const workspace = path.join(root, "workspace");
