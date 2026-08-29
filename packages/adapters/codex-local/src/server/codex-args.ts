@@ -89,6 +89,10 @@ export function buildCodexExecArgs(
   if ((networkDenied || profileStrict) && sandboxMode === "danger-full-access") {
     throw new Error("executionConstraints forbid danger-full-access sandbox");
   }
+  // SEC-CODEX-LOCAL-AGENTS-BYPASS-SANDBOX-20260816: opt-in headless-approval path that keeps
+  // the sandbox enforced instead of reaching for dangerouslyBypassApprovalsAndSandbox. No effect
+  // when bypass is set -- the bypass flag already skips approvals entirely.
+  const approveForMe = !bypass && asBoolean(record.approveForMe, false);
   const extraArgs = sanitizeExtraArgs(readExtraArgs(record), constrained);
 
   const args = ["exec", "--json"];
@@ -105,6 +109,12 @@ export function buildCodexExecArgs(
     args.push("--sandbox", sandboxMode || "workspace-write", "-c", "shell_environment_policy.inherit=core");
   }
   if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
+  if (approveForMe) {
+    args.push("--approve-for-me");
+    // The executionConstraints branch above already pushed its own --sandbox;
+    // Codex rejects repeated flags, so only add ours when it did not.
+    if (!(networkDenied || profileStrict)) args.push("--sandbox", "workspace-write");
+  }
   if (model) args.push("--model", model);
   if (modelReasoningEffort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
