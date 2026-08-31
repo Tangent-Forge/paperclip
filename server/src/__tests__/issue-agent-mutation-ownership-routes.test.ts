@@ -1811,6 +1811,7 @@ describe("agent issue mutation checkout ownership", () => {
   describe("task watchdog scope grants", () => {
     const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
     const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
+    const watchedBaselineIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
 
     // The watchdog agent (peerAgentId) is NOT the assignee of the watched issue
     // (ownerAgentId), so the base authorization boundary (issue:mutate) denies.
@@ -1829,9 +1830,10 @@ describe("agent issue mutation checkout ownership", () => {
       watchedIssueId?: string;
       watchdogIssueId?: string | null;
       ancestryParentId?: string | null;
+      ancestryRows?: Record<string, unknown>[];
       watchdogRows?: Record<string, unknown>[];
     } = {}) {
-      const watchedIssueId = options.watchedIssueId ?? issueId;
+      const watchedIssueId = options.watchedIssueId ?? watchedBaselineIssueId;
       const runRows = [{
         id: watchdogRunId,
         companyId,
@@ -1846,17 +1848,17 @@ describe("agent issue mutation checkout ownership", () => {
         watchdogIssueId: options.watchdogIssueId ?? watchdogReportIssueId,
         status: "active",
       }];
-      const ancestryRows = [{
-        id: "ancestry",
-        companyId,
-        parentId: options.ancestryParentId ?? null,
-      }];
+      const ancestryRows = options.ancestryRows ?? [
+        { id: issueId, companyId, parentId: watchedIssueId, originRunId: watchdogRunId },
+        { id: watchedIssueId, companyId, parentId: options.ancestryParentId ?? null, originRunId: null },
+      ];
+      let ancestryRead = 0;
       const rowsForSelection = (selection: Record<string, unknown>) => {
         const keys = Object.keys(selection);
         if (keys.includes("entityId")) return [];
         if (keys.includes("contextSnapshot")) return runRows;
         if (keys.includes("watchdogAgentId")) return watchdogRows;
-        if (keys.includes("parentId")) return ancestryRows;
+        if (keys.includes("parentId")) return [ancestryRows[Math.min(ancestryRead++, ancestryRows.length - 1)]].filter(Boolean);
         if (keys.includes("status")) return [];
         if (keys.includes("agentCompanyId")) return runRows;
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
@@ -1898,27 +1900,31 @@ describe("agent issue mutation checkout ownership", () => {
       }));
     }
 
-    it("lets a watchdog run comment on a watched issue assigned to a different agent", async () => {
+    it("denies baseline-parent comment, content, patch, and child-create mutations after a same-run child is live", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      const app = await createApp(watchdogActor(), createWatchdogDb({
+        watchedIssueId: issueId,
+        ancestryRows: [{ id: issueId, companyId, parentId: null, originRunId: null }],
+      }));
 
-      const app = await createApp(watchdogActor(), createWatchdogDb());
-      const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Watchdog finding" });
+      const comment = await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Watchdog finding" });
+      const patch = await request(app).patch(`/api/issues/${issueId}`).send({ description: "Not authorized" });
+      const child = await request(app).post(`/api/issues/${issueId}/children`).send({ title: "Not authorized" });
 
-      expect(res.status, JSON.stringify(res.body)).toBe(201);
-      expect(mockIssueService.addComment).toHaveBeenCalledWith(
-        issueId,
-        "Watchdog finding",
-        expect.any(Object),
-        expect.any(Object),
-      );
+      expect(comment.status, JSON.stringify(comment.body)).toBe(403);
+      expect(patch.status, JSON.stringify(patch.body)).toBe(403);
+      expect(child.status, JSON.stringify(child.body)).toBe(403);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
     });
 
     it.each([
       ["in_progress"],
       ["blocked"],
       ["todo"],
-    ])("lets a watchdog run transition a watched issue to %s", async (status) => {
+    ])("lets a watchdog run transition its same-run child lineage to %s", async (status) => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
       mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

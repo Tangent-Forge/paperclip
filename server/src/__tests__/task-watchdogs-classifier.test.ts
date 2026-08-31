@@ -174,6 +174,45 @@ describe("task watchdog subtree classifier", () => {
     expect(changed.state).toBe("stopped");
   });
 
+  it.each([
+    ["an interior baseline mutation", {
+      issues: [
+        issue({ status: "blocked", originKind: "manual" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+    }],
+    ["a terminal child added beneath an existing nonleaf", {
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+        issue({ id: "terminal-child", parentId: childId, status: "done" }),
+      ],
+    }],
+  ])("does not accept an exact reviewed fingerprint after %s", (_label, overrides) => {
+    const initial = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+    });
+    expect(initial.state).toBe("stopped");
+    if (initial.state !== "stopped") return;
+
+    const changed = classify({
+      ...overrides,
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: initial.stopFingerprint,
+        lastReviewedStopSnapshot: initial.stopSnapshot,
+      },
+    });
+
+    expect(changed.state).toBe("stopped");
+    if (changed.state !== "stopped") return;
+    expect(changed.stopFingerprint).not.toBe(initial.stopFingerprint);
+  });
+
   it("includes waits on non-leaf issues in the material snapshot", () => {
     const initial = classify({
       issues: [
