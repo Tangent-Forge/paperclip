@@ -27,6 +27,7 @@ export type TaskWatchdogMutationScope =
       companyId: string;
       watchedIssueId: string;
       watchdogIssueId: string | null;
+      runId: string;
       stopFingerprint: string | null;
     };
 
@@ -117,31 +118,35 @@ export async function resolveTaskWatchdogMutationScope(
     companyId: watchdog.companyId,
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
+    runId: run.id,
     stopFingerprint: taskWatchdog.stopFingerprint,
   };
 }
 
-export async function issueIsInTaskWatchdogSubtree(
+export async function issueIsOnSameRunChildPath(
   db: Db,
   companyId: string,
   issueId: string,
   watchedIssueId: string,
+  runId: string,
 ) {
   let currentId: string | null = issueId;
   const seen = new Set<string>();
+  let encounteredSameRunChild = false;
 
   for (let depth = 0; currentId && depth < MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH; depth += 1) {
     if (seen.has(currentId)) return false;
     seen.add(currentId);
 
-    const parent: { id: string; companyId: string; parentId: string | null; originKind: string | null } | null = await db
-      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, originKind: issues.originKind })
+    const parent: { id: string; companyId: string; parentId: string | null; originKind: string | null; originRunId: string | null } | null = await db
+      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, originKind: issues.originKind, originRunId: issues.originRunId })
       .from(issues)
       .where(and(eq(issues.id, currentId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!parent) return false;
     if (parent.originKind === TASK_WATCHDOG_ORIGIN_KIND) return false;
-    if (currentId === watchedIssueId) return true;
+    if (currentId === watchedIssueId) return encounteredSameRunChild;
+    if (parent.originRunId === runId) encounteredSameRunChild = true;
     currentId = parent.parentId ?? null;
   }
 
@@ -164,7 +169,7 @@ export async function taskWatchdogScopeAllowsIssueMutation(
   if (opts.allowWatchdogIssue !== false && scope.watchdogIssueId && issue.id === scope.watchdogIssueId) {
     return scope;
   }
-  if (await issueIsInTaskWatchdogSubtree(db, scope.companyId, issue.id, scope.watchedIssueId)) {
+  if (await issueIsOnSameRunChildPath(db, scope.companyId, issue.id, scope.watchedIssueId, scope.runId)) {
     return scope;
   }
   return {

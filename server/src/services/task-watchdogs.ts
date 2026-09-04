@@ -71,6 +71,8 @@ export type TaskWatchdogClassifierIssue = Pick<
   // grace window keep working; the pending-first-run guard is skipped when
   // it (or `evaluatedAt`) is absent.
   createdAt?: Date | string | null;
+  originId?: string | null;
+  originRunId?: string | null;
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
@@ -131,15 +133,25 @@ export type TaskWatchdogMaterialLeaf = Pick<
   | "pendingApprovalIds"
 >;
 
+export type TaskWatchdogStructuralNode = {
+  issueId: string;
+  parentId: string | null;
+  status: string;
+  originKind: string | null;
+  originId: string | null;
+  originRunId: string | null;
+};
+
 export type TaskWatchdogWaitsByIssueId = Record<string, {
   pendingInteractionIds: string[];
   pendingApprovalIds: string[];
 }>;
 
 export type TaskWatchdogStopSnapshot = {
-  version: 2;
+  version: 3;
   fingerprint: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
+  structuralNodes: TaskWatchdogStructuralNode[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
 };
 
@@ -305,13 +317,15 @@ function stableStopFingerprint(input: {
   companyId: string;
   watchedIssueId: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
+  structuralNodes: TaskWatchdogStructuralNode[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
 }) {
   const payload = JSON.stringify({
-    version: 2,
+    version: 3,
     companyId: input.companyId,
     watchedIssueId: input.watchedIssueId,
     materialLeaves: input.materialLeaves,
+    structuralNodes: input.structuralNodes,
     waitsByIssueId: input.waitsByIssueId,
   });
   return `task_watchdog_stop:${createHash("sha256").update(payload).digest("hex")}`;
@@ -333,9 +347,10 @@ function parseStopSnapshot(value: unknown): TaskWatchdogStopSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TaskWatchdogStopSnapshot>;
   if (
-    candidate.version !== 2 ||
+    candidate.version !== 3 ||
     typeof candidate.fingerprint !== "string" ||
     !Array.isArray(candidate.materialLeaves) ||
+    !Array.isArray(candidate.structuralNodes) ||
     !candidate.waitsByIssueId ||
     typeof candidate.waitsByIssueId !== "object"
   ) return null;
@@ -360,7 +375,11 @@ function isShrinkOfReviewedSnapshot(
   current: TaskWatchdogStopSnapshot,
   reviewed: TaskWatchdogStopSnapshot | null | undefined,
 ) {
-  if (!reviewed || canonicalJson(current.waitsByIssueId) !== canonicalJson(reviewed.waitsByIssueId)) return false;
+  if (
+    !reviewed ||
+    canonicalJson(current.waitsByIssueId) !== canonicalJson(reviewed.waitsByIssueId) ||
+    canonicalJson(current.structuralNodes) !== canonicalJson(reviewed.structuralNodes)
+  ) return false;
   const reviewedLeaves = new Map(reviewed.materialLeaves.map((leaf) => [leaf.issueId, leaf]));
   return current.materialLeaves.every((leaf) => {
     const previous = reviewedLeaves.get(leaf.issueId);
@@ -504,16 +523,28 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
   const materialLeaves = leaves.map(materialLeaf);
+  const structuralNodes = included
+    .map((issue) => ({
+      issueId: issue.id,
+      parentId: issue.parentId,
+      status: issue.status,
+      originKind: issue.originKind,
+      originId: issue.originId ?? null,
+      originRunId: issue.originRunId ?? null,
+    }))
+    .sort((left, right) => left.issueId.localeCompare(right.issueId));
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
     materialLeaves,
+    structuralNodes,
     waitsByIssueId,
   });
   const currentStopSnapshot: TaskWatchdogStopSnapshot = {
-    version: 2,
+    version: 3,
     fingerprint: stopFingerprint,
     materialLeaves,
+    structuralNodes,
     waitsByIssueId,
   };
 

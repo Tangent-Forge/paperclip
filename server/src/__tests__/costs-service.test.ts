@@ -551,6 +551,92 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("surfaces unpricedMeteredRunCount on summary/byAgent/byProvider/byBiller/byAgentModel so a $0 metered run is distinguishable from a genuinely free subscription run", async () => {
+    // Regression test: a metered_api run whose adapter never reported costUsd
+    // gets costStatus 'unpriced' and costCents 0 — on the wire, indistinguishable
+    // from subscription_included usage in every cost breakdown before this fix.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const unpricedRunId = randomUUID();
+    const pricedRunId = randomUUID();
+    const subscriptionRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // apiRunCount/unpricedMeteredRunCount both count(distinct heartbeatRunId), which
+    // ignores NULLs — real heartbeat_runs rows are required for the counts to be nonzero.
+    await db.insert(heartbeatRuns).values([
+      { id: unpricedRunId, companyId, agentId },
+      { id: pricedRunId, companyId, agentId },
+      { id: subscriptionRunId, companyId, agentId },
+    ]);
+
+    await db.insert(costEvents).values([
+      // unpriced metered run: costCents 0 but billingType metered_api
+      {
+        companyId, agentId, heartbeatRunId: unpricedRunId, provider: "openai", biller: "openrouter",
+        billingType: "metered_api", costStatus: "unpriced", model: "gpt-5.5",
+        inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 0, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+      // priced metered run on the same provider/biller/model
+      {
+        companyId, agentId, heartbeatRunId: pricedRunId, provider: "openai", biller: "openrouter",
+        billingType: "metered_api", costStatus: "reported", model: "gpt-5.5",
+        inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 42, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+      // genuinely free subscription run: also costCents 0, must NOT count as unpriced
+      {
+        companyId, agentId, heartbeatRunId: subscriptionRunId, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", costStatus: "reported", model: "gpt-5.5",
+        inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        costCents: 0, occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+    ]);
+
+    await expect(costs.summary(companyId)).resolves.toMatchObject({
+      spendCents: 42,
+      unpricedMeteredRunCount: 1,
+    });
+
+    const [byAgentRow] = await costs.byAgent(companyId);
+    expect(byAgentRow).toMatchObject({ apiRunCount: 2, costCents: 42, unpricedMeteredRunCount: 1 });
+
+    // byProvider groups by (provider, biller, billingType, model) — the unpriced and
+    // priced openrouter rows share that key and merge into a single group here.
+    const byProviderRows = await costs.byProvider(companyId);
+    const openrouterRow = byProviderRows.find((row) => row.biller === "openrouter");
+    expect(openrouterRow).toMatchObject({ apiRunCount: 2, costCents: 42, unpricedMeteredRunCount: 1 });
+    const chatgptRow = byProviderRows.find((row) => row.biller === "chatgpt");
+    expect(chatgptRow).toMatchObject({ subscriptionRunCount: 1, costCents: 0, unpricedMeteredRunCount: 0 });
+
+    const byBillerRows = await costs.byBiller(companyId);
+    const openrouterBiller = byBillerRows.find((row) => row.biller === "openrouter");
+    expect(openrouterBiller).toMatchObject({ apiRunCount: 2, costCents: 42, unpricedMeteredRunCount: 1 });
+    const chatgptBiller = byBillerRows.find((row) => row.biller === "chatgpt");
+    expect(chatgptBiller).toMatchObject({ subscriptionRunCount: 1, costCents: 0, unpricedMeteredRunCount: 0 });
+
+    const byAgentModelRows = await costs.byAgentModel(companyId);
+    const openrouterAgentModel = byAgentModelRows.find((row) => row.biller === "openrouter");
+    expect(openrouterAgentModel).toMatchObject({ costCents: 42, unpricedMeteredRunCount: 1 });
+  });
+
   it("aggregates issue costs across recursive descendants only", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
