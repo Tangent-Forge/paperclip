@@ -388,7 +388,7 @@ npx paperclipai issue work-product:create <issue-id> --payload-json '{"type":"pu
 npx paperclipai issue work-product:update <work-product-id> --payload-json '{"status":"archived"}'
 npx paperclipai issue work-product:delete <work-product-id>
 npx paperclipai issue interactions <issue-id>
-npx paperclipai issue interaction:create <issue-id> --payload-json '{"kind":"request_confirmation","payload":{"version":1,"prompt":"Continue?"}}'
+npx paperclipai issue interaction:create <issue-id> --payload-json '{"kind":"request_confirmation","payload":{"version":1,"prompt":"Continue with this plan?","acceptLabel":"Accept","rejectLabel":"Defer","ownerGuidance":{"recommendedDisposition":"accept","recommendedLabel":"Accept","rationale":"Safe to proceed after board review.","whyHuman":"Soft human gate before follow-up work.","deferConsequence":"No follow-up until accepted.","blastRadius":"soft","decisionClass":"soft_human"}}}'
 npx paperclipai issue interaction:accept <issue-id> <interaction-id> [--selected-client-keys key1,key2]
 npx paperclipai issue interaction:reject <issue-id> <interaction-id> [--reason "..."]
 npx paperclipai issue interaction:respond <issue-id> <interaction-id> --answers-json '[{"questionId":"q1","optionIds":["yes"]}]'

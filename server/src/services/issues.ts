@@ -3950,7 +3950,7 @@ async function listIssueBlockedInboxAttentionMap(
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
-      // PAP-3225: disposition is agent-ops bookkeeping — never project as a human Decide owner.
+      // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -4122,7 +4122,7 @@ async function listIssueBlockedInboxAttentionMap(
         : null;
       const leafHasPendingInteraction = leaf ? interactionByIssueId.has(leaf.id) : false;
       const leafHasPendingApproval = leaf ? approvalByIssueId.has(leaf.id) : false;
-      // PAP-3225 F4: user-assigned leaf without a pending interaction is an owner_terminal
+      // Owner Decision Projection v1 F4: user-assigned leaf without a pending interaction is an owner_terminal
       // dependency chip on the parent — not a fake Decide button on the parent.
       if (leaf?.assigneeUserId && !leafHasPendingInteraction && !leafHasPendingApproval) {
         const terminal = buildOwnerTerminalAttentionFields({

@@ -1120,7 +1120,7 @@ export interface AskUserQuestionsQuestion {
 
 
 /**
- * Structured owner guidance for human decision interactions (PAP-3225).
+ * Structured owner guidance for human decision interactions (Owner Decision Projection v1).
  * Required for new hard_human/soft_human creates when enforcement is on.
  * Markdown-only detailsMarkdown does not satisfy this contract.
  */
@@ -1146,7 +1146,7 @@ export interface AskUserQuestionsPayload {
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
-  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  /** Structured owner guidance (Owner Decision Projection v1). Required for new hard/soft human creates when enforce is on. */
   ownerGuidance?: OwnerGuidance | null;
 }
 
@@ -1264,7 +1264,7 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
-  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  /** Structured owner guidance (Owner Decision Projection v1). Required for new hard/soft human creates when enforce is on. */
   ownerGuidance?: OwnerGuidance | null;
 }
 
@@ -1290,7 +1290,7 @@ export interface RequestCheckboxConfirmationPayload {
   declineReasonPlaceholder?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
-  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  /** Structured owner guidance (Owner Decision Projection v1). Required for new hard/soft human creates when enforce is on. */
   ownerGuidance?: OwnerGuidance | null;
 }
 

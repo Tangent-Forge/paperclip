@@ -812,7 +812,7 @@ export const ownerDecisionClassSchema = z.enum([
   "informational_blocker",
 ]);
 
-/** Structured owner guidance — machine-validatable (PAP-3225). Optional on stored/legacy payloads. */
+/** Structured owner guidance — machine-validatable (Owner Decision Projection v1). Optional on stored/legacy payloads. */
 export const ownerGuidanceSchema = z.object({
   recommendedDisposition: ownerRecommendedDispositionSchema,
   recommendedOptionId: z.string().trim().min(1).max(120).nullable().optional(),

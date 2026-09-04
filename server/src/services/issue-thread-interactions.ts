@@ -2265,7 +2265,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
-      // PAP-3225: ownerGuidance contract — warn-first canary by default; strict rejects bare human creates.
+      // Owner Decision Projection v1: ownerGuidance contract — warn-first canary by default; strict rejects bare human creates.
       // Never synthesize guidance server-side to pass validation.
       if (
         data.kind === "request_confirmation"

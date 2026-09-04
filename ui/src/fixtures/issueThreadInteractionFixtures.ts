@@ -1478,7 +1478,7 @@ export const mixedIssueThreadInteractions = [
 ];
 
 
-/** PAP-3225 F1 hard_human fixture */
+/** Owner Decision Projection v1 F1 hard_human fixture */
 export const ownerDecisionHardHumanFixture = createRequestConfirmationInteraction({
   id: "interaction-owner-hard-human",
   title: "Authorize history rewrite publish",
@@ -1499,7 +1499,7 @@ export const ownerDecisionHardHumanFixture = createRequestConfirmationInteractio
   },
 });
 
-/** PAP-3225 F6 grandfather bare card */
+/** Owner Decision Projection v1 F6 grandfather bare card */
 export const ownerDecisionLegacyBareFixture = createRequestConfirmationInteraction({
   id: "interaction-owner-legacy-bare",
   title: "Legacy bare confirmation",

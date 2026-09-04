@@ -1,5 +1,5 @@
 /**
- * Owner Decision Projection v1 (PAP-3225 / TAN-1015)
+ * Owner Decision Projection v1 (Owner Decision Projection v1)
  *
  * Additive ownerGuidance contract + pure projection helpers for the Human
  * Decisions lane. No silent guidance synthesis: incomplete human creates are

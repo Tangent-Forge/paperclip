@@ -22,7 +22,7 @@ export type BlockedReasonVariant =
 const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> = {
   pending_board_decision: "needs_decision",
   pending_user_decision: "needs_decision",
-  // PAP-3225: disposition is agent-ops, not owner "Needs decision"
+  // Owner Decision Projection v1: disposition is agent-ops, not owner "Needs decision"
   missing_successful_run_disposition: "needs_disposition",
   owner_terminal: "owner_terminal",
   blocked_chain_stalled: "stalled",
@@ -287,7 +287,7 @@ export function formatStoppedAge(stoppedSinceAt: string | null, now: number = Da
   return `stopped ${mo}mo`;
 }
 
-/** Pure Human Decisions lane filter (PAP-3225) — independent of UI chrome. */
+/** Pure Human Decisions lane filter (Owner Decision Projection v1) — independent of UI chrome. */
 export function isHumanDecisionsBlockedRow(row: BlockedInboxIssueRow): boolean {
   return isHumanDecisionsLaneItem(row.attention);
 }

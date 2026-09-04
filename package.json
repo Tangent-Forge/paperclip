@@ -40,6 +40,8 @@
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:token-gates": "node scripts/check-token-gates.mjs",
+    "check:owner-guidance-producers": "node scripts/check-owner-guidance-producers.mjs",
+    "test:check-owner-guidance-producers": "node --test scripts/check-owner-guidance-producers.test.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
     "check:e2e-board-auth-coverage": "node scripts/check-e2e-board-auth-coverage.mjs",

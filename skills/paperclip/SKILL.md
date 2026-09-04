@@ -336,7 +336,16 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "prompt": "Check the files you want deleted.",
+    "prompt": "Check the files you want deleted.",,
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Confirm selection",
+      "rationale": "Selected subset is safe to act on after board confirmation.",
+      "whyHuman": "Board must choose which items to act on before the agent mutates state.",
+      "deferConsequence": "No action is taken on the option set until accepted.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    }
     "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
     "options": [
       { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },
@@ -627,4 +636,4 @@ For detailed API tables, JSON response schemas, worked examples (IC and Manager 
 
 Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
 
-> **PAP-3225 ownerGuidance:** New human confirmations/questions must include structured `payload.ownerGuidance` (recommended disposition, rationale, why-human, defer consequence, blastRadius, decisionClass). Do not escalate agent-ops or bare prompts as owner Decide cards. See `references/api-reference.md`.
+> **Owner guidance:** New human confirmations/questions must include structured `payload.ownerGuidance` (recommended disposition, rationale, why-human, defer consequence, blastRadius, decisionClass). Do not escalate agent-ops or bare prompts as owner Decide cards. See `references/api-reference.md`.

@@ -1,8 +1,9 @@
-# PAP-3225 Producer Inventory + Warn-First Canary
+# Owner Decision Projection v1 — Producer Inventory + Warn-First Canary
 
 UTC: 2026-09-04
 Branch: feat/owner-decision-projection-v1
 Enforce default: warn (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE`)
+Regression guard: `pnpm check:owner-guidance-producers` / `node scripts/check-owner-guidance-producers.mjs`
 
 ## First-party producers identified
 
@@ -10,13 +11,25 @@ Enforce default: warn (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE`)
 | --- | --- | --- |
 | Shared schema | `packages/shared` ownerGuidance + evaluateOwnerGuidanceOnCreate | Updated |
 | Server create path | `server/src/services/issue-thread-interactions.ts` | Updated (warn log / strict 422) |
-| MCP tools | `packages/mcp-server` uses `requestConfirmationPayloadSchema` | Inherits optional ownerGuidance; docs note required for human |
-| Skills runtime | `skills/paperclip/SKILL.md` + `references/api-reference.md` | Updated |
-| Skills release roster | `skills-releases/paperclip/v7-roster/references/api-reference.md` | Updated |
-| Onboarding AGENTS templates | `server/src/onboarding-assets/**/AGENTS.md` | Residual: still show bare example shapes — **producer defect until follow-up** (warn canary will log if used live) |
-| Reflection coach AGENTS | `server/src/built-ins/agents/reflection-coach/**` | Residual: same |
-| CLI docs | `doc/CLI.md` bare example | Residual docs-only |
-| UI fixtures | `ui/src/fixtures/issueThreadInteractionFixtures.ts` | Default confirmation + hard_human + legacy bare fixtures |
+| MCP tools | `packages/mcp-server` uses shared payload schemas | Inherits ownerGuidance; docs require for human |
+| Skills runtime | `skills/paperclip/SKILL.md` + `references/api-reference.md` | Updated (guided examples + anti-escalation) |
+| Skills release roster | `skills-releases/paperclip/v7-roster/**` | Updated |
+| Onboarding AGENTS templates | `server/src/onboarding-assets/**/AGENTS.md` + CEO HEARTBEAT | Updated |
+| Reflection coach | `server/src/built-ins/agents/reflection-coach/**` + catalog skill | Updated |
+| Skills catalog ops | issue-triage, task-planning, prepare-mcp-integration | Updated |
+| Agent-developer guides | `docs/guides/agent-developer/**` | Updated |
+| API docs | `docs/api/issues.md` | Updated |
+| CLI docs | `doc/CLI.md` | Updated guided example |
+| OpenClaw adapter prompt | `packages/adapters/openclaw-gateway/src/server/execute.ts` | Updated |
+| UI fixtures | `ui/src/fixtures/issueThreadInteractionFixtures.ts` | Guided + legacy bare fixtures |
+| Historical skill release | `skills-releases/paperclip/v0/**` | Intentionally legacy/read-only (allowlisted in regression guard; not a live producer) |
+
+## Regression guard
+
+- Script: `scripts/check-owner-guidance-producers.mjs`
+- Unit tests: `scripts/check-owner-guidance-producers.test.mjs`
+- npm: `pnpm check:owner-guidance-producers`, `pnpm test:check-owner-guidance-producers`
+- Fails if first-party templates teach bare human confirmation creates or omit ownerGuidance contract fields
 
 ## Canary rules
 
@@ -27,4 +40,8 @@ Enforce default: warn (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE`)
 
 ## Strict enable recommendation
 
-See PR body after exact-head tests. Default recommendation until onboarding/built-in templates are fully converted: **DO NOT ENABLE STRICT** in production until residual template producers are updated or proven unused. Shared + server path + skills docs are ready for strict in test/CI.
+After residual first-party producer templates were updated and the regression guard is green:
+
+**ENABLE STRICT is recommended for CI/test and for production once this PR is merged and deployed under separate authorization.**
+
+Default env remains warn until operators flip `PAPERCLIP_OWNER_GUIDANCE_ENFORCE=strict` after merge/deploy authorization. This PR does not enable production strict by itself.

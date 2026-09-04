@@ -1,10 +1,10 @@
-# 2026-09-04 — Owner Decision Projection v1 (PAP-3225 / TAN-1015)
+# 2026-09-04 — Owner Decision Projection v1 (Owner Decision Projection v1)
 
 ## Authority
 
 - Design: accepted DESIGN.md (spec phase)
 - Implement: authorized 2026-09-04 (PR open allowed; merge/deploy NOT authorized)
-- Not in scope: PAP-2984/F-14, disposition batch reopen, broader inbox redesign
+- Not in scope: OWN-1001/F-14, disposition batch reopen, broader inbox redesign
 
 ## Contract
 

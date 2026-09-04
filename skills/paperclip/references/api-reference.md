@@ -876,7 +876,7 @@ POST /api/companies/{companyId}/approvals
 ### Issue-thread confirmations
 
 
-### Owner guidance contract (PAP-3225)
+### Owner guidance contract (Owner Decision Projection v1)
 
 Every **new** human `request_confirmation` / `ask_user_questions` / `request_checkbox_confirmation` must include structured `payload.ownerGuidance`:
 
@@ -920,6 +920,15 @@ POST /api/issues/{issueId}/interactions
   "payload": {
     "version": 1,
     "prompt": "Accept this plan?",
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Accept plan",
+      "rationale": "Plan is complete and ready for implementation after board review.",
+      "whyHuman": "Plan acceptance is a soft human gate; implementation subtasks must not spawn without confirmation.",
+      "deferConsequence": "No implementation subtasks are created; issue remains in_review until accepted or superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    },
     "acceptLabel": "Accept plan",
     "rejectLabel": "Request changes",
     "rejectRequiresReason": true,
@@ -978,7 +987,16 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "prompt": "Check the files you want deleted.",
+    "prompt": "Check the files you want deleted.",,
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Confirm selection",
+      "rationale": "Selected subset is safe to act on after board confirmation.",
+      "whyHuman": "Board must choose which items to act on before the agent mutates state.",
+      "deferConsequence": "No action is taken on the option set; interaction remains pending or is superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    }
     "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
     "options": [
       { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },

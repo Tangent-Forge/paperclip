@@ -159,7 +159,7 @@ describe("Human Decisions lane projection (F3–F8)", () => {
       interactionId: null,
       action: {
         label: "Owner terminal",
-        detail: "Blocked on owner terminal PAP-2984: post PR 339 auth packet",
+        detail: "Blocked on owner terminal OWN-1001: post PR 339 auth packet",
       },
     });
     const c = classifyHumanDecisionsLane(a);
@@ -170,7 +170,7 @@ describe("Human Decisions lane projection (F3–F8)", () => {
 
     const fields = buildOwnerTerminalAttentionFields({
       terminalIssueId: "t1",
-      terminalIdentifier: "PAP-2984",
+      terminalIdentifier: "OWN-1001",
       requiredOwnerAction: "post PR 339 auth packet",
       hasPendingOwnerInteraction: false,
     });

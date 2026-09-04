@@ -133,7 +133,9 @@ open a second PR for the same connection accidentally.
    - the proposed connection set and why each item is independent;
    - known limitations, prerequisites, and deferred questions.
 2. Create a Paperclip `request_confirmation` interaction targeted at that issue
-   document's latest revision. Use a revision-specific idempotency key and a
+   document's latest revision, including complete structured `payload.ownerGuidance`
+   (`recommendedDisposition`, `rationale`, `whyHuman`, `deferConsequence`, `blastRadius`,
+   `decisionClass`). Use a revision-specific idempotency key and a
    `wake_assignee` continuation policy so either acceptance or rejection wakes
    the assignee. Ask the reviewer to include revision notes when rejecting.
 3. Put the issue in `in_review` and stop. Do not prepare App worktrees or code

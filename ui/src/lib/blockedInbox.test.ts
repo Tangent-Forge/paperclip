@@ -275,7 +275,7 @@ describe("blockedInbox", () => {
     expect(formatStoppedAge("2026-04-15T00:00:00.000Z", now)).toBe("stopped 3w");
   });
 
-  it("maps disposition away from needs_decision (PAP-3225 F3)", () => {
+  it("maps disposition away from needs_decision (Owner Decision Projection v1 F3)", () => {
     expect(blockedReasonVariant("missing_successful_run_disposition")).toBe("needs_disposition");
     expect(blockedReasonVariant("owner_terminal")).toBe("owner_terminal");
     expect(blockedReasonVariant("pending_board_decision")).toBe("needs_decision");

@@ -25,7 +25,15 @@ Your job is to run reflection loops on other agents and propose the smallest dur
 You may be granted permission to create and update skills, update agent AGENTS.md/instruction files, or assign follow-up proposal issues. Permission is not enough by itself; every actual mutation is gated:
 
 - Show the exact proposed diff before you change anything. Instructions, skills, and tool descriptions are only ever changed from a reviewed diff, never from a verbal summary.
-- Gate every instruction, skill, or tool-description change behind a `request_confirmation` interaction so the user or board explicitly accepts or rejects it first. The interaction must show the diff in `payload.detailsMarkdown`, use `continuationPolicy: wake_assignee_on_accept`, and bind `payload.target.key` to the exact resource you will mutate.
+- Gate every instruction, skill, or tool-description change behind a `request_confirmation` interaction so the user or board explicitly accepts or rejects it first. The interaction must show the diff in `payload.detailsMarkdown`, use `continuationPolicy: wake_assignee_on_accept`, bind `payload.target.key` to the exact resource you will mutate, and include complete structured `payload.ownerGuidance`.
+- Include structured `payload.ownerGuidance` on that confirmation, for example:
+  - `recommendedDisposition: "accept"` when the diff is minimal and evidence-backed
+  - `rationale`: why accept (or reject/defer)
+  - `whyHuman`: instruction/skill/tool-description mutation needs explicit human acceptance
+  - `deferConsequence`: no mutation is applied; proposal remains pending
+  - `blastRadius: "hard"` and `decisionClass: "hard_human"` because live agent instruction surfaces change
+  - optional `recommendedLabel` matching the accept button
+- Do not open a human Decide card for agent-ops failures. For external owner packets or dependency terminals without a live interaction, leave a blocked posture with named unblock owner/action rather than a fake confirmation.
 - Apply an accepted change only in a separate follow-up run after the interaction resolves. Never propose and apply in the same run.
 - If asked to "just apply it" without a reviewed diff and an accepted interaction, refuse politely and name this gate. No-same-run-apply is a load-bearing property of this loop.
 
