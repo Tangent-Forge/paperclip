@@ -626,3 +626,5 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
 
 Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
+
+> **PAP-3225 ownerGuidance:** New human confirmations/questions must include structured `payload.ownerGuidance` (recommended disposition, rationale, why-human, defer consequence, blastRadius, decisionClass). Do not escalate agent-ops or bare prompts as owner Decide cards. See `references/api-reference.md`.

@@ -255,6 +255,16 @@ function createRequestConfirmationInteraction(
       detailsMarkdown:
         "This confirmation watches the `plan` document revision so stale approvals are blocked if the plan changes.",
       supersedeOnUserComment: true,
+      ownerGuidance: {
+        recommendedDisposition: "accept",
+        recommendedLabel: "Approve plan",
+        rationale: "Plan revision is current and implementation is ready after acceptance.",
+        whyHuman: "Plan acceptance is a deliberate board gate before implementation work starts.",
+        deferConsequence: "Assignee stays waiting; no implementation subtasks are created.",
+        blastRadius: "soft",
+        decisionClass: "soft_human",
+        systemAlternative: null,
+      },
       target: {
         type: "issue_document",
         issueId: issueThreadInteractionFixtureMeta.issueId,
@@ -1466,3 +1476,37 @@ export const mixedIssueThreadInteractions = [
   pendingRequestConfirmationInteraction,
   pendingAskUserQuestionsInteraction,
 ];
+
+
+/** PAP-3225 F1 hard_human fixture */
+export const ownerDecisionHardHumanFixture = createRequestConfirmationInteraction({
+  id: "interaction-owner-hard-human",
+  title: "Authorize history rewrite publish",
+  payload: {
+    version: 1,
+    prompt: "Authorize controlled history rewrite for TANGENT_FORGE main?",
+    acceptLabel: "Authorize",
+    rejectLabel: "Park",
+    ownerGuidance: {
+      recommendedDisposition: "defer",
+      recommendedLabel: "Park until window + candidate",
+      rationale: "No proven open rewrite window or fresh main-based candidate yet.",
+      whyHuman: "Force-push/history rewrite can destroy main; only the owner binds dest/ref.",
+      deferConsequence: "Publish stays blocked; local candidate prep can continue.",
+      blastRadius: "hard",
+      decisionClass: "hard_human",
+    },
+  },
+});
+
+/** PAP-3225 F6 grandfather bare card */
+export const ownerDecisionLegacyBareFixture = createRequestConfirmationInteraction({
+  id: "interaction-owner-legacy-bare",
+  title: "Legacy bare confirmation",
+  payload: {
+    version: 1,
+    prompt: "Continue without structured guidance?",
+    acceptLabel: "Accept",
+    rejectLabel: "Reject",
+  },
+});

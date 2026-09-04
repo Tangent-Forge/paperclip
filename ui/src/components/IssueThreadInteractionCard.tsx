@@ -2482,6 +2482,75 @@ function ConfirmationActionRow({
   );
 }
 
+
+function OwnerGuidancePanel({
+  guidance,
+}: {
+  guidance:
+    | {
+        recommendedDisposition: string;
+        recommendedLabel?: string | null;
+        rationale: string;
+        whyHuman: string;
+        deferConsequence: string;
+        systemAlternative?: string | null;
+        blastRadius: string;
+        decisionClass: string;
+      }
+    | null
+    | undefined;
+}) {
+  if (!guidance) {
+    return (
+      <div
+        className="rounded-sm border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        data-testid="owner-guidance-legacy"
+      >
+        Legacy card — no structured owner guidance. Still readable and answerable.
+      </div>
+    );
+  }
+
+  const recommended =
+    guidance.recommendedLabel?.trim()
+    || guidance.recommendedDisposition;
+
+  return (
+    <div
+      className="space-y-2 rounded-sm border border-border/70 bg-muted/20 p-3 text-sm"
+      data-testid="owner-guidance-panel"
+      data-decision-class={guidance.decisionClass}
+      data-blast-radius={guidance.blastRadius}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="secondary" data-testid="owner-guidance-recommended">
+          Recommended: {recommended}
+        </Badge>
+        <Badge variant="outline">{guidance.decisionClass}</Badge>
+        <Badge variant="outline">{guidance.blastRadius} blast</Badge>
+      </div>
+      <div>
+        <div className="text-xs font-medium text-muted-foreground">Rationale</div>
+        <p className="text-sm leading-5 text-foreground">{guidance.rationale}</p>
+      </div>
+      <div>
+        <div className="text-xs font-medium text-muted-foreground">Why human</div>
+        <p className="text-sm leading-5 text-foreground">{guidance.whyHuman}</p>
+      </div>
+      <div>
+        <div className="text-xs font-medium text-muted-foreground">If deferred</div>
+        <p className="text-sm leading-5 text-foreground">{guidance.deferConsequence}</p>
+      </div>
+      {guidance.systemAlternative ? (
+        <div>
+          <div className="text-xs font-medium text-muted-foreground">System alternative</div>
+          <p className="text-sm leading-5 text-foreground">{guidance.systemAlternative}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
@@ -2590,6 +2659,7 @@ function RequestConfirmationCard({
           <div className="text-sm leading-6 text-foreground">
             {interaction.payload.prompt}
           </div>
+          <OwnerGuidancePanel guidance={interaction.payload.ownerGuidance} />
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-border/60 pt-3 text-sm">
               <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>

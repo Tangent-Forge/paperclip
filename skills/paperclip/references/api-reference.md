@@ -875,6 +875,31 @@ POST /api/companies/{companyId}/approvals
 
 ### Issue-thread confirmations
 
+
+### Owner guidance contract (PAP-3225)
+
+Every **new** human `request_confirmation` / `ask_user_questions` / `request_checkbox_confirmation` must include structured `payload.ownerGuidance`:
+
+```json
+"ownerGuidance": {
+  "recommendedDisposition": "accept" | "reject" | "defer" | "custom",
+  "recommendedLabel": "optional button-oriented label",
+  "rationale": "why this recommendation",
+  "whyHuman": "why the system cannot auto-resolve",
+  "deferConsequence": "what happens if deferred",
+  "systemAlternative": "optional: what system already did or can do without this click",
+  "blastRadius": "hard" | "soft" | "none",
+  "decisionClass": "hard_human" | "soft_human"
+}
+```
+
+Rules:
+- `hard_human` requires `blastRadius: "hard"`. Never auto-accept hard gates.
+- `soft_human` prefers board-seat / agent resolution before escalating.
+- Do **not** create Decide interactions for agent-ops (disposition, stale canary, board-seat 403) or informational owner terminals (e.g. external PR packet) — those are agent ops or parent `owner_terminal` chips, not Accept/Reject cards.
+- Markdown-only `detailsMarkdown` does **not** satisfy the contract.
+- Server default is warn-first canary (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE=warn`); strict mode returns **422** for bare human creates.
+
 Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
 
 Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:

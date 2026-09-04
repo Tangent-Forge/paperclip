@@ -484,7 +484,8 @@ export type IssueBlockedInboxReason =
   | "pending_board_decision"
   | "pending_user_decision"
   | "external_owner_action"
-  | "open_recovery_issue";
+  | "open_recovery_issue"
+  | "owner_terminal";
 
 export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
 
@@ -1117,12 +1118,36 @@ export interface AskUserQuestionsQuestion {
   options: AskUserQuestionsQuestionOption[];
 }
 
+
+/**
+ * Structured owner guidance for human decision interactions (PAP-3225).
+ * Required for new hard_human/soft_human creates when enforcement is on.
+ * Markdown-only detailsMarkdown does not satisfy this contract.
+ */
+export type OwnerRecommendedDisposition = "accept" | "reject" | "defer" | "custom";
+export type OwnerBlastRadius = "hard" | "soft" | "none";
+export type OwnerDecisionClass = "hard_human" | "soft_human" | "agent_ops" | "informational_blocker";
+
+export interface OwnerGuidance {
+  recommendedDisposition: OwnerRecommendedDisposition;
+  recommendedOptionId?: string | null;
+  recommendedLabel?: string | null;
+  rationale: string;
+  whyHuman: string;
+  deferConsequence: string;
+  systemAlternative?: string | null;
+  blastRadius: OwnerBlastRadius;
+  decisionClass: OwnerDecisionClass;
+}
+
 export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
+  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  ownerGuidance?: OwnerGuidance | null;
 }
 
 export interface AskUserQuestionsAnswer {
@@ -1239,6 +1264,8 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
+  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  ownerGuidance?: OwnerGuidance | null;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1263,6 +1290,8 @@ export interface RequestCheckboxConfirmationPayload {
   declineReasonPlaceholder?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  /** Structured owner guidance (PAP-3225). Required for new hard/soft human creates when enforce is on. */
+  ownerGuidance?: OwnerGuidance | null;
 }
 
 export type RequestItemVerdictValue = "approve" | "reject" | "defer";

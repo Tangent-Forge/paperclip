@@ -62,6 +62,7 @@ export const issueBlockedInboxReasonSchema = z.enum([
   "pending_user_decision",
   "external_owner_action",
   "open_recovery_issue",
+  "owner_terminal",
 ]);
 
 export const issueBlockedInboxIssueRefSchema = z.object({
@@ -802,12 +803,50 @@ export const askUserQuestionsQuestionSchema = z.object({
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
 });
 
+export const ownerRecommendedDispositionSchema = z.enum(["accept", "reject", "defer", "custom"]);
+export const ownerBlastRadiusSchema = z.enum(["hard", "soft", "none"]);
+export const ownerDecisionClassSchema = z.enum([
+  "hard_human",
+  "soft_human",
+  "agent_ops",
+  "informational_blocker",
+]);
+
+/** Structured owner guidance — machine-validatable (PAP-3225). Optional on stored/legacy payloads. */
+export const ownerGuidanceSchema = z.object({
+  recommendedDisposition: ownerRecommendedDispositionSchema,
+  recommendedOptionId: z.string().trim().min(1).max(120).nullable().optional(),
+  recommendedLabel: z.string().trim().min(1).max(160).nullable().optional(),
+  rationale: z.string().trim().min(1).max(500),
+  whyHuman: z.string().trim().min(1).max(500),
+  deferConsequence: z.string().trim().min(1).max(500),
+  systemAlternative: z.string().trim().min(1).max(500).nullable().optional(),
+  blastRadius: ownerBlastRadiusSchema,
+  decisionClass: ownerDecisionClassSchema,
+}).superRefine((value, ctx) => {
+  if (value.decisionClass === "hard_human" && value.blastRadius !== "hard") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "hard_human requires blastRadius hard",
+      path: ["blastRadius"],
+    });
+  }
+  if (value.decisionClass === "soft_human" && value.blastRadius === "hard") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "soft_human cannot use blastRadius hard",
+      path: ["blastRadius"],
+    });
+  }
+});
+
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+  ownerGuidance: ownerGuidanceSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
   for (const [questionIndex, question] of value.questions.entries()) {
@@ -898,6 +937,7 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationCustomTargetSchema,
 ]);
 
+
 export const requestConfirmationToolActionPayloadSchema = z.object({
   version: z.literal(1),
   actionRequestId: z.string().uuid(),
@@ -939,6 +979,7 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
+  ownerGuidance: ownerGuidanceSchema.nullable().optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
@@ -968,6 +1009,7 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
+  ownerGuidance: ownerGuidanceSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const optionIds = new Set<string>();
   for (const [index, option] of value.options.entries()) {
