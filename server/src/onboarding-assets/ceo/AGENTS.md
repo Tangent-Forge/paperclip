@@ -34,10 +34,25 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - If the board asks you to do something and you're unsure who should own it, default to the CTO for technical work.
 - Use child issues for delegated work and wait for Paperclip wake events or comments instead of polling agents, sessions, or processes in a loop.
 - Create child issues directly when ownership and scope are clear. Use issue-thread interactions when the board/user needs to choose proposed tasks, answer structured questions, or confirm a proposal before work can continue.
-- Use `request_confirmation` for explicit yes/no decisions instead of asking in markdown. Before presenting a plan for review, you MUST complete this publish contract:
+- Use `request_confirmation` for explicit yes/no decisions instead of asking in markdown.
+- Owner Decision Projection contract for human confirmations/questions:
+  - Every **new** human `request_confirmation`, `ask_user_questions`, or `request_checkbox_confirmation` MUST include structured `payload.ownerGuidance` with:
+    - `recommendedDisposition` (`accept` | `reject` | `defer` | `custom`)
+    - `rationale`
+    - `whyHuman`
+    - `deferConsequence`
+    - `blastRadius` (`hard` | `soft` | `none`)
+    - `decisionClass` (`hard_human` | `soft_human`)
+    - optional `recommendedLabel` / `recommendedOptionId` / `systemAlternative`
+  - `hard_human` requires `blastRadius: "hard"` and remains a true human gate (never auto-accept).
+  - `soft_human` prefers board-seat/system resolution before escalating when policy permits.
+  - Do **not** create a human Decide interaction for agent-ops (missing disposition, stale canary, board-seat/credential 403) — those stay agent ops.
+  - Do **not** fake a confirmation for an informational owner terminal (external owner packet / dependency). Mark the issue blocked with a named unblock owner/action so parents project `owner_terminal`; only open a Decide card when a real pending owner interaction exists.
+  - Markdown-only `detailsMarkdown` does **not** satisfy the contract.
+- Before presenting a plan for review, you MUST complete this publish contract:
   1. `PUT /issues/{id}/documents/plan` with `{ format: 'markdown', body, changeSummary }`.
   2. Re-`GET /documents/plan`, assert it returns `200`, and capture its `latestRevisionId`.
-  3. Only then create `request_confirmation` with `target={ type: 'issue_document', key: 'plan', revisionId: latestRevisionId }` and `idempotencyKey=confirmation:{issueId}:plan:{revisionId}`.
+  3. Only then create `request_confirmation` with `target={ type: 'issue_document', key: 'plan', revisionId: latestRevisionId }`, `idempotencyKey=confirmation:{issueId}:plan:{revisionId}`, and structured `payload.ownerGuidance` (soft_human unless blast-radius is hard).
   4. Put the source issue in `in_review` and wait for acceptance before delegating implementation subtasks.
   Never present a plan only in a thread comment or through `ask_user_questions`; comments are supporting context and questions are for gathering input, not plan review.
 - If a board/user comment supersedes a pending confirmation, treat it as fresh direction: revise the artifact or proposal and create a fresh confirmation if approval is still needed.

@@ -84,7 +84,16 @@ POST /api/issues/{issueId}/interactions
     "acceptLabel": "Accept",
     "rejectLabel": "Request changes",
     "rejectRequiresReason": true,
-    "supersedeOnUserComment": true
+    "supersedeOnUserComment": true,
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Accept",
+      "rationale": "Proposal is complete and ready to proceed after board review.",
+      "whyHuman": "Soft human gate: board must confirm before follow-up work continues.",
+      "deferConsequence": "Work stays waiting; no follow-up actions run until accepted or superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    }
   }
 }
 ```
@@ -97,7 +106,7 @@ When a plan needs approval before implementation:
 
 1. Create or update the issue document with key `plan`.
 2. Fetch the saved document so you know the latest `documentId`, `latestRevisionId`, and `latestRevisionNumber`.
-3. Create a `request_confirmation` targeting that exact `plan` revision.
+3. Create a `request_confirmation` targeting that exact `plan` revision, including complete `payload.ownerGuidance` (soft_human unless blast-radius is hard).
 4. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
 5. Wait for acceptance before creating implementation subtasks.
 6. If a board/user comment supersedes the pending confirmation, revise the plan and create a fresh confirmation if approval is still needed.

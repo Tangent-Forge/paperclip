@@ -4,9 +4,15 @@ import type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
 } from "@paperclipai/shared";
+import {
+  classifyHumanDecisionsLane,
+  isHumanDecisionsLaneItem,
+} from "@paperclipai/shared";
 
 export type BlockedReasonVariant =
   | "needs_decision"
+  | "needs_disposition"
+  | "owner_terminal"
   | "stalled"
   | "needs_attention"
   | "recovery_required"
@@ -16,7 +22,9 @@ export type BlockedReasonVariant =
 const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> = {
   pending_board_decision: "needs_decision",
   pending_user_decision: "needs_decision",
-  missing_successful_run_disposition: "needs_decision",
+  // Owner Decision Projection v1: disposition is agent-ops, not owner "Needs decision"
+  missing_successful_run_disposition: "needs_disposition",
+  owner_terminal: "owner_terminal",
   blocked_chain_stalled: "stalled",
   blocked_by_unassigned_issue: "needs_attention",
   blocked_by_assigned_backlog_issue: "needs_attention",
@@ -30,7 +38,9 @@ const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> =
 
 export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
   "needs_decision",
+  "owner_terminal",
   "stalled",
+  "needs_disposition",
   "needs_attention",
   "recovery_required",
   "external_wait",
@@ -39,7 +49,9 @@ export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
 
 export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
   needs_decision: "Needs decision",
+  owner_terminal: "Owner terminal",
   stalled: "Blocked chain stalled",
+  needs_disposition: "Needs disposition",
   needs_attention: "Needs attention",
   recovery_required: "Recovery required",
   external_wait: "External wait",
@@ -50,6 +62,7 @@ const REASON_LABELS: Record<IssueBlockedInboxReason, string> = {
   pending_board_decision: "Pending board decision",
   pending_user_decision: "Pending user decision",
   missing_successful_run_disposition: "Pick disposition",
+  owner_terminal: "Owner terminal",
   blocked_chain_stalled: "Blocked chain stalled",
   blocked_by_unassigned_issue: "Unassigned blocker",
   blocked_by_assigned_backlog_issue: "Parked blocker",
@@ -273,3 +286,16 @@ export function formatStoppedAge(stoppedSinceAt: string | null, now: number = Da
   const mo = Math.floor(seconds / (86_400 * 30));
   return `stopped ${mo}mo`;
 }
+
+/** Pure Human Decisions lane filter (Owner Decision Projection v1) — independent of UI chrome. */
+export function isHumanDecisionsBlockedRow(row: BlockedInboxIssueRow): boolean {
+  return isHumanDecisionsLaneItem(row.attention);
+}
+
+export function filterHumanDecisionsBlockedRows(
+  rows: readonly BlockedInboxIssueRow[],
+): BlockedInboxIssueRow[] {
+  return rows.filter((row) => isHumanDecisionsBlockedRow(row));
+}
+
+export { classifyHumanDecisionsLane, isHumanDecisionsLaneItem };

@@ -64,6 +64,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  buildOwnerTerminalAttentionFields,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -3949,15 +3950,16 @@ async function listIssueBlockedInboxAttentionMap(
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
+      // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
         severity: "high",
         stoppedSinceAt: handoff.createdAt ?? row.updatedAt,
         owner: {
-          type: row.assigneeAgentId ? "agent" : row.assigneeUserId ? "user" : "unknown",
+          type: "agent",
           agentId: row.assigneeAgentId,
-          userId: row.assigneeUserId,
+          userId: null,
           label: null,
         },
         action: {
@@ -4113,19 +4115,53 @@ async function listIssueBlockedInboxAttentionMap(
     const blockerAttention = await listIssueBlockerAttentionMap(dbOrTx, companyId, [row]);
     const blockerState = blockerAttention.get(row.id);
     if (row.status === "blocked" && (blockerState?.state === "needs_attention" || blockerState?.state === "stalled")) {
-      result.set(row.id, attentionBase({
-        state: "needs_attention",
-        reason: "blocked_chain_stalled",
-        severity: "high",
-        stoppedSinceAt: row.updatedAt,
-        owner: { type: "unknown", agentId: null, userId: null, label: null },
-        action: {
-          label: "Inspect blocker chain",
-          detail: "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
-        },
-        sourceIssue: source,
-        sampleIssueIdentifier: blockerState.sampleStalledBlockerIdentifier ?? blockerState.sampleBlockerIdentifier,
-      }));
+      const sampleIdentifier =
+        blockerState.sampleStalledBlockerIdentifier ?? blockerState.sampleBlockerIdentifier ?? null;
+      const leaf = sampleIdentifier
+        ? graphIssues.find((issue) => issue.identifier === sampleIdentifier || issue.id === sampleIdentifier) ?? null
+        : null;
+      const leafHasPendingInteraction = leaf ? interactionByIssueId.has(leaf.id) : false;
+      const leafHasPendingApproval = leaf ? approvalByIssueId.has(leaf.id) : false;
+      // Owner Decision Projection v1 F4: user-assigned leaf without a pending interaction is an owner_terminal
+      // dependency chip on the parent — not a fake Decide button on the parent.
+      if (leaf?.assigneeUserId && !leafHasPendingInteraction && !leafHasPendingApproval) {
+        const terminal = buildOwnerTerminalAttentionFields({
+          terminalIssueId: leaf.id,
+          terminalIdentifier: leaf.identifier,
+          requiredOwnerAction: "complete the owner-assigned terminal work",
+          hasPendingOwnerInteraction: false,
+        });
+        result.set(row.id, attentionBase({
+          state: "needs_attention",
+          reason: terminal.reason,
+          severity: "high",
+          stoppedSinceAt: leaf.updatedAt ?? row.updatedAt,
+          owner: {
+            type: terminal.ownerType,
+            agentId: null,
+            userId: leaf.assigneeUserId,
+            label: null,
+          },
+          action: terminal.action,
+          sourceIssue: source,
+          leafIssue: issueRef(leaf),
+          sampleIssueIdentifier: leaf.identifier ?? sampleIdentifier,
+        }));
+      } else {
+        result.set(row.id, attentionBase({
+          state: "needs_attention",
+          reason: "blocked_chain_stalled",
+          severity: "high",
+          stoppedSinceAt: row.updatedAt,
+          owner: { type: "unknown", agentId: null, userId: null, label: null },
+          action: {
+            label: "Inspect blocker chain",
+            detail: "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+          },
+          sourceIssue: source,
+          sampleIssueIdentifier: sampleIdentifier,
+        }));
+      }
     }
   }
 

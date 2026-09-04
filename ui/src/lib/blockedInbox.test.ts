@@ -19,6 +19,7 @@ import {
   compareBlockedAttention,
   compareBlockedRows,
   formatStoppedAge,
+  filterHumanDecisionsBlockedRows,
   groupBlockedInboxRows,
   sortBlockedInboxRows,
   type BlockedInboxIssueRow,
@@ -96,6 +97,7 @@ describe("blockedInbox", () => {
       "pending_board_decision",
       "pending_user_decision",
       "missing_successful_run_disposition",
+      "owner_terminal",
       "blocked_chain_stalled",
       "blocked_by_unassigned_issue",
       "blocked_by_assigned_backlog_issue",
@@ -272,4 +274,56 @@ describe("blockedInbox", () => {
     expect(formatStoppedAge("2026-05-07T00:00:00.000Z", now)).toBe("stopped 3d");
     expect(formatStoppedAge("2026-04-15T00:00:00.000Z", now)).toBe("stopped 3w");
   });
+
+  it("maps disposition away from needs_decision (Owner Decision Projection v1 F3)", () => {
+    expect(blockedReasonVariant("missing_successful_run_disposition")).toBe("needs_disposition");
+    expect(blockedReasonVariant("owner_terminal")).toBe("owner_terminal");
+    expect(blockedReasonVariant("pending_board_decision")).toBe("needs_decision");
+  });
+
+  it("filters Human Decisions lane to interactions/approvals only (F3/F4/F5/F8)", () => {
+    const rows = buildBlockedInboxRows([
+      makeIssue(
+        { id: "i-approval" },
+        makeAttention({
+          reason: "pending_board_decision",
+          approvalId: "11111111-1111-4111-8111-111111111111",
+          interactionId: null,
+          owner: { type: "board", agentId: null, userId: null, label: "Board" },
+        }),
+      ),
+      makeIssue(
+        { id: "i-interaction" },
+        makeAttention({
+          reason: "pending_user_decision",
+          interactionId: "22222222-2222-4222-8222-222222222222",
+          owner: { type: "user", agentId: null, userId: "u1", label: null },
+        }),
+      ),
+      makeIssue(
+        { id: "i-disposition" },
+        makeAttention({
+          reason: "missing_successful_run_disposition",
+          owner: { type: "agent", agentId: "a1", userId: null, label: null },
+        }),
+      ),
+      makeIssue(
+        { id: "i-terminal" },
+        makeAttention({
+          reason: "owner_terminal",
+          owner: { type: "user", agentId: null, userId: "local-board", label: null },
+        }),
+      ),
+      makeIssue(
+        { id: "i-stalled" },
+        makeAttention({
+          reason: "blocked_chain_stalled",
+          owner: { type: "unknown", agentId: null, userId: null, label: null },
+        }),
+      ),
+    ]);
+    const human = filterHumanDecisionsBlockedRows(rows);
+    expect(human.map((r) => r.issue.id).sort()).toEqual(["i-approval", "i-interaction"]);
+  });
+
 });

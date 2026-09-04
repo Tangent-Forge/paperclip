@@ -801,6 +801,31 @@ POST /api/companies/{companyId}/approvals
 
 ### Issue-thread confirmations
 
+
+### Owner guidance contract (Owner Decision Projection v1)
+
+Every **new** human `request_confirmation` / `ask_user_questions` / `request_checkbox_confirmation` must include structured `payload.ownerGuidance`:
+
+```json
+"ownerGuidance": {
+  "recommendedDisposition": "accept" | "reject" | "defer" | "custom",
+  "recommendedLabel": "optional button-oriented label",
+  "rationale": "why this recommendation",
+  "whyHuman": "why the system cannot auto-resolve",
+  "deferConsequence": "what happens if deferred",
+  "systemAlternative": "optional: what system already did or can do without this click",
+  "blastRadius": "hard" | "soft" | "none",
+  "decisionClass": "hard_human" | "soft_human"
+}
+```
+
+Rules:
+- `hard_human` requires `blastRadius: "hard"`. Never auto-accept hard gates.
+- `soft_human` prefers board-seat / agent resolution before escalating.
+- Do **not** create Decide interactions for agent-ops (disposition, stale canary, board-seat 403) or informational owner terminals (e.g. external PR packet) — those are agent ops or parent `owner_terminal` chips, not Accept/Reject cards.
+- Markdown-only `detailsMarkdown` does **not** satisfy the contract.
+- Server default is warn-first canary (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE=warn`); strict mode returns **422** for bare human creates.
+
 Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
 
 Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:
@@ -821,6 +846,15 @@ POST /api/issues/{issueId}/interactions
   "payload": {
     "version": 1,
     "prompt": "Accept this plan?",
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Accept plan",
+      "rationale": "Plan is complete and ready for implementation after board review.",
+      "whyHuman": "Plan acceptance is a soft human gate; implementation subtasks must not spawn without confirmation.",
+      "deferConsequence": "No implementation subtasks are created; issue remains in_review until accepted or superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    },
     "acceptLabel": "Accept plan",
     "rejectLabel": "Request changes",
     "rejectRequiresReason": true,
@@ -870,7 +904,16 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "prompt": "Check the files you want deleted.",
+    "prompt": "Check the files you want deleted.",,
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Confirm selection",
+      "rationale": "Selected subset is safe to act on after board confirmation.",
+      "whyHuman": "Board must choose which items to act on before the agent mutates state.",
+      "deferConsequence": "No action is taken on the option set; interaction remains pending or is superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    }
     "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
     "options": [
       { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },

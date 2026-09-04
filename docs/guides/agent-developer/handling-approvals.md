@@ -13,7 +13,7 @@ Examples that should use `request_confirmation` instead of approvals:
 - "Proceed with this issue breakdown?"
 - "Use option A or reject and request changes?"
 
-Create those cards with `POST /api/issues/{issueId}/interactions` and `kind: "request_confirmation"`.
+Create those cards with `POST /api/issues/{issueId}/interactions` and `kind: "request_confirmation"`, including structured `payload.ownerGuidance` (recommendedDisposition, rationale, whyHuman, deferConsequence, blastRadius, decisionClass). Do not escalate agent-ops or informational owner terminals as Decide cards.
 
 ## Requesting a Hire
 
@@ -52,7 +52,7 @@ POST /api/companies/{companyId}/approvals
 For normal issue implementation plans, use the issue-thread confirmation surface:
 
 1. Update the `plan` issue document.
-2. Create `request_confirmation` bound to the latest `plan` revision.
+2. Create `request_confirmation` bound to the latest `plan` revision with complete `payload.ownerGuidance`.
 3. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
 4. Set `supersedeOnUserComment: true` so later board/user comments expire the stale request.
 5. Wait for the accepted confirmation before creating implementation subtasks.

@@ -286,6 +286,16 @@ Because this body goes through a quoted heredoc, `requestedByAgentId` and every 
 
 Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
 
+## Owner guidance contract
+
+Every **new** human `request_confirmation` / `ask_user_questions` / `request_checkbox_confirmation` must include structured `payload.ownerGuidance` with `recommendedDisposition`, `rationale`, `whyHuman`, `deferConsequence`, `blastRadius`, and `decisionClass` (`hard_human` or `soft_human`). Optional: `recommendedLabel`, `recommendedOptionId`, `systemAlternative`.
+
+Anti-escalation:
+- Do not create Decide interactions for agent-ops (missing disposition, stale canary, board-seat/credential failures).
+- Informational owner terminals project as parent dependency/`owner_terminal` chips — not fake Accept/Reject cards.
+- `hard_human` remains a true human gate; `soft_human` prefers board-seat/system resolution before escalation when policy permits.
+- Markdown-only details do not satisfy the contract.
+
 A decision is collected **only** by an interaction. Writing the options into a document or a comment puts nothing in front of the board — no card renders, no response can be typed, no wake ever comes. Any instruction of the form "have the board pick / select / choose / decide / answer" means your deliverable is a `POST /api/issues/{id}/interactions`, never a document PUT or comment. Asking questions in a comment is the same violation — a comment, however well-formatted, cannot capture a typed response: whenever you need values, answers, or choices back from the user, the write is an `ask_user_questions` (or other typed) interaction, not a comment that requests a reply.
 
 Interactions address the **human board/user only**. When the review, input, or sign-off you need is owned by another **agent** (a name from `GET /api/companies/{companyId}/agents` — a security engineer, a reviewer, a specialist), do not create an interaction: create an issue assigned to that agent and block your issue on it with `blockedByIssueIds` (see **Issue Dependencies**). The dependency wake — not a `continuationPolicy` — is what resumes your work automatically when their review lands.
@@ -327,7 +337,16 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "prompt": "Check the files you want deleted.",
+    "prompt": "Check the files you want deleted.",,
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Confirm selection",
+      "rationale": "Selected subset is safe to act on after board confirmation.",
+      "whyHuman": "Board must choose which items to act on before the agent mutates state.",
+      "deferConsequence": "No action is taken on the option set until accepted.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    }
     "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
     "options": [
       { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },

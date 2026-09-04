@@ -21,6 +21,10 @@ type IconComponent = ComponentType<{ className?: string; "aria-hidden"?: boolean
 const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
   needs_decision:
     "border-violet-300/70 bg-violet-50 text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300",
+  owner_terminal:
+    "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300",
+  needs_disposition:
+    "border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300",
   recovery_required:
     "border-cyan-300/70 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-300",
   stalled:
@@ -35,6 +39,8 @@ const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
 
 const VARIANT_ICONS: Record<BlockedReasonVariant, IconComponent> = {
   needs_decision: Clock,
+  owner_terminal: User,
+  needs_disposition: Wrench,
   recovery_required: Wrench,
   stalled: AlertTriangle,
   needs_attention: AlertTriangle,

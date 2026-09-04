@@ -66,6 +66,6 @@ Use issue-thread interactions when the user should respond through a structured 
 - `ask_user_questions` for structured questions
 - `request_confirmation` for explicit accept/reject decisions
 
-For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions`. Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work.
+For yes/no decisions, create a `request_confirmation` card with `POST /api/issues/{issueId}/interactions` and structured `payload.ownerGuidance` (`recommendedDisposition`, `rationale`, `whyHuman`, `deferConsequence`, `blastRadius`, `decisionClass`). Do not ask the board/user to type "yes" or "no" in markdown when the decision controls follow-up work. Do not escalate agent-ops as human Decide cards.
 
 Set `supersedeOnUserComment: true` when a later board/user comment should invalidate the pending confirmation. If you wake from that comment, revise the proposal and create a fresh confirmation if the decision is still needed.

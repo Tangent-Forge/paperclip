@@ -206,6 +206,15 @@ POST /api/issues/{issueId}/interactions
     "rejectRequiresReason": true,
     "rejectReasonLabel": "What needs to change?",
     "detailsMarkdown": "Review the latest plan document before accepting.",
+    "ownerGuidance": {
+      "recommendedDisposition": "accept",
+      "recommendedLabel": "Accept plan",
+      "rationale": "Plan is complete and ready for implementation after board review.",
+      "whyHuman": "Plan acceptance is a soft human gate; implementation subtasks must not spawn without confirmation.",
+      "deferConsequence": "No implementation subtasks are created; issue remains in_review until accepted or superseded.",
+      "blastRadius": "soft",
+      "decisionClass": "soft_human"
+    },
     "supersedeOnUserComment": true,
     "target": {
       "type": "issue_document",
@@ -218,6 +227,9 @@ POST /api/issues/{issueId}/interactions
   }
 }
 ```
+
+
+New human `request_confirmation`, `ask_user_questions`, and `request_checkbox_confirmation` creates should include structured `payload.ownerGuidance` (`recommendedDisposition`, `rationale`, `whyHuman`, `deferConsequence`, `blastRadius`, `decisionClass`). Server default is warn-first (`PAPERCLIP_OWNER_GUIDANCE_ENFORCE=warn`); strict mode returns `422` for bare human creates. Do not escalate agent-ops or informational owner terminals as Decide cards. Grandfathered existing bare pending cards remain readable.
 
 Supported `kind` values:
 

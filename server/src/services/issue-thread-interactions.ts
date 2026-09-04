@@ -60,9 +60,13 @@ import {
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
+  evaluateOwnerGuidanceOnCreate,
+  resolveOwnerGuidanceEnforceMode,
+  shouldRejectOwnerGuidanceCreate,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -2261,6 +2265,42 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      // Owner Decision Projection v1: ownerGuidance contract — warn-first canary by default; strict rejects bare human creates.
+      // Never synthesize guidance server-side to pass validation.
+      if (
+        data.kind === "request_confirmation"
+        || data.kind === "ask_user_questions"
+        || data.kind === "request_checkbox_confirmation"
+      ) {
+        const enforceMode = resolveOwnerGuidanceEnforceMode();
+        const guidanceEval = evaluateOwnerGuidanceOnCreate({
+          kind: data.kind,
+          payload: data.payload as unknown as Record<string, unknown>,
+          mode: enforceMode,
+        });
+        if (guidanceEval.producerDefect) {
+          const producerMeta = {
+            code: guidanceEval.code,
+            mode: enforceMode,
+            kind: data.kind,
+            issueId: issue.id,
+            companyId: issue.companyId,
+            actorType: actor.agentId ? "agent" : actor.userId ? "user" : actor.systemId ? "system" : "unknown",
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.userId ?? null,
+            message: guidanceEval.message,
+          };
+          if (shouldRejectOwnerGuidanceCreate(guidanceEval)) {
+            logger.warn({ ...producerMeta }, "owner_guidance.create.rejected");
+            throw unprocessable(
+              guidanceEval.message
+                ?? "New human decision interactions require structured ownerGuidance",
+              { ownerGuidance: producerMeta },
+            );
+          }
+          logger.warn({ ...producerMeta }, "owner_guidance.create.producer_defect");
+        }
+      }
       const usedDeprecatedResolverPolicyAlias =
         data.resolverPolicy === "board_or_agents" || data.resolverPolicy === "board_only";
       const governance = await db
