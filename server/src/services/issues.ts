@@ -3951,6 +3951,12 @@ async function listIssueBlockedInboxAttentionMap(
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
+      // Decision/gate remediation: only surface missing disposition on live execution statuses.
+      // backlog/todo/blocked already left the run path; those rows are agent-ops ledger noise, not BA.
+      const dispositionEligibleStatuses = new Set(["in_progress", "in_review"]);
+      if (!dispositionEligibleStatuses.has(String(row.status))) {
+        continue;
+      }
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
