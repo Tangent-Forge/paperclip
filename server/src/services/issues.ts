@@ -68,6 +68,7 @@ import {
   shouldSurfaceMissingDisposition,
   buildAgentOpsDispositionDebtItem,
   summarizeAgentOpsDispositionDebt,
+  isSatisfiedBlockerStatus,
   type AgentOpsDispositionDebtItem,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -3375,6 +3376,10 @@ async function blockedByMapForIssues(
     for (const row of rows) {
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
+      // Phase 3: satisfied (done/cancelled/superseded) blockers are non-controlling.
+      // Relation rows remain in issue_relations historically; they drop from the
+      // controlling blockedBy projection used by attention/gates.
+      if (isSatisfiedBlockerStatus(String(row.status))) continue;
       blockedBy.push({
         id: row.relatedId,
         identifier: row.identifier,

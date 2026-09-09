@@ -76,6 +76,7 @@ import {
 } from "./issue-review-policy.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 import {
+import { createAcceptanceLaneService, extractLaneBindFromInteractionPayload, shouldAttemptLaneBindFromInteraction } from "./acceptance-lane-lifecycle.js";
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
@@ -1673,6 +1674,40 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "interaction_already_resolved",
           "Interaction has already been resolved",
         );
+      }
+
+
+      // Phase 3: bind structured acceptance lanes from accepted interaction (idempotent, no mass-wake).
+      try {
+        if (shouldAttemptLaneBindFromInteraction("accepted")) {
+          const payload = (lockedCurrent.payload && typeof lockedCurrent.payload === "object")
+            ? lockedCurrent.payload as Record<string, unknown>
+            : null;
+          const resultObj = (updated.result && typeof updated.result === "object")
+            ? updated.result as Record<string, unknown>
+            : null;
+          const partial = extractLaneBindFromInteractionPayload(payload, resultObj);
+          if (partial?.laneKey && partial?.state) {
+            const laneSvc = createAcceptanceLaneService(db);
+            await laneSvc.applyAcceptedInteractionBinding({
+              companyId: args.issue.companyId,
+              issueId: args.issue.id,
+              laneKey: partial.laneKey,
+              state: partial.state as any,
+              interactionId: updated.id,
+              resolutionStatus: "accepted",
+              option: partial.option ?? null,
+              exactHead: partial.exactHead ?? null,
+              artifactRef: partial.artifactRef ?? null,
+              pathClass: partial.pathClass ?? null,
+              standingPolicyId: partial.standingPolicyId ?? null,
+              decisionId: partial.decisionId ?? null,
+            });
+          }
+        }
+      } catch (err) {
+        // Fail closed on bind errors: do not roll back acceptance; surface via log.
+        console.error("acceptance_lane_bind_failed", err);
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
