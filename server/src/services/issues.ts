@@ -3950,24 +3950,28 @@ async function listIssueBlockedInboxAttentionMap(
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
-      // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
-      result.set(row.id, attentionBase({
-        state: "missing_disposition",
-        reason: "missing_successful_run_disposition",
-        severity: "high",
-        stoppedSinceAt: handoff.createdAt ?? row.updatedAt,
-        owner: {
-          type: "agent",
-          agentId: row.assigneeAgentId,
-          userId: null,
-          label: null,
-        },
-        action: {
-          label: "Choose disposition",
-          detail: "Choose exactly one final disposition: done, cancelled, review/input, blocked with owner, delegated follow-up, or queued continuation.",
-        },
-        sourceIssue: source,
-      }));
+      // Decision/Gate remediation: only surface missing disposition while the issue is
+      // actively in_progress. Other statuses are agent-ops reconcile debt, not inbox spam
+      // (and never Human Decisions — see owner-decision-projection classifyHumanDecisionsLane).
+      if (row.status === "in_progress") {
+        result.set(row.id, attentionBase({
+          state: "missing_disposition",
+          reason: "missing_successful_run_disposition",
+          severity: "high",
+          stoppedSinceAt: handoff.createdAt ?? row.updatedAt,
+          owner: {
+            type: "agent",
+            agentId: row.assigneeAgentId,
+            userId: null,
+            label: null,
+          },
+          action: {
+            label: "Choose disposition",
+            detail: "Choose exactly one final disposition: done, cancelled, review/input, blocked with owner, delegated follow-up, or queued continuation.",
+          },
+          sourceIssue: source,
+        }));
+      }
       continue;
     }
 

@@ -1,4 +1,5 @@
 export * from "./owner-decision-projection.js";
+export * from "./acceptance-lanes.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   parseExecutionConstraints,
