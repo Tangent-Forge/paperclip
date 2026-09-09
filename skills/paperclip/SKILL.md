@@ -636,4 +636,10 @@ For detailed API tables, JSON response schemas, worked examples (IC and Manager 
 
 Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.
 
-> **Owner guidance:** New human confirmations/questions must include structured `payload.ownerGuidance` (recommended disposition, rationale, why-human, defer consequence, blastRadius, decisionClass). Do not escalate agent-ops or bare prompts as owner Decide cards. See `references/api-reference.md`.
+> **Decision ownership (TFOS SR-DECISION-AND-GATE-SYSTEM-v1):** Agents own deterministic, standards-based, evidence-based, bounded-design, and reversible implementation choices. Humans only get subjective intent, priority/tradeoff, material risk, irreversible external action, or authority change. Missing specs → recommend a standard/default; do not auto-escalate.
+
+> **Authority ladder before escalate:** (1) SOUL + GREEN gates (2) specs/skills/DEC-* (3) **newest answered interactions** on the issue (outrank older comments and cached blocker text) (4) live evidence (5) standing path-class precedents (docs-only runtime N/A) (6) bounded reversible default (7) only then open a human interaction with full `ownerGuidance`.
+
+> **Owner guidance:** New human confirmations/questions must include structured `payload.ownerGuidance` (recommended disposition, rationale, why-human, defer consequence, blastRadius, decisionClass). Do not escalate agent-ops (missing disposition, covered parents, empty-blocker debt, liveness twins) or bare prompts as owner Decide cards. See `references/api-reference.md`.
+
+> **Acceptance lanes:** Use pending|satisfied|failed|blocked|not_applicable|superseded. Bind answered interactions into lane state. `not_applicable` never waives independent review or exact-head secret scan.
