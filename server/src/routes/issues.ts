@@ -5780,7 +5780,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Task bridge keys cannot use agent-ops disposition APIs" });
       return;
     }
-    const svc = issueService(req.db ?? db);
+    const svc = issueService(db);
     const result = await svc.listAgentOpsDispositionDebt(companyId);
     res.json(result);
   });
