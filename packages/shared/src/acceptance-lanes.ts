@@ -2,6 +2,11 @@
  * Acceptance lanes + path-class scope for Decision/Gate System remediation.
  * Pure helpers — no I/O. Aligns with hub SR-DECISION-AND-GATE-SYSTEM-v1 and
  * registry/acceptance_lane_vocabulary.yaml.
+ *
+ * Fail-closed: runtime not_applicable requires a named standing policy OR an
+ * explicit accepted structured decision matching artifact/head/lane/scope.
+ * Merely "answered" interactions do not bind. Review and secret-scan are
+ * non-waivable via N/A.
  */
 
 export const ACCEPTANCE_LANE_STATES = [
@@ -14,6 +19,11 @@ export const ACCEPTANCE_LANE_STATES = [
 ] as const;
 export type AcceptanceLaneState = (typeof ACCEPTANCE_LANE_STATES)[number];
 
+/**
+ * Canonical path / artifact classes.
+ * Hub schema uses longer names; Paperclip uses short aliases — map via
+ * toCanonicalPathClass / fromCanonicalPathClass.
+ */
 export const PATH_CLASSES = [
   "documentation",
   "tests",
@@ -26,6 +36,50 @@ export const PATH_CLASSES = [
   "unknown",
 ] as const;
 export type PathClass = (typeof PATH_CLASSES)[number];
+
+/** Hub decision_registry / acceptance_lane_state path_class enum. */
+export const CANONICAL_PATH_CLASSES = [
+  "documentation",
+  "tests_evaluation",
+  "configuration",
+  "executable_runtime",
+  "deployment_operations",
+  "generated_or_security_sensitive",
+  "program",
+  "mixed",
+] as const;
+export type CanonicalPathClass = (typeof CANONICAL_PATH_CLASSES)[number];
+
+const SHORT_TO_CANONICAL: Record<PathClass, CanonicalPathClass | "unknown"> = {
+  documentation: "documentation",
+  tests: "tests_evaluation",
+  configuration: "configuration",
+  executable: "executable_runtime",
+  deployment: "deployment_operations",
+  security_control: "generated_or_security_sensitive",
+  generated: "generated_or_security_sensitive",
+  mixed: "mixed",
+  unknown: "unknown" as CanonicalPathClass | "unknown",
+};
+
+const CANONICAL_TO_SHORT: Record<string, PathClass> = {
+  documentation: "documentation",
+  tests_evaluation: "tests",
+  configuration: "configuration",
+  executable_runtime: "executable",
+  deployment_operations: "deployment",
+  generated_or_security_sensitive: "generated",
+  program: "mixed",
+  mixed: "mixed",
+};
+
+export function toCanonicalPathClass(pathClass: PathClass): string {
+  return SHORT_TO_CANONICAL[pathClass] ?? "mixed";
+}
+
+export function fromCanonicalPathClass(canonical: string): PathClass {
+  return CANONICAL_TO_SHORT[canonical] ?? "unknown";
+}
 
 export const DECISION_OWNERSHIP_CLASSES = [
   "deterministic",
@@ -57,22 +111,44 @@ export const HUMAN_OWNERSHIP_CLASSES: ReadonlySet<DecisionOwnershipClass> = new 
   "authority_change",
 ]);
 
-/** Lanes that must never be waived solely via not_applicable on docs-only path class. */
-export const NON_WAIVABLE_VIA_DOCS_NA = new Set([
+/** Lanes that must never be set not_applicable (review/secret-scan non-waivable). */
+export const NON_WAIVABLE_LANES = new Set([
   "independent_review",
   "exact_head_secret_scan",
+  "review",
+  "secret_scan",
+]);
+
+/** @deprecated Use NON_WAIVABLE_LANES */
+export const NON_WAIVABLE_VIA_DOCS_NA = NON_WAIVABLE_LANES;
+
+/**
+ * Named standing policy that may authorize runtime N/A for documentation-only
+ * artifacts without a fresh BA interaction. Generated artifacts are NOT covered.
+ */
+export const STANDING_POLICY_DOCS_ONLY_RUNTIME_NA =
+  "SR-DECISION-AND-GATE-SYSTEM-v1/docs-only-runtime-na" as const;
+
+export const RUNTIME_LANE_KEYS = new Set([
+  "runtime",
+  "runtime_target_host",
+  "target_host",
+  "target_host_runtime",
 ]);
 
 export interface AcceptanceLaneRecord {
   state: AcceptanceLaneState;
   evidenceUri?: string | null;
   bindingInteractionId?: string | null;
+  bindingDecisionId?: string | null;
   authority?: string | null;
+  standingPolicyId?: string | null;
   updatedAt?: string | null;
   scope?: {
     pathClass?: PathClass;
     exactHead?: string | null;
     artifact?: string | null;
+    issueId?: string | null;
   };
 }
 
@@ -88,7 +164,7 @@ export function isLaneControlling(state: AcceptanceLaneState): boolean {
 
 /**
  * Classify changed paths into a single path class for scope inheritance.
- * Documentation-only → documentation (runtime N/A eligible).
+ * Classification alone does NOT authorize runtime N/A.
  */
 export function classifyChangedPaths(paths: string[]): PathClass {
   if (!paths.length) return "unknown";
@@ -143,13 +219,296 @@ export function classifyChangedPaths(paths: string[]): PathClass {
 }
 
 /**
- * Whether runtime/target-host verification is not_applicable for this path class.
- * Does NOT waive review or secret-scan.
+ * Default runtime lane state by path class — ALWAYS pending (fail closed).
+ * Path class alone never yields not_applicable.
  */
-export function runtimeLaneDefaultForPathClass(pathClass: PathClass): AcceptanceLaneState {
-  if (pathClass === "documentation") return "not_applicable";
-  if (pathClass === "generated") return "not_applicable";
+export function runtimeLaneDefaultForPathClass(_pathClass: PathClass): AcceptanceLaneState {
   return "pending";
+}
+
+export type StructuredDecisionResolutionStatus =
+  | "accepted"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "superseded"
+  | "answered"
+  | "pending"
+  | "cancelled";
+
+/**
+ * Explicit structured decision required to bind acceptance lanes.
+ * "answered" alone is insufficient for not_applicable.
+ */
+export interface StructuredAcceptedDecision {
+  interactionId: string;
+  /** Interaction or decision resolution status. */
+  resolutionStatus: StructuredDecisionResolutionStatus;
+  /** Decision registry status when known. */
+  decisionStatus?: "proposed" | "approved" | "superseded" | "expired" | "rejected" | null;
+  laneKey: string;
+  option?: string | null;
+  exactHead?: string | null;
+  artifactRef?: string | null;
+  issueId?: string | null;
+  pathClass?: PathClass | null;
+  expiresAt?: string | null;
+  resolvedAt?: string | null;
+  decisionId?: string | null;
+  authorityActor?: "agent" | "ba" | "board" | "system" | null;
+}
+
+export interface RuntimeNaEligibilityInput {
+  laneKey: string;
+  pathClass?: PathClass | null;
+  /** Named standing policy id, if claiming policy path A. */
+  standingPolicyId?: string | null;
+  /** Explicit accepted structured decision, if claiming path B. */
+  decision?: StructuredAcceptedDecision | null;
+  /** Expected closeout context that the decision must match. */
+  expected?: {
+    exactHead?: string | null;
+    artifactRef?: string | null;
+    issueId?: string | null;
+    laneKey?: string | null;
+  };
+  nowIso?: string;
+}
+
+export type RuntimeNaEligibilityCode =
+  | "ok_standing_policy"
+  | "ok_accepted_decision"
+  | "refused_non_waivable_lane"
+  | "refused_no_authority"
+  | "refused_path_only"
+  | "refused_generated_default"
+  | "refused_unrecognized_policy"
+  | "refused_decision_not_accepted"
+  | "refused_decision_rejected"
+  | "refused_decision_expired"
+  | "refused_decision_superseded"
+  | "refused_lane_mismatch"
+  | "refused_exact_head_mismatch"
+  | "refused_artifact_mismatch"
+  | "refused_issue_mismatch"
+  | "refused_unrelated_option";
+
+export interface RuntimeNaEligibilityResult {
+  eligible: boolean;
+  code: RuntimeNaEligibilityCode;
+  message: string;
+  authority: string | null;
+}
+
+function isExpired(expiresAt: string | null | undefined, nowIso: string): boolean {
+  if (!expiresAt) return false;
+  const exp = Date.parse(expiresAt);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(exp) || Number.isNaN(now)) return false;
+  return exp <= now;
+}
+
+/**
+ * Fail-closed gate for runtime not_applicable.
+ * Path A: named standing policy + documentation path class.
+ * Path B: explicit accepted/approved structured decision with scope match.
+ */
+export function evaluateRuntimeNaEligibility(
+  input: RuntimeNaEligibilityInput,
+): RuntimeNaEligibilityResult {
+  const laneKey = input.laneKey;
+  if (NON_WAIVABLE_LANES.has(laneKey)) {
+    return {
+      eligible: false,
+      code: "refused_non_waivable_lane",
+      message: `lane ${laneKey} cannot be not_applicable`,
+      authority: null,
+    };
+  }
+
+  const pathClass = input.pathClass ?? null;
+  const decision = input.decision ?? null;
+  const expected = input.expected ?? {};
+  const nowIso = input.nowIso ?? new Date().toISOString();
+
+  // Path A — standing policy (documentation only; never generated by default).
+  if (input.standingPolicyId) {
+    if (input.standingPolicyId !== STANDING_POLICY_DOCS_ONLY_RUNTIME_NA) {
+      return {
+        eligible: false,
+        code: "refused_unrecognized_policy",
+        message: `unrecognized standing policy: ${input.standingPolicyId}`,
+        authority: null,
+      };
+    }
+    if (pathClass === "generated") {
+      return {
+        eligible: false,
+        code: "refused_generated_default",
+        message: "generated path class is not authorized for runtime N/A by default",
+        authority: null,
+      };
+    }
+    if (pathClass !== "documentation") {
+      return {
+        eligible: false,
+        code: "refused_path_only",
+        message: "standing policy docs-only-runtime-na requires documentation path class",
+        authority: null,
+      };
+    }
+    if (!RUNTIME_LANE_KEYS.has(laneKey) && laneKey !== "runtime_target_host") {
+      // allow only runtime-family lanes under this policy
+      if (!laneKey.includes("runtime") && !laneKey.includes("target_host")) {
+        return {
+          eligible: false,
+          code: "refused_lane_mismatch",
+          message: `standing policy does not authorize N/A for lane ${laneKey}`,
+          authority: null,
+        };
+      }
+    }
+    return {
+      eligible: true,
+      code: "ok_standing_policy",
+      message: "authorized by standing policy docs-only-runtime-na",
+      authority: STANDING_POLICY_DOCS_ONLY_RUNTIME_NA,
+    };
+  }
+
+  // Path B — explicit accepted structured decision.
+  if (decision) {
+    const res = decision.resolutionStatus;
+    const dStat = decision.decisionStatus ?? null;
+
+    if (res === "rejected" || dStat === "rejected") {
+      return {
+        eligible: false,
+        code: "refused_decision_rejected",
+        message: "rejected decision cannot bind runtime N/A",
+        authority: null,
+      };
+    }
+    if (res === "expired" || dStat === "expired" || isExpired(decision.expiresAt, nowIso)) {
+      return {
+        eligible: false,
+        code: "refused_decision_expired",
+        message: "expired decision cannot bind runtime N/A",
+        authority: null,
+      };
+    }
+    if (res === "superseded" || dStat === "superseded") {
+      return {
+        eligible: false,
+        code: "refused_decision_superseded",
+        message: "superseded decision cannot bind runtime N/A",
+        authority: null,
+      };
+    }
+    // Merely "answered" is insufficient — must be accepted/approved.
+    if (res !== "accepted" && res !== "approved" && dStat !== "approved") {
+      return {
+        eligible: false,
+        code: "refused_decision_not_accepted",
+        message:
+          `decision resolutionStatus=${res} is insufficient; require accepted/approved (not merely answered)`,
+        authority: null,
+      };
+    }
+
+    const expectedLane = expected.laneKey ?? laneKey;
+    if (decision.laneKey !== expectedLane && decision.laneKey !== laneKey) {
+      return {
+        eligible: false,
+        code: "refused_lane_mismatch",
+        message: `decision lane ${decision.laneKey} does not match ${laneKey}`,
+        authority: null,
+      };
+    }
+
+    if (expected.exactHead && decision.exactHead && decision.exactHead !== expected.exactHead) {
+      // Allow prefix match for short SHAs
+      const a = decision.exactHead.toLowerCase();
+      const b = expected.exactHead.toLowerCase();
+      if (!a.startsWith(b) && !b.startsWith(a)) {
+        return {
+          eligible: false,
+          code: "refused_exact_head_mismatch",
+          message: `exact head mismatch decision=${decision.exactHead} expected=${expected.exactHead}`,
+          authority: null,
+        };
+      }
+    }
+    if (expected.exactHead && !decision.exactHead) {
+      return {
+        eligible: false,
+        code: "refused_exact_head_mismatch",
+        message: "decision missing exactHead while closeout requires one",
+        authority: null,
+      };
+    }
+
+    if (expected.artifactRef && decision.artifactRef && decision.artifactRef !== expected.artifactRef) {
+      return {
+        eligible: false,
+        code: "refused_artifact_mismatch",
+        message: `artifact mismatch decision=${decision.artifactRef} expected=${expected.artifactRef}`,
+        authority: null,
+      };
+    }
+    if (expected.issueId && decision.issueId && decision.issueId !== expected.issueId) {
+      return {
+        eligible: false,
+        code: "refused_issue_mismatch",
+        message: `issue mismatch decision=${decision.issueId} expected=${expected.issueId}`,
+        authority: null,
+      };
+    }
+
+    // Option must be runtime-N/A family when present
+    if (decision.option) {
+      const opt = decision.option.toLowerCase();
+      const runtimeNa =
+        opt.includes("runtime") && (opt.includes("n/a") || opt.includes("not_applicable") || opt.includes("inapplicable"))
+        || opt === "runtime_not_applicable"
+        || opt === "acceptance_revision";
+      if (!runtimeNa && !RUNTIME_LANE_KEYS.has(decision.laneKey)) {
+        return {
+          eligible: false,
+          code: "refused_unrelated_option",
+          message: `option ${decision.option} is unrelated to runtime N/A`,
+          authority: null,
+        };
+      }
+    }
+
+    return {
+      eligible: true,
+      code: "ok_accepted_decision",
+      message: "authorized by accepted structured decision",
+      authority: `interaction:${decision.interactionId}`,
+    };
+  }
+
+  // No policy, no decision — path class alone is never enough.
+  if (pathClass === "documentation" || pathClass === "generated") {
+    return {
+      eligible: false,
+      code: pathClass === "generated" ? "refused_generated_default" : "refused_path_only",
+      message:
+        pathClass === "generated"
+          ? "generated path class does not authorize runtime N/A"
+          : "documentation path class alone does not authorize runtime N/A without standing policy or accepted decision",
+      authority: null,
+    };
+  }
+
+  return {
+    eligible: false,
+    code: "refused_no_authority",
+    message: "runtime N/A requires standing policy or accepted structured decision",
+    authority: null,
+  };
 }
 
 export interface BindAnsweredInteractionInput {
@@ -161,20 +520,36 @@ export interface BindAnsweredInteractionInput {
   evidenceUri?: string | null;
   scope?: AcceptanceLaneRecord["scope"];
   updatedAt?: string;
-  /** When true, refuse not_applicable on non-waivable lanes. */
+  /** When true (default), refuse not_applicable on non-waivable lanes. */
   protectNonWaivable?: boolean;
+  /**
+   * For state=not_applicable on runtime-family lanes, eligibility is required.
+   * Omit only when state is not not_applicable.
+   */
+  runtimeNa?: Omit<RuntimeNaEligibilityInput, "laneKey"> | null;
+  bindingDecisionId?: string | null;
+  /**
+   * When binding not_applicable, resolution must be accepted/approved unless
+   * standing policy path is used via runtimeNa.standingPolicyId.
+   */
+  resolutionStatus?: StructuredDecisionResolutionStatus;
 }
 
 export interface BindAnsweredInteractionResult {
   lanes: AcceptanceLaneMap;
   applied: boolean;
-  code: "ok" | "refused_non_waivable" | "invalid_state";
+  code:
+    | "ok"
+    | "refused_non_waivable"
+    | "invalid_state"
+    | "refused_runtime_na"
+    | RuntimeNaEligibilityCode;
   message: string | null;
 }
 
 /**
- * Bind an answered owner interaction onto a named acceptance lane.
- * Pure: returns a new map.
+ * Bind an owner decision onto a named acceptance lane.
+ * Pure: returns a new map. Fail-closed for runtime N/A.
  */
 export function bindAnsweredInteractionToLane(
   input: BindAnsweredInteractionInput,
@@ -190,7 +565,7 @@ export function bindAnsweredInteractionToLane(
   if (
     input.protectNonWaivable !== false
     && input.state === "not_applicable"
-    && NON_WAIVABLE_VIA_DOCS_NA.has(input.laneKey)
+    && NON_WAIVABLE_LANES.has(input.laneKey)
   ) {
     return {
       lanes: input.lanes,
@@ -200,11 +575,80 @@ export function bindAnsweredInteractionToLane(
         `lane ${input.laneKey} cannot be set not_applicable (review/secret-scan non-waivable)`,
     };
   }
+
+  if (input.state === "not_applicable") {
+    const isRuntimeFamily =
+      RUNTIME_LANE_KEYS.has(input.laneKey)
+      || input.laneKey.includes("runtime")
+      || input.laneKey.includes("target_host");
+
+    if (isRuntimeFamily) {
+      const decisionFromInput: StructuredAcceptedDecision | null = input.runtimeNa?.decision
+        ?? (input.interactionId
+          ? {
+              interactionId: input.interactionId,
+              resolutionStatus: input.resolutionStatus ?? "answered",
+              laneKey: input.laneKey,
+              exactHead: input.scope?.exactHead ?? null,
+              artifactRef: input.scope?.artifact ?? null,
+              issueId: input.scope?.issueId ?? null,
+              pathClass: input.scope?.pathClass ?? null,
+              decisionId: input.bindingDecisionId ?? null,
+            }
+          : null);
+
+      const eligibility = evaluateRuntimeNaEligibility({
+        laneKey: input.laneKey,
+        pathClass: input.runtimeNa?.pathClass ?? input.scope?.pathClass ?? null,
+        standingPolicyId: input.runtimeNa?.standingPolicyId ?? null,
+        decision: input.runtimeNa?.standingPolicyId ? null : decisionFromInput,
+        expected: input.runtimeNa?.expected ?? {
+          exactHead: input.scope?.exactHead ?? null,
+          artifactRef: input.scope?.artifact ?? null,
+          issueId: input.scope?.issueId ?? null,
+          laneKey: input.laneKey,
+        },
+        nowIso: input.runtimeNa?.nowIso,
+      });
+
+      if (!eligibility.eligible) {
+        return {
+          lanes: input.lanes,
+          applied: false,
+          code: eligibility.code,
+          message: eligibility.message,
+        };
+      }
+
+      const next: AcceptanceLaneMap = {
+        ...input.lanes,
+        [input.laneKey]: {
+          state: "not_applicable",
+          bindingInteractionId: input.interactionId,
+          bindingDecisionId: input.bindingDecisionId ?? null,
+          authority: eligibility.authority ?? input.authority ?? "accepted_decision",
+          standingPolicyId: input.runtimeNa?.standingPolicyId ?? null,
+          evidenceUri: input.evidenceUri ?? null,
+          scope: input.scope,
+          updatedAt: input.updatedAt ?? new Date().toISOString(),
+        },
+      };
+      // Ensure non-waivable siblings remain pending if present.
+      for (const sib of ["independent_review", "exact_head_secret_scan", "review", "secret_scan"]) {
+        if (next[sib]?.state === "not_applicable") {
+          next[sib] = { ...next[sib]!, state: "pending" };
+        }
+      }
+      return { lanes: next, applied: true, code: "ok", message: null };
+    }
+  }
+
   const next: AcceptanceLaneMap = {
     ...input.lanes,
     [input.laneKey]: {
       state: input.state,
       bindingInteractionId: input.interactionId,
+      bindingDecisionId: input.bindingDecisionId ?? null,
       authority: input.authority ?? "answered_interaction",
       evidenceUri: input.evidenceUri ?? null,
       scope: input.scope,
@@ -215,7 +659,8 @@ export function bindAnsweredInteractionToLane(
 }
 
 /**
- * Truth precedence: answered interaction binding wins over stale required prose.
+ * Truth precedence helper (pure): structured lane state wins over fallback prose.
+ * Callers must supply the newest valid binding; this does not parse comments.
  */
 export function resolveLaneEffectiveState(
   lane: AcceptanceLaneRecord | undefined,
@@ -233,20 +678,22 @@ export function isHumanOwnershipClass(c: DecisionOwnershipClass): boolean {
   return HUMAN_OWNERSHIP_CLASSES.has(c);
 }
 
-/** Blocker statuses that must not control dependents. */
+/** Blocker statuses that must not control dependents (pure helper; Phase 3 wires service). */
 export const SATISFIED_BLOCKER_STATUSES = [
   "done",
   "cancelled",
+  "canceled",
   "superseded",
 ] as const;
 
 export function isSatisfiedBlockerStatus(status: string): boolean {
   const s = status.toLowerCase();
-  return (SATISFIED_BLOCKER_STATUSES as readonly string[]).includes(s) || s === "done";
+  return (SATISFIED_BLOCKER_STATUSES as readonly string[]).includes(s);
 }
 
 /**
- * Filter blockedBy ids to those still controlling given status map.
+ * Pure filter of blockedBy ids to those still controlling given status map.
+ * Not integrated into issue service in foundation PR #150 — reserved for Phase 3.
  */
 export function filterControllingBlockerIds(
   blockedByIssueIds: string[],
@@ -263,9 +710,105 @@ export function filterControllingBlockerIds(
 }
 
 /**
- * Disposition attention should only apply while work is actively in_progress.
- * backlog/todo/done/cancelled/in_review without live run are agent-ops reconcile, not inbox spam.
+ * Missing-disposition attention eligibility (single implementation).
+ * Live execution statuses only: in_progress and in_review.
+ * backlog/todo/blocked/done are Agent Ops ledger candidates, not BA inbox spam —
+ * but in_review with a successful-run handoff still needs disposition visibility
+ * on the Agent Ops surface (and may appear in blocked attention when eligible).
  */
+export const MISSING_DISPOSITION_ELIGIBLE_STATUSES = [
+  "in_progress",
+  "in_review",
+] as const;
+
 export function shouldSurfaceMissingDisposition(issueStatus: string): boolean {
-  return issueStatus === "in_progress";
+  return (MISSING_DISPOSITION_ELIGIBLE_STATUSES as readonly string[]).includes(issueStatus);
+}
+
+/** Agent Ops surface classification for disposition debt (not Human Decisions). */
+export type AgentOpsObjectClass =
+  | "missing_disposition"
+  | "liveness_twin"
+  | "empty_blocker_debt"
+  | "other_agent_ops";
+
+export interface AgentOpsDispositionDebtItem {
+  objectClass: "missing_disposition";
+  issueId: string;
+  issueIdentifier: string | null;
+  issueStatus: string;
+  companyId: string;
+  reason: "missing_successful_run_disposition";
+  /** ISO timestamp when the successful run / handoff stopped without disposition. */
+  stoppedSinceAt: string | null;
+  ageMs: number | null;
+  sourceRunId: string | null;
+  assigneeAgentId: string | null;
+  requiredNextDisposition:
+    | "done"
+    | "cancelled"
+    | "review_or_input"
+    | "blocked_with_owner"
+    | "delegated_follow_up"
+    | "queued_continuation";
+  inHumanDecisionsLane: false;
+  inAgentOpsLane: true;
+}
+
+export interface BuildAgentOpsDispositionDebtInput {
+  issueId: string;
+  issueIdentifier?: string | null;
+  issueStatus: string;
+  companyId: string;
+  stoppedSinceAt?: string | null;
+  sourceRunId?: string | null;
+  assigneeAgentId?: string | null;
+  nowMs?: number;
+}
+
+/**
+ * Build a stable Agent Ops disposition debt row for reconciler/query surfaces.
+ * Always excludes Human Decisions lane.
+ */
+export function buildAgentOpsDispositionDebtItem(
+  input: BuildAgentOpsDispositionDebtInput,
+): AgentOpsDispositionDebtItem {
+  const now = input.nowMs ?? Date.now();
+  let ageMs: number | null = null;
+  if (input.stoppedSinceAt) {
+    const t = Date.parse(input.stoppedSinceAt);
+    if (!Number.isNaN(t)) ageMs = Math.max(0, now - t);
+  }
+  return {
+    objectClass: "missing_disposition",
+    issueId: input.issueId,
+    issueIdentifier: input.issueIdentifier ?? null,
+    issueStatus: input.issueStatus,
+    companyId: input.companyId,
+    reason: "missing_successful_run_disposition",
+    stoppedSinceAt: input.stoppedSinceAt ?? null,
+    ageMs,
+    sourceRunId: input.sourceRunId ?? null,
+    assigneeAgentId: input.assigneeAgentId ?? null,
+    requiredNextDisposition: "done",
+    inHumanDecisionsLane: false,
+    inAgentOpsLane: true,
+  };
+}
+
+export interface AgentOpsDispositionDebtSummary {
+  count: number;
+  items: AgentOpsDispositionDebtItem[];
+  oldestAgeMs: number | null;
+}
+
+export function summarizeAgentOpsDispositionDebt(
+  items: AgentOpsDispositionDebtItem[],
+): AgentOpsDispositionDebtSummary {
+  let oldestAgeMs: number | null = null;
+  for (const it of items) {
+    if (it.ageMs == null) continue;
+    if (oldestAgeMs == null || it.ageMs > oldestAgeMs) oldestAgeMs = it.ageMs;
+  }
+  return { count: items.length, items, oldestAgeMs };
 }
