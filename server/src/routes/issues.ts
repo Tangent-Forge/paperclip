@@ -5773,9 +5773,11 @@ export function issueRoutes(
   });
 
   // Agent Ops: missing-disposition debt (not Human Decisions).
+  // Board operators only — company agent keys must not list disposition debt.
   router.get("/companies/:companyId/agent-ops/disposition-debt", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertBoard(req);
     if (isTaskBridgeKeyActor(req)) {
       res.status(403).json({ error: "Task bridge keys cannot use agent-ops disposition APIs" });
       return;

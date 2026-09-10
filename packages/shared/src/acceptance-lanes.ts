@@ -242,6 +242,11 @@ export function classifyChangedPaths(paths: string[]): PathClass {
   const classes = new Set<PathClass>();
   for (const raw of paths) {
     const p = raw.replace(/\\/g, "/").replace(/^\.\//, "");
+    // Generated/build outputs first — must not collapse to documentation via .md suffix.
+    if (/(^|\/)(generated|dist|build|out|coverage)\//.test(p)) {
+      classes.add("generated");
+      continue;
+    }
     if (
       p.startsWith("docs/")
       || p.endsWith(".md")
@@ -276,10 +281,6 @@ export function classifyChangedPaths(paths: string[]): PathClass {
     }
     if (/\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(p)) {
       classes.add("executable");
-      continue;
-    }
-    if (/(^|\/)(generated|dist|build)\//.test(p)) {
-      classes.add("generated");
       continue;
     }
     classes.add("unknown");
@@ -377,6 +378,35 @@ function isExpired(expiresAt: string | null | undefined, nowIso: string): boolea
   const now = Date.parse(nowIso);
   if (Number.isNaN(exp) || Number.isNaN(now)) return false;
   return exp <= now;
+}
+
+/** Git short-SHA floor: refuse 1–6 char prefixes that over-match full heads. */
+export const MIN_EXACT_HEAD_PREFIX_LEN = 7;
+
+export function isUsableExactHead(head: string | null | undefined): boolean {
+  if (!head) return false;
+  const h = head.trim().toLowerCase();
+  if (h.length < MIN_EXACT_HEAD_PREFIX_LEN) return false;
+  return /^[0-9a-f]+$/.test(h);
+}
+
+/**
+ * Exact-head equality with controlled prefix matching.
+ * Both sides must be hex and at least MIN_EXACT_HEAD_PREFIX_LEN for prefix match.
+ */
+export function exactHeadsMatch(
+  decisionHead: string | null | undefined,
+  expectedHead: string | null | undefined,
+): boolean {
+  if (!decisionHead || !expectedHead) return false;
+  const a = decisionHead.trim().toLowerCase();
+  const b = expectedHead.trim().toLowerCase();
+  if (a === b) return true;
+  if (!/^[0-9a-f]+$/.test(a) || !/^[0-9a-f]+$/.test(b)) return false;
+  if (a.length < MIN_EXACT_HEAD_PREFIX_LEN || b.length < MIN_EXACT_HEAD_PREFIX_LEN) {
+    return false;
+  }
+  return a.startsWith(b) || b.startsWith(a);
 }
 
 /**
@@ -497,11 +527,19 @@ export function evaluateRuntimeNaEligibility(
       };
     }
 
-    if (expected.exactHead && decision.exactHead && decision.exactHead !== expected.exactHead) {
-      // Allow prefix match for short SHAs
-      const a = decision.exactHead.toLowerCase();
-      const b = expected.exactHead.toLowerCase();
-      if (!a.startsWith(b) && !b.startsWith(a)) {
+    // Fail-closed head binding: decision must carry a usable exactHead, and
+    // when expected supplies one they must match under strict short-SHA rules.
+    if (!decision.exactHead || !String(decision.exactHead).trim()) {
+      return {
+        eligible: false,
+        code: "refused_exact_head_mismatch",
+        message:
+          "accepted runtime N/A decision must bind an exactHead (unscoped decisions refused)",
+        authority: null,
+      };
+    }
+    if (expected.exactHead) {
+      if (!exactHeadsMatch(decision.exactHead, expected.exactHead)) {
         return {
           eligible: false,
           code: "refused_exact_head_mismatch",
@@ -509,36 +547,63 @@ export function evaluateRuntimeNaEligibility(
           authority: null,
         };
       }
-    }
-    if (expected.exactHead && !decision.exactHead) {
+    } else if (!isUsableExactHead(decision.exactHead)) {
       return {
         eligible: false,
         code: "refused_exact_head_mismatch",
-        message: "decision missing exactHead while closeout requires one",
+        message: `decision exactHead too short or non-hex for free-standing bind: ${decision.exactHead}`,
         authority: null,
       };
     }
 
-    if (expected.artifactRef && decision.artifactRef && decision.artifactRef !== expected.artifactRef) {
-      return {
-        eligible: false,
-        code: "refused_artifact_mismatch",
-        message: `artifact mismatch decision=${decision.artifactRef} expected=${expected.artifactRef}`,
-        authority: null,
-      };
+    if (expected.artifactRef) {
+      if (!decision.artifactRef) {
+        return {
+          eligible: false,
+          code: "refused_artifact_mismatch",
+          message: "decision missing artifactRef while closeout requires one",
+          authority: null,
+        };
+      }
+      if (decision.artifactRef !== expected.artifactRef) {
+        return {
+          eligible: false,
+          code: "refused_artifact_mismatch",
+          message: `artifact mismatch decision=${decision.artifactRef} expected=${expected.artifactRef}`,
+          authority: null,
+        };
+      }
     }
-    if (expected.issueId && decision.issueId && decision.issueId !== expected.issueId) {
-      return {
-        eligible: false,
-        code: "refused_issue_mismatch",
-        message: `issue mismatch decision=${decision.issueId} expected=${expected.issueId}`,
-        authority: null,
-      };
+    if (expected.issueId) {
+      if (!decision.issueId) {
+        return {
+          eligible: false,
+          code: "refused_issue_mismatch",
+          message: "decision missing issueId while closeout requires one",
+          authority: null,
+        };
+      }
+      if (decision.issueId !== expected.issueId) {
+        return {
+          eligible: false,
+          code: "refused_issue_mismatch",
+          message: `issue mismatch decision=${decision.issueId} expected=${expected.issueId}`,
+          authority: null,
+        };
+      }
     }
 
-    // Option must be runtime-N/A family when present. Bare acceptance_revision
-    // is not enough unless scoped to a runtime-family lane with head/decision id.
-    if (decision.option) {
+    // Option must declare runtime-N/A intent. Bare acceptance_revision is not
+    // enough unless scoped to a runtime-family lane with head/decision id.
+    if (!decision.option) {
+      return {
+        eligible: false,
+        code: "refused_unrelated_option",
+        message: "accepted decision missing runtime-N/A option",
+        authority: null,
+      };
+    }
+    {
       const runtimeNa =
         isRuntimeNaOption(decision.option)
         || isScopedHistoricalAcceptanceRevisionOption({
@@ -595,7 +660,10 @@ export interface BindAnsweredInteractionInput {
   evidenceUri?: string | null;
   scope?: AcceptanceLaneRecord["scope"];
   updatedAt?: string;
-  /** When true (default), refuse not_applicable on non-waivable lanes. */
+  /**
+   * @deprecated Ignored. Non-waivable lanes always refuse not_applicable.
+   * Kept for call-site compatibility only.
+   */
   protectNonWaivable?: boolean;
   /**
    * For state=not_applicable on runtime-family lanes, eligibility is required.
@@ -637,11 +705,8 @@ export function bindAnsweredInteractionToLane(
       message: `invalid acceptance lane state: ${String(input.state)}`,
     };
   }
-  if (
-    input.protectNonWaivable !== false
-    && input.state === "not_applicable"
-    && NON_WAIVABLE_LANES.has(input.laneKey)
-  ) {
+  // Non-waivable lanes are always protected — protectNonWaivable cannot disable this.
+  if (input.state === "not_applicable" && NON_WAIVABLE_LANES.has(input.laneKey)) {
     return {
       lanes: input.lanes,
       applied: false,
