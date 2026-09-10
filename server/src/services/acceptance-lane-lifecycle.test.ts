@@ -570,64 +570,16 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
       ],
     ]);
 
-    const selects: any[] = [];
-    const db: any = {
-      execute: async () => undefined,
-      select: (_cols: any) => {
-        const api: any = {
-          _from: null,
-          from(table: any) {
-            this._from = table;
-            return this;
-          },
-          where() {
-            return this;
-          },
-          limit(n: number) {
-            // Infer by call order via selects length
-            selects.push("limit");
-            // loadIssue patterns: return child then parent
-            if (selects.filter((s) => s === "limit").length === 1) return [store.get("child-1")];
-            if (selects.filter((s) => s === "limit").length === 2) return [store.get("parent-1")];
-            if (selects.filter((s) => s === "limit").length === 3) return [store.get("parent-1")];
-            return [store.get("parent-1")];
-          },
-          then(resolve: any) {
-            // for listControllingBlockers relation select without limit
-            // First non-limit select after child load: relations -> blocker ids
-            // This path uses await db.select().from().where() without limit - needs thenable
-            return Promise.resolve([{ blockerIssueId: "child-1" }]).then(resolve);
-          },
-        };
-        // Make where return thenable for status rows
-        const origWhere = api.where.bind(api);
-        api.where = function (...args: any[]) {
-          origWhere(...args);
-          // Dual use: relations query and status query
-          this.then = (resolve: any) => {
-            // If selecting status of blockers
-            if (selects.length >= 1) {
-              return Promise.resolve([{ id: "child-1", status: "done" }]).then(resolve);
-            }
-            return Promise.resolve([{ blockerIssueId: "child-1" }]).then(resolve);
-          };
-          return this;
-        };
-        return api;
-      },
-      update: () => ({
-        set: (vals: any) => ({
-          where: async () => {
-            const parent = store.get("parent-1");
-            parent.executionState = vals.executionState;
-            store.set("parent-1", parent);
-          },
-        }),
-      }),
-    };
-
-    // Simpler dedicated mock:
-    let phase = 0;
+    // Call sequence for recalculateParentGate:
+    // 1) loadIssue(child) -> limit
+    // 2) listControllingBlockers: relations thenable
+    // 3) listControllingBlockers: status rows thenable
+    // 4) loadIssue(parent) -> limit
+    // 5) FOR UPDATE execute
+    // 6) locked parent select -> limit
+    // 7) update parent
+    let limitN = 0;
+    let thenN = 0;
     const simpleDb: any = {
       execute: async () => undefined,
       select: () => {
@@ -635,18 +587,16 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
           from() { return chain; },
           where() { return chain; },
           limit: async () => {
-            phase += 1;
-            if (phase === 1) return [store.get("child-1")]; // load child
-            if (phase === 2) return [store.get("parent-1")]; // load parent for snapshot before lock re-read
-            if (phase === 3) return [store.get("parent-1")]; // locked parent
+            limitN += 1;
+            if (limitN === 1) return [store.get("child-1")];
             return [store.get("parent-1")];
           },
           then(resolve: any, reject?: any) {
-            // relations then status
-            if (!chain._relDone) {
-              chain._relDone = true;
+            thenN += 1;
+            if (thenN === 1) {
               return Promise.resolve([{ blockerIssueId: "child-1" }]).then(resolve, reject);
             }
+            // status of blockers — done => non-controlling
             return Promise.resolve([{ id: "child-1", status: "done" }]).then(resolve, reject);
           },
         };
@@ -655,10 +605,8 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
       update: () => ({
         set: (vals: any) => ({
           where: async () => {
-            store.get("parent-1").executionState = {
-              ...store.get("parent-1").executionState,
-              ...vals.executionState,
-            };
+            const parent = store.get("parent-1");
+            parent.executionState = vals.executionState;
           },
         }),
       }),
@@ -669,19 +617,21 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
     expect(result.parentId).toBe("parent-1");
     expect(result.parentEligible).toBe(true);
     expect(result.controllingBlockers).toEqual([]);
+    expect(result.satisfiedBlockers).toEqual(["child-1"]);
     expect(store.get("parent-1").executionState.gateEligibility.parentEligible).toBe(true);
     expect(store.get("parent-1").executionState.concurrentKey).toBe("keep-me");
   });
 
   it("F5: assignmentPreflight fails closed when requiredCapabilities unspecified", async () => {
+    let n = 0;
     const db: any = {
       select: () => {
         const chain: any = {
           from() { return chain; },
           where() { return chain; },
           limit: async () => {
-            if (!chain._agent) {
-              chain._agent = true;
+            n += 1;
+            if (n === 1) {
               return [{
                 id: "ag-1",
                 companyId: "co",
@@ -695,7 +645,7 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
               id: "iss-1",
               companyId: "co",
               status: "todo",
-              executionState: {}, // no requiredCapabilities
+              executionState: {},
               parentId: null,
               projectId: null,
               identifier: "PAP-X",
@@ -716,14 +666,15 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
   });
 
   it("F5: assignmentPreflight passes when required capabilities granted", async () => {
+    let n = 0;
     const db: any = {
       select: () => {
         const chain: any = {
           from() { return chain; },
           where() { return chain; },
           limit: async () => {
-            if (!chain._agent) {
-              chain._agent = true;
+            n += 1;
+            if (n === 1) {
               return [{
                 id: "ag-1",
                 companyId: "co",
@@ -753,6 +704,7 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
       issueId: "iss-1",
       agentId: "ag-1",
     });
+    expect(r.failures).toEqual([]);
     expect(r.mayDispatch).toBe(true);
     expect(r.ok).toBe(true);
   });
