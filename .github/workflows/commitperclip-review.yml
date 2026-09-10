@@ -34,19 +34,19 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Generate commitperclip token
+      - name: Generate review App token
         id: token
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          # Accept either secret name: this fork stores the App key as
-          # REVIEW_APP_PRIVATE_KEY; upstream/local scripts use COMMITPERCLIP_KEY.
+          # TF stores the App key as REVIEW_APP_PRIVATE_KEY. COMMITPERCLIP_KEY
+          # remains a compatibility alias only.
+          REVIEW_APP_PRIVATE_KEY: ${{ secrets.REVIEW_APP_PRIVATE_KEY || secrets.COMMITPERCLIP_KEY }}
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY || secrets.REVIEW_APP_PRIVATE_KEY }}
-          # Authenticate as the App this org owns (tfrm-review). Without these
-          # the script signs JWT iss=3718661 (upstream commitperclip), whose
-          # private key is never available to fork installers.
+          # Explicit identity only — get-bot-token.mjs fails closed if unset
+          # (no upstream 3718661 / commitperclip fallback).
           REVIEW_APP_ID: ${{ vars.REVIEW_APP_ID }}
           REVIEW_APP_SLUG: ${{ vars.REVIEW_APP_SLUG }}
 
