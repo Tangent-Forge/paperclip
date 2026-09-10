@@ -688,7 +688,6 @@ export function createAcceptanceLaneService(db: Db) {
       const gateMode = String(
         exec.requiredCapabilityGate
         ?? exec.capabilityGate
-        ?? input.capabilityGate
         ?? "",
       ).toLowerCase();
       const hasExplicitCapabilityContract =
