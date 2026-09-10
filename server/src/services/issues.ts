@@ -79,6 +79,21 @@ import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
+import { authoritativeAcceptanceLanesFromExecutionState } from "./acceptance-lane-lifecycle.js";
+
+/** F3 production closeout projection: structured lanes beat prose claims. */
+export function projectExecutionStateForCloseout(
+  executionState: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null | undefined {
+  if (!executionState || typeof executionState !== "object") return executionState;
+  const lanes = authoritativeAcceptanceLanesFromExecutionState(executionState);
+  if (Object.keys(lanes).length === 0) return executionState;
+  return {
+    ...executionState,
+    acceptanceLanes: lanes,
+    acceptanceLanesAuthoritative: true,
+  };
+}
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -3027,7 +3042,7 @@ async function listIssueReviewAttentionMap(
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
       executionPolicy: issue.executionPolicy,
-      executionState: issue.executionState,
+      executionState: projectExecutionStateForCloseout(issue.executionState as Record<string, unknown> | null | undefined) as typeof issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
@@ -3905,7 +3920,7 @@ async function listIssueBlockedInboxAttentionMap(
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
       executionPolicy: issue.executionPolicy,
-      executionState: issue.executionState,
+      executionState: projectExecutionStateForCloseout(issue.executionState as Record<string, unknown> | null | undefined) as typeof issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
@@ -4460,6 +4475,12 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
+    // F3: project authoritative acceptance lanes for closeout consumers.
+    if (enriched && enriched.executionState) {
+      enriched.executionState = projectExecutionStateForCloseout(
+        enriched.executionState as Record<string, unknown>,
+      ) as typeof enriched.executionState;
+    }
     return enriched;
   }
 
@@ -4471,6 +4492,11 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
+    if (enriched && enriched.executionState) {
+      enriched.executionState = projectExecutionStateForCloseout(
+        enriched.executionState as Record<string, unknown>,
+      ) as typeof enriched.executionState;
+    }
     return enriched;
   }
 

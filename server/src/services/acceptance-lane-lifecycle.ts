@@ -225,6 +225,47 @@ export function resolveLaneStateWithEvidencePrecedence(input: {
   };
 }
 
+/**
+ * Production closeout aggregation (F3): structured acceptance lanes beat optional
+ * evidence claims on executionState.acceptanceEvidenceClaims.
+ */
+export function authoritativeAcceptanceLanesFromExecutionState(
+  executionState: Record<string, unknown> | null | undefined,
+): AcceptanceLaneMap {
+  const raw = readAcceptanceLanesFromExecutionState(executionState);
+  const claimsRaw = executionState && typeof executionState === "object"
+    ? executionState.acceptanceEvidenceClaims
+    : null;
+  const claims: CloseoutEvidenceClaim[] = Array.isArray(claimsRaw)
+    ? (claimsRaw as CloseoutEvidenceClaim[]).filter(
+      (c) => c && typeof c === "object" && typeof c.laneKey === "string" && typeof c.claimedState === "string",
+    )
+    : [];
+  const out: AcceptanceLaneMap = {};
+  const keys = new Set([...Object.keys(raw), ...claims.map((c) => c.laneKey)]);
+  for (const laneKey of keys) {
+    const resolved = resolveLaneStateWithEvidencePrecedence({
+      lanes: raw,
+      laneKey,
+      claims,
+    });
+    if (resolved.state == null) continue;
+    const prev = raw[laneKey];
+    out[laneKey] = {
+      ...(prev ?? { state: resolved.state }),
+      state: resolved.state,
+      bindingInteractionId: prev?.bindingInteractionId,
+      bindingDecisionId: prev?.bindingDecisionId,
+      authority: prev?.authority,
+      standingPolicyId: prev?.standingPolicyId,
+      evidenceUri: prev?.evidenceUri,
+      updatedAt: prev?.updatedAt,
+      scope: prev?.scope,
+    };
+  }
+  return out;
+}
+
 function scopesMatch(
   decision: AcceptedDecisionScope,
   target: CurrentTargetScope,
@@ -356,13 +397,10 @@ export function bindLaneTransitionIdempotent(
     runtimeNa:
       request.state === "not_applicable"
         ? {
-            pathClass:
-              request.currentTargetScope.pathClass
-              ?? request.acceptedDecisionScope.pathClass
-              ?? null,
+            // F2: pathClass ONLY from trusted currentTargetScope — never decision payload.
+            pathClass: request.currentTargetScope.pathClass ?? null,
             standingPolicyId: request.standingPolicyId ?? null,
             decision: request.standingPolicyId ? null : decision,
-            // expected is ONLY from current target — never copied from decision alone
             expected: {
               exactHead: request.currentTargetScope.exactHead ?? null,
               artifactRef: request.currentTargetScope.artifactRef ?? null,
@@ -418,13 +456,39 @@ export function createAcceptanceLaneService(db: Db) {
     return rows[0] ?? null;
   }
 
+  /**
+   * F1 — lost-update safe persist:
+   * 1) SELECT ... FOR UPDATE on the issue row
+   * 2) re-read current executionState under the lock
+   * 3) merge ONLY acceptance lane keys (preserve concurrent runtime keys)
+   * 4) write the merged object
+   */
   async function persistLanes(
     companyId: string,
     issueId: string,
-    executionState: Record<string, unknown> | null | undefined,
+    _staleExecutionState: Record<string, unknown> | null | undefined,
     lanes: AcceptanceLaneMap,
   ) {
-    const nextState = writeAcceptanceLanesIntoExecutionState(executionState, lanes);
+    await db.execute(
+      sql`select id from issues where company_id = ${companyId} and id = ${issueId} for update`,
+    );
+    const lockedRows = await db
+      .select({
+        id: issues.id,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+      .limit(1);
+    const locked = lockedRows[0];
+    if (!locked) {
+      throw new Error(`issue ${issueId} missing under lock during acceptance lane persist`);
+    }
+    const current =
+      locked.executionState && typeof locked.executionState === "object"
+        ? { ...(locked.executionState as Record<string, unknown>) }
+        : {};
+    const nextState = writeAcceptanceLanesIntoExecutionState(current, lanes);
     await db
       .update(issues)
       .set({
@@ -474,7 +538,8 @@ export function createAcceptanceLaneService(db: Db) {
       };
     }
     const parentControl = await listControllingBlockersInner(companyId, child.parentId);
-    const childLanes = readAcceptanceLanesFromExecutionState(
+    // F3: production closeout aggregation uses evidence precedence.
+    const childLanes = authoritativeAcceptanceLanesFromExecutionState(
       child.executionState as Record<string, unknown> | null,
     );
     const childHasControllingLane = Object.values(childLanes).some(
@@ -492,10 +557,21 @@ export function createAcceptanceLaneService(db: Db) {
     // Persist parent eligibility snapshot (no auto-wake).
     const parent = await loadIssue(companyId, child.parentId);
     if (parent) {
+      await db.execute(
+        sql`select id from issues where company_id = ${companyId} and id = ${child.parentId} for update`,
+      );
+      const parentLockedRows = await db
+        .select({ id: issues.id, executionState: issues.executionState })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, child.parentId!)))
+        .limit(1);
+      const parentLocked = parentLockedRows[0];
       const parentExec =
-        parent.executionState && typeof parent.executionState === "object"
-          ? { ...(parent.executionState as Record<string, unknown>) }
-          : {};
+        parentLocked?.executionState && typeof parentLocked.executionState === "object"
+          ? { ...(parentLocked.executionState as Record<string, unknown>) }
+          : parent.executionState && typeof parent.executionState === "object"
+            ? { ...(parent.executionState as Record<string, unknown>) }
+            : {};
       parentExec.gateEligibility = {
         parentEligible,
         controllingBlockers: parentControl.controlling,
@@ -541,14 +617,16 @@ export function createAcceptanceLaneService(db: Db) {
       const storedTarget = readCloseoutTargetFromExecutionState(
         issue.executionState as Record<string, unknown> | null,
       );
+      // F2: pathClass only from locked DB closeout target — never decision/caller invent.
+      const trustedPathClass = storedTarget.pathClass ?? null;
       const currentTargetScope: CurrentTargetScope = {
         issueId: issue.id,
         laneKey: request.currentTargetScope.laneKey || request.laneKey,
-        exactHead: request.currentTargetScope.exactHead ?? storedTarget.exactHead ?? null,
-        artifactRef: request.currentTargetScope.artifactRef ?? storedTarget.artifactRef ?? null,
-        pathClass: request.currentTargetScope.pathClass ?? storedTarget.pathClass ?? null,
+        exactHead: storedTarget.exactHead ?? request.currentTargetScope.exactHead ?? null,
+        artifactRef: storedTarget.artifactRef ?? request.currentTargetScope.artifactRef ?? null,
+        pathClass: trustedPathClass,
         governingPolicyId:
-          request.currentTargetScope.governingPolicyId ?? storedTarget.governingPolicyId ?? null,
+          storedTarget.governingPolicyId ?? request.currentTargetScope.governingPolicyId ?? null,
       };
 
       const bound = bindLaneTransitionIdempotent(
@@ -639,6 +717,11 @@ export function createAcceptanceLaneService(db: Db) {
         ...(input.requiredCapabilities ?? []),
         ...requiredFromIssue,
       ].map((s) => s.trim()).filter(Boolean);
+
+      // F5: absent requiredCapabilities must not fail-open into unrestricted dispatch.
+      if (required.length === 0) {
+        failures.push("required_capabilities_unspecified");
+      }
 
       const granted = new Set(parseCapabilityList(agent.capabilities).map((s) => s.toLowerCase()));
       for (const cap of required) {
@@ -734,6 +817,11 @@ export function createAcceptanceLaneService(db: Db) {
         pathClass: stored.pathClass ?? null,
         governingPolicyId: stored.governingPolicyId ?? null,
       };
+    },
+
+    /** Production closeout snapshot with evidence precedence (F3). */
+    getAuthoritativeCloseoutLanes(executionState: Record<string, unknown> | null | undefined) {
+      return authoritativeAcceptanceLanesFromExecutionState(executionState);
     },
   };
 }
@@ -915,10 +1003,10 @@ export function buildLaneBindingRequestFromPersisted(input: {
   const currentTargetScope: CurrentTargetScope = {
     issueId: input.issue.id,
     laneKey: partial.laneKey,
-    // Target head/artifact come from issue closeout target, NOT from the decision.
+    // Target head/artifact/pathClass come from issue closeout target ONLY (F2).
     exactHead: stored.exactHead ?? null,
     artifactRef: stored.artifactRef ?? null,
-    pathClass: stored.pathClass ?? partial.pathClass ?? null,
+    pathClass: stored.pathClass ?? null,
     governingPolicyId: stored.governingPolicyId ?? null,
   };
 
@@ -936,5 +1024,3 @@ export function buildLaneBindingRequestFromPersisted(input: {
   };
 }
 
-// silence unused sql import if tree-shaken — kept for future advisory locks
-void sql;
