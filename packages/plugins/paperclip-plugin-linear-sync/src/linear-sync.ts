@@ -14,6 +14,13 @@ export type LinearSyncConfig = {
   maxIssuesPerRun: number;
   projectId: string | null;
   triageAgentId: string | null;
+  /**
+   * When true (opt-in), import assigns triageAgentId as todo and wakes that agent
+   * immediately. Default false: admitted work lands in backlog without an execution
+   * wake so intake/orchestration agents cannot steal the execution lock before an
+   * explicit execution owner is selected and issue-bound woken.
+   */
+  wakeTriageOnImport: boolean;
   defaultPriority: "low" | "medium" | "high" | "critical";
   postImportComment: boolean;
   importedStateId: string | null;
@@ -149,6 +156,8 @@ export function readConfig(raw: Record<string, unknown>): LinearSyncConfig {
     maxIssuesPerRun: int(raw.maxIssuesPerRun, 25, 1, 100),
     projectId: str(raw.projectId),
     triageAgentId: str(raw.triageAgentId),
+    // Default false: admission must not auto-start execution for the triage agent.
+    wakeTriageOnImport: raw.wakeTriageOnImport === true,
     defaultPriority: priority === "low" || priority === "medium" || priority === "high" || priority === "critical" ? priority : "medium",
     postImportComment: raw.postImportComment !== false,
     importedStateId: str(raw.importedStateId),
@@ -346,12 +355,16 @@ export async function importLinearIssue(input: {
     return "updated";
   }
 
+  // Intake ownership (optional triage assignee) is separate from execution start.
+  // Default: backlog + no wakeup so triage/orchestration cannot acquire the
+  // execution lock before an explicit execution owner is bound and woken.
+  const shouldWakeTriage = Boolean(config.triageAgentId && config.wakeTriageOnImport);
   const created = await host.issues.create({
     companyId,
     projectId: config.projectId ?? undefined,
     title: `[${issue.identifier ?? "Linear"}] ${issue.title}`,
     description: paperclipDescription(issue, admission.contract),
-    status: config.triageAgentId ? "todo" : "backlog",
+    status: shouldWakeTriage ? "todo" : "backlog",
     priority: config.defaultPriority,
     assigneeAgentId: config.triageAgentId ?? undefined,
     originKind: ORIGIN_KIND_LINEAR_ISSUE,
@@ -360,7 +373,7 @@ export async function importLinearIssue(input: {
   });
   await setLinkedIssue(host, companyId, link.id, created.id, issue);
 
-  if (config.triageAgentId) {
+  if (shouldWakeTriage) {
     await host.issues.requestWakeup(created.id, companyId, {
       reason: "linear_imported_intake_triage",
       contextSource: PLUGIN_ID,
@@ -372,7 +385,9 @@ export async function importLinearIssue(input: {
   if (config.postImportComment) {
     await linear.postImportComment(
       issue.id,
-      `Imported into Paperclip as ${created.identifier ?? created.id}. Agents will triage this intake item in Paperclip before routing implementation work.`,
+      shouldWakeTriage
+        ? `Imported into Paperclip as ${created.identifier ?? created.id}. Triage agent was woken for intake routing.`
+        : `Imported into Paperclip as ${created.identifier ?? created.id} (backlog intake). Assign an execution owner and issue-bound wake before work starts; import does not auto-start execution.`,
     );
     await markLinearWrite(host, companyId, link.id);
   }

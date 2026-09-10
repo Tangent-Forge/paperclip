@@ -360,6 +360,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       status: "running",
       invocationSource: "assignment",
       startedAt: new Date(),
+      contextSnapshot: { issueId },
     });
     await db.insert(issues).values({
       id: issueId,
@@ -408,6 +409,102 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .from(activityLog)
       .where(eq(activityLog.action, "issue.checked_out"));
     expect(checkoutActivity).toHaveLength(0);
+  });
+
+  it("rejects a live run bound to another issue without mutating checkout ownership", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const foreignRunId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "on_demand",
+      startedAt: new Date(),
+      contextSnapshot: { issueId: otherIssueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Scoped mismatch target",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, foreignRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "This run is bound to a different issue and cannot checkout the requested issue.",
+      details: { code: "run_issue_scope_mismatch" },
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects unbound non-timer checkout without mutating issue locks", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Unbound checkout target",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      details: { code: "unbound_on_demand_checkout_forbidden" },
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
   });
 
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
@@ -486,6 +583,10 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed
     // pinned to the dead run. The new agent's POST /checkout would 409 forever
     // without the clearCheckoutRunIfTerminal helper in svc.checkout.
+    //
+    // The caller run must be issue-bound (non-timer unbound checkout is fail-closed).
+    // Scope gate inspects the *current* run only and must not block stale issue-row
+    // recovery that clearCheckoutRunIfTerminal performs inside svc.checkout.
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
     const otherAgentId = randomUUID();
@@ -514,6 +615,16 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionAgentNameKey: null,
       executionLockedAt: null,
     });
+    // Bind the rightful current run to this issue (scope gate), then prove
+    // stale issue.checkoutRunId self-heals during checkout.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        agentId: otherAgentId,
+        contextSnapshot: { issueId },
+        invocationSource: "assignment",
+      })
+      .where(eq(heartbeatRuns.id, currentRunId));
 
     const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
       .post(`/api/issues/${issueId}/checkout`)

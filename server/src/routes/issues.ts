@@ -171,6 +171,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { assertRunMayCheckoutIssue } from "../services/run-issue-scope.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -10644,6 +10645,82 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+
+    if (req.actor.type === "agent" && checkoutRunId) {
+      // Scope the *caller's current run* only. Issue-row stale checkoutRunId /
+      // executionRunId recovery remains inside svc.checkout via
+      // clearCheckoutRunIfTerminal / adopt paths and must still run after this gate.
+      type CheckoutScopeRun = {
+        id: string;
+        agentId: string;
+        invocationSource: string | null;
+        contextSnapshot: unknown;
+      };
+      let activeRun: CheckoutScopeRun | null = null;
+      if (typeof heartbeat?.getRun === "function") {
+        const fromHeartbeat = await heartbeat.getRun(checkoutRunId).catch(() => null);
+        if (fromHeartbeat) {
+          activeRun = {
+            id: fromHeartbeat.id,
+            agentId: fromHeartbeat.agentId,
+            invocationSource: fromHeartbeat.invocationSource,
+            contextSnapshot: fromHeartbeat.contextSnapshot,
+          };
+        }
+      }
+      if (!activeRun) {
+        activeRun = await db
+          .select({
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            invocationSource: heartbeatRuns.invocationSource,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+      }
+      if (!activeRun || activeRun.agentId !== req.actor.agentId) {
+        res.status(409).json({
+          error: "Checkout run is not an active run for this agent",
+          details: {
+            runId: checkoutRunId,
+            securityPrinciples: ["Complete Mediation", "Fail Securely"],
+          },
+        });
+        return;
+      }
+      const snap =
+        activeRun.contextSnapshot && typeof activeRun.contextSnapshot === "object"
+          ? (activeRun.contextSnapshot as Record<string, unknown>)
+          : {};
+      const runIssueId =
+        typeof snap.issueId === "string" && snap.issueId.trim()
+          ? snap.issueId.trim()
+          : typeof snap.taskId === "string" && snap.taskId.trim()
+            ? snap.taskId.trim()
+            : null;
+      const scope = assertRunMayCheckoutIssue({
+        invocationSource: activeRun.invocationSource,
+        runIssueId,
+        targetIssueId: issue.id,
+      });
+      if (!scope.ok) {
+        // Rejected scope checks must not reopen workspaces or mutate issue locks.
+        res.status(409).json({
+          error: scope.message,
+          details: {
+            code: scope.code,
+            runId: checkoutRunId,
+            issueId: issue.id,
+            runIssueId,
+            invocationSource: activeRun.invocationSource,
+            securityPrinciples: ["Complete Mediation", "Fail Securely", "Least Privilege"],
+          },
+        });
+        return;
+      }
+    }
 
     // Reopen the closed isolated workspace only after the run-id gate passes. A
     // rejected checkout must not rebuild and republish the workspace as active.

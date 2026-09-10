@@ -65,7 +65,12 @@ const manifest: PaperclipPluginManifestV1 = {
       candidateStatusNames: { type: "array", items: { type: "string" }, default: [ADMISSION_LINEAR_STATE_NAME] },
       maxIssuesPerRun: { type: "integer", minimum: 1, maximum: 100, default: 25 },
       projectId: { type: "string", description: "Optional Paperclip project id for imported intake items." },
-      triageAgentId: { type: "string", description: "Optional Paperclip agent woken exactly once for each new imported issue." },
+      triageAgentId: { type: "string", description: "Optional Paperclip intake/routing assignee recorded on import. Does not start execution unless wakeTriageOnImport is true." },
+      wakeTriageOnImport: {
+        type: "boolean",
+        default: false,
+        description: "When true, import sets status todo and wakes triageAgentId once. Default false leaves imported work in backlog without an execution wake so intake agents cannot steal the execution lock.",
+      },
       defaultPriority: { type: "string", enum: ["low", "medium", "high", "critical"], default: "medium" },
       postImportComment: { type: "boolean", default: true },
       importedStateId: { type: "string", description: "Optional Linear workflow state id to move issues to after Paperclip creation succeeds." },
