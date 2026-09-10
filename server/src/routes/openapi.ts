@@ -3549,6 +3549,23 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-ops/disposition-debt",
+  tags: ["inbox"],
+  summary: "List Agent Ops missing-disposition debt (not Human Decisions)",
+  description:
+    "Returns missing successful-run disposition rows for Agent Ops reconciliation. "
+    + "Never projects into the BA Human Decisions surface.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
 // Decision queues and triage
