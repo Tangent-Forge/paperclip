@@ -330,6 +330,7 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
+import { createAcceptanceLaneService } from "./acceptance-lane-lifecycle.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -18116,6 +18117,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           releasePolicy: activePauseHold.releasePolicy,
           interaction: true,
         };
+      }
+    }
+
+    if (issueId) {
+      // Phase 3: assignment/capability preflight immediately before dispatch path continues.
+      // Predictable authorization failure stops before run enqueue.
+      const preflight = await createAcceptanceLaneService(db).assignmentPreflight({
+        companyId: agent.companyId,
+        issueId,
+        agentId,
+      });
+      if (!preflight.mayDispatch) {
+        if (opts.requestedByActorType === "user") {
+          throw conflict("Assignment preflight failed", {
+            failures: preflight.failures,
+          });
+        }
+        await writeSkippedHeartbeatRequest("assignment_preflight_failed", {
+          failures: preflight.failures,
+          issueId,
+        });
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId,
+          runId: null,
+          action: "heartbeat.assignment_preflight_blocked",
+          entityType: "issue",
+          entityId: issueId,
+          details: {
+            failures: preflight.failures,
+            source,
+            triggerDetail,
+          },
+        });
+        return null;
       }
     }
 

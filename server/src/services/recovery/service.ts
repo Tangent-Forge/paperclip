@@ -87,6 +87,8 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { createAcceptanceLaneService } from "../acceptance-lane-lifecycle.js";
+import { shouldSurfaceMissingDisposition } from "@paperclipai/shared";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -5046,6 +5048,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       input.reescalationCooldownMs,
     )) {
       return { kind: "cooldown" as const };
+    }
+
+    // Phase 3: suppress duplicate liveness twins when source is directly repairable
+    // (e.g. missing disposition on in_progress/in_review) or an open twin already exists.
+    {
+      const laneSvc = createAcceptanceLaneService(db);
+      const exec =
+        issue.executionState && typeof issue.executionState === "object"
+          ? (issue.executionState as Record<string, unknown>)
+          : {};
+      const handoff = exec.successfulRunHandoff;
+      const handoffObj = handoff && typeof handoff === "object" ? handoff as Record<string, unknown> : null;
+      const sourceHasMissingDisposition = Boolean(
+        handoffObj
+        && (handoffObj.required === true || handoffObj.state === "required" || handoffObj.state === "escalated"),
+      );
+      const mintDecision = laneSvc.shouldMintLivenessTwin({
+        sourceIssueStatus: String(issue.status),
+        sourceHasMissingDisposition:
+          sourceHasMissingDisposition && shouldSurfaceMissingDisposition(String(issue.status)),
+        openTwinCount: 0, // existing open twin already returned above
+        unrecoverable: !sourceHasMissingDisposition,
+      });
+      if (!mintDecision.mint) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: input.runId ?? null,
+          action: "issue.harness_liveness_escalation_suppressed",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            source: "recovery.reconcile_issue_graph_liveness",
+            reason: mintDecision.reason,
+            incidentKey: input.finding.incidentKey,
+          },
+        });
+        return { kind: "skipped" as const, reason: mintDecision.reason };
+      }
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);

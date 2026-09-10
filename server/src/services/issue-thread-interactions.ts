@@ -76,7 +76,10 @@ import {
 } from "./issue-review-policy.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 import {
-import { createAcceptanceLaneService, extractLaneBindFromInteractionPayload, shouldAttemptLaneBindFromInteraction } from "./acceptance-lane-lifecycle.js";
+  buildLaneBindingRequestFromPersisted,
+  createAcceptanceLaneService,
+} from "./acceptance-lane-lifecycle.js";
+import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
@@ -1600,11 +1603,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
         .for("update")
-        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+        .then((rows: Array<IssueResolutionContext & { executionState?: unknown }>) => rows[0] ?? null);
 
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
@@ -1676,38 +1680,34 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         );
       }
 
-
-      // Phase 3: bind structured acceptance lanes from accepted interaction (idempotent, no mass-wake).
-      try {
-        if (shouldAttemptLaneBindFromInteraction("accepted")) {
-          const payload = (lockedCurrent.payload && typeof lockedCurrent.payload === "object")
-            ? lockedCurrent.payload as Record<string, unknown>
-            : null;
-          const resultObj = (updated.result && typeof updated.result === "object")
-            ? updated.result as Record<string, unknown>
-            : null;
-          const partial = extractLaneBindFromInteractionPayload(payload, resultObj);
-          if (partial?.laneKey && partial?.state) {
-            const laneSvc = createAcceptanceLaneService(db);
-            await laneSvc.applyAcceptedInteractionBinding({
-              companyId: args.issue.companyId,
-              issueId: args.issue.id,
-              laneKey: partial.laneKey,
-              state: partial.state as any,
-              interactionId: updated.id,
-              resolutionStatus: "accepted",
-              option: partial.option ?? null,
-              exactHead: partial.exactHead ?? null,
-              artifactRef: partial.artifactRef ?? null,
-              pathClass: partial.pathClass ?? null,
-              standingPolicyId: partial.standingPolicyId ?? null,
-              decisionId: partial.decisionId ?? null,
-            });
+      // Phase 3 transaction model A: lane bind in the SAME tx as acceptance.
+      // If structured lane payload is present and bind fails, roll back both.
+      // No mass-wake. Uses persisted interaction status/result only.
+      {
+        const bindReq = buildLaneBindingRequestFromPersisted({
+          companyId: args.issue.companyId,
+          issue: {
+            id: args.issue.id,
+            executionState: issueContext.executionState,
+          },
+          interaction: {
+            id: updated.id,
+            status: updated.status,
+            kind: updated.kind,
+            payload: lockedCurrent.payload,
+            result: updated.result,
+          },
+        });
+        if (bindReq) {
+          const laneSvc = createAcceptanceLaneService(tx as unknown as Db);
+          const bindResult = await laneSvc.applyAcceptedInteractionBinding(bindReq);
+          if (!bindResult.applied) {
+            throw unprocessable(
+              bindResult.message
+                ?? `acceptance lane bind refused (${bindResult.code})`,
+            );
           }
         }
-      } catch (err) {
-        // Fail closed on bind errors: do not roll back acceptance; surface via log.
-        console.error("acceptance_lane_bind_failed", err);
       }
 
       let continuationIssue: IssueWakeTarget | null = null;
@@ -3412,33 +3412,81 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         answers: input.answers,
       });
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "answered",
-          result: {
-            version: 1,
-            answers: normalizedAnswers,
-            summaryMarkdown: input.summaryMarkdown ?? null,
+      // Transaction model A: answer + optional lane bind atomic.
+      const answered = await db.transaction(async (tx) => {
+        const issueRow = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            executionState: issues.executionState,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!issueRow) throw notFound("Issue not found");
+
+        const locked = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!locked || locked.status !== "pending") {
+          throw interactionAlreadyResolvedError();
+        }
+
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "answered",
+            result: {
+              version: 1,
+              answers: normalizedAnswers,
+              summaryMarkdown: input.summaryMarkdown ?? null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw interactionAlreadyResolvedError();
+        }
+
+        const bindReq = buildLaneBindingRequestFromPersisted({
+          companyId: issue.companyId,
+          issue: { id: issue.id, executionState: issueRow.executionState },
+          interaction: {
+            id: updated.id,
+            status: updated.status,
+            kind: updated.kind,
+            payload: locked.payload,
+            result: updated.result,
           },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+        });
+        if (bindReq) {
+          const laneSvc = createAcceptanceLaneService(tx as unknown as Db);
+          const bindResult = await laneSvc.applyAcceptedInteractionBinding(bindReq);
+          if (!bindResult.applied) {
+            throw unprocessable(
+              bindResult.message
+                ?? `acceptance lane bind refused (${bindResult.code})`,
+            );
+          }
+        }
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        await touchIssue(tx as unknown as Db, issue.id);
+        return hydrateInteraction(updated);
+      });
 
-      await touchIssue(db, issue.id);
-      const answered = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, answered);
       return answered;
     },
