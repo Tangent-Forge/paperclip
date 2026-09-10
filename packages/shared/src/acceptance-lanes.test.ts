@@ -4,6 +4,7 @@ import {
   buildAgentOpsDispositionDebtItem,
   classifyChangedPaths,
   evaluateRuntimeNaEligibility,
+  exactHeadsMatch,
   filterControllingBlockerIds,
   isHumanOwnershipClass,
   isLaneControlling,
@@ -220,8 +221,8 @@ describe("evaluateRuntimeNaEligibility", () => {
     expect(r.code).toBe("ok_accepted_decision");
   });
 
-  it("allows historical acceptance_revision only for runtime lane with exactHead", () => {
-    const ok = evaluateRuntimeNaEligibility({
+  it("refuses bare acceptance_revision; allows explicit runtime_na alias", () => {
+    const bareHist = evaluateRuntimeNaEligibility({
       laneKey: "runtime_target_host",
       decision: {
         interactionId: "afdc7368-11e6-4a68-bf6b-d8f085799b2d",
@@ -236,7 +237,25 @@ describe("evaluateRuntimeNaEligibility", () => {
         laneKey: "runtime_target_host",
       },
     });
-    expect(ok.eligible).toBe(true);
+    expect(bareHist.eligible).toBe(false);
+    expect(bareHist.code).toBe("refused_unrelated_option");
+
+    const explicit = evaluateRuntimeNaEligibility({
+      laneKey: "runtime_target_host",
+      decision: {
+        interactionId: "afdc7368-11e6-4a68-bf6b-d8f085799b2d",
+        resolutionStatus: "accepted",
+        laneKey: "runtime_target_host",
+        option: "acceptance_revision_runtime_na",
+        exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58",
+      },
+      expected: {
+        exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        laneKey: "runtime_target_host",
+      },
+    });
+    expect(explicit.eligible).toBe(true);
+    expect(explicit.code).toBe("ok_accepted_decision");
 
     const bare = evaluateRuntimeNaEligibility({
       laneKey: "independent_review",
@@ -248,35 +267,7 @@ describe("evaluateRuntimeNaEligibility", () => {
       },
     });
     expect(bare.eligible).toBe(false);
-    // non-waivable lane refuses before option checks
     expect(bare.code).toBe("refused_non_waivable_lane");
-
-    const bareCi = evaluateRuntimeNaEligibility({
-      laneKey: "ci",
-      decision: {
-        interactionId: "ix-bare-ci",
-        resolutionStatus: "accepted",
-        laneKey: "ci",
-        option: "acceptance_revision",
-      },
-    });
-    expect(bareCi.eligible).toBe(false);
-    // Unscoped / wrong-lane historical option fails closed (head and/or option path).
-    expect(["refused_unrelated_option", "refused_exact_head_mismatch", "refused_lane_mismatch"]).toContain(
-      bareCi.code,
-    );
-
-    const noHead = evaluateRuntimeNaEligibility({
-      laneKey: "runtime_target_host",
-      decision: {
-        interactionId: "ix-nh",
-        resolutionStatus: "accepted",
-        laneKey: "runtime_target_host",
-        option: "acceptance_revision",
-      },
-    });
-    expect(noHead.eligible).toBe(false);
-    expect(["refused_unrelated_option", "refused_exact_head_mismatch"]).toContain(noHead.code);
   });
 
   it("refuses invented standing policy strings not in trusted registry", () => {
@@ -369,6 +360,54 @@ describe("evaluateRuntimeNaEligibility", () => {
     });
     expect(r.eligible).toBe(true);
     expect(r.code).toBe("ok_accepted_decision");
+  });
+
+
+  it("refuses equal short and equal non-hex exact heads", () => {
+    expect(exactHeadsMatch("69c", "69c")).toBe(false);
+    expect(exactHeadsMatch("not-a-sha", "not-a-sha")).toBe(false);
+    const short = evaluateRuntimeNaEligibility({
+      laneKey: "runtime",
+      pathClass: "documentation",
+      decision: {
+        interactionId: "ix",
+        resolutionStatus: "accepted",
+        laneKey: "runtime",
+        option: "runtime_not_applicable",
+        exactHead: "69c",
+      },
+      expected: { exactHead: "69c" },
+    });
+    expect(short.eligible).toBe(false);
+    expect(short.code).toBe("refused_exact_head_mismatch");
+  });
+
+  it("refuses malformed expiresAt fail-closed", () => {
+    const r = evaluateRuntimeNaEligibility({
+      laneKey: "runtime",
+      pathClass: "documentation",
+      decision: {
+        interactionId: "ix",
+        resolutionStatus: "accepted",
+        laneKey: "runtime",
+        option: "runtime_not_applicable",
+        exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        expiresAt: "not-a-date",
+      },
+      expected: { exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58" },
+    });
+    expect(r.eligible).toBe(false);
+    expect(r.code).toBe("refused_decision_expired");
+  });
+
+  it("refuses standing policy on fuzzy pre_runtime_review lane", () => {
+    const r = evaluateRuntimeNaEligibility({
+      laneKey: "pre_runtime_review",
+      pathClass: "documentation",
+      standingPolicyId: "SR-DECISION-AND-GATE-SYSTEM-v1/docs-only-runtime-na",
+    });
+    expect(r.eligible).toBe(false);
+    expect(r.code).toBe("refused_lane_mismatch");
   });
 
 describe("bindAnsweredInteractionToLane", () => {

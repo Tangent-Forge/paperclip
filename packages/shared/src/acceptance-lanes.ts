@@ -198,13 +198,9 @@ export function isScopedHistoricalAcceptanceRevisionOption(input: {
   exactHead?: string | null;
   decisionId?: string | null;
 }): boolean {
-  const opt = String(input.option ?? "").toLowerCase().trim();
-  if (opt !== "acceptance_revision") return false;
-  if (!RUNTIME_LANE_KEYS.has(input.laneKey) && !input.laneKey.includes("runtime") && !input.laneKey.includes("target_host")) {
-    return false;
-  }
-  // Require binding context so bare option cannot free-float.
-  return Boolean(input.exactHead || input.decisionId);
+  // Bare acceptance_revision is never runtime-N/A. Use explicit runtime_na aliases.
+  void input;
+  return false;
 }
 
 export interface AcceptanceLaneRecord {
@@ -376,7 +372,8 @@ function isExpired(expiresAt: string | null | undefined, nowIso: string): boolea
   if (!expiresAt) return false;
   const exp = Date.parse(expiresAt);
   const now = Date.parse(nowIso);
-  if (Number.isNaN(exp) || Number.isNaN(now)) return false;
+  // Malformed expiry fails closed (treat as expired / unusable).
+  if (Number.isNaN(exp) || Number.isNaN(now)) return true;
   return exp <= now;
 }
 
@@ -394,19 +391,14 @@ export function isUsableExactHead(head: string | null | undefined): boolean {
  * Exact-head equality with controlled prefix matching.
  * Both sides must be hex and at least MIN_EXACT_HEAD_PREFIX_LEN for prefix match.
  */
-export function exactHeadsMatch(
-  decisionHead: string | null | undefined,
-  expectedHead: string | null | undefined,
-): boolean {
-  if (!decisionHead || !expectedHead) return false;
-  const a = decisionHead.trim().toLowerCase();
-  const b = expectedHead.trim().toLowerCase();
-  if (a === b) return true;
-  if (!/^[0-9a-f]+$/.test(a) || !/^[0-9a-f]+$/.test(b)) return false;
-  if (a.length < MIN_EXACT_HEAD_PREFIX_LEN || b.length < MIN_EXACT_HEAD_PREFIX_LEN) {
-    return false;
-  }
-  return a.startsWith(b) || b.startsWith(a);
+export function exactHeadsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  // Fail-closed: both sides must be usable (min length + hex) even when equal.
+  if (!isUsableExactHead(left) || !isUsableExactHead(right)) return false;
+  if (left === right) return true;
+  return left.startsWith(right) || right.startsWith(left);
 }
 
 /**
@@ -460,7 +452,7 @@ export function evaluateRuntimeNaEligibility(
       };
     }
     if (policy.runtimeLanesOnly) {
-      if (!RUNTIME_LANE_KEYS.has(laneKey) && !laneKey.includes("runtime") && !laneKey.includes("target_host")) {
+      if (!RUNTIME_LANE_KEYS.has(laneKey)) {
         return {
           eligible: false,
           code: "refused_lane_mismatch",
@@ -517,6 +509,16 @@ export function evaluateRuntimeNaEligibility(
       };
     }
 
+    // Decision-path runtime N/A only binds runtime-family target lanes.
+    if (!RUNTIME_LANE_KEYS.has(laneKey)) {
+      return {
+        eligible: false,
+        code: "refused_lane_mismatch",
+        message: `accepted runtime N/A decision cannot bind non-runtime lane ${laneKey}`,
+        authority: null,
+      };
+    }
+
     const expectedLane = expected.laneKey ?? laneKey;
     if (decision.laneKey !== expectedLane && decision.laneKey !== laneKey) {
       return {
@@ -538,6 +540,14 @@ export function evaluateRuntimeNaEligibility(
         authority: null,
       };
     }
+    if (!isUsableExactHead(decision.exactHead)) {
+      return {
+        eligible: false,
+        code: "refused_exact_head_mismatch",
+        message: `decision exactHead too short or non-hex: ${decision.exactHead}`,
+        authority: null,
+      };
+    }
     if (expected.exactHead) {
       if (!exactHeadsMatch(decision.exactHead, expected.exactHead)) {
         return {
@@ -547,13 +557,6 @@ export function evaluateRuntimeNaEligibility(
           authority: null,
         };
       }
-    } else if (!isUsableExactHead(decision.exactHead)) {
-      return {
-        eligible: false,
-        code: "refused_exact_head_mismatch",
-        message: `decision exactHead too short or non-hex for free-standing bind: ${decision.exactHead}`,
-        authority: null,
-      };
     }
 
     if (expected.artifactRef) {
@@ -718,9 +721,7 @@ export function bindAnsweredInteractionToLane(
 
   if (input.state === "not_applicable") {
     const isRuntimeFamily =
-      RUNTIME_LANE_KEYS.has(input.laneKey)
-      || input.laneKey.includes("runtime")
-      || input.laneKey.includes("target_host");
+      RUNTIME_LANE_KEYS.has(input.laneKey);
 
     if (isRuntimeFamily) {
       const decisionFromInput: StructuredAcceptedDecision | null = input.runtimeNa?.decision
