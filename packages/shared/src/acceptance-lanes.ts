@@ -782,6 +782,15 @@ export function bindAnsweredInteractionToLane(
       }
       return { lanes: next, applied: true, code: "ok", message: null };
     }
+
+    // Non-runtime N/A must not fall through on merely answered interactions.
+    return {
+      lanes: input.lanes,
+      applied: false,
+      code: "refused_lane_mismatch",
+      message:
+        `not_applicable bind for non-runtime lane ${input.laneKey} requires runtime-family eligibility path (fail-closed)`,
+    };
   }
 
   const next: AcceptanceLaneMap = {
