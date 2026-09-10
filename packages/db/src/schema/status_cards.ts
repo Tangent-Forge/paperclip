@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type {
   CompanySearchQuery,
   IngestOperationalReceipt,
@@ -70,6 +70,8 @@ export const statusCards = pgTable(
     operationalFailureStreak: integer("operational_failure_streak").notNull().default(0),
     operationalRecoveryStreak: integer("operational_recovery_streak").notNull().default(0),
     operationalLatestClaimId: uuid("operational_latest_claim_id"),
+    operationalGenerationUpdateId: uuid("operational_generation_update_id")
+      .references((): AnyPgColumn => statusCardUpdates.id, { onDelete: "set null" }),
     operationalExceptionIssueId: uuid("operational_exception_issue_id").references(() => issues.id, { onDelete: "set null" }),
     operationalSummary: text("operational_summary"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -154,6 +156,7 @@ export const statusCardUpdates = pgTable(
     kind: text("kind").$type<"compile" | "full" | "incremental">().notNull(),
     trigger: text("trigger").$type<"manual" | "interval" | "reactive" | "restore">().notNull(),
     generationIssueId: uuid("generation_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    operationalClaimId: uuid("operational_claim_id").references(() => operationalStatusClaims.id, { onDelete: "cascade" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     changes: jsonb("changes").$type<StatusCardUpdateChange[]>().notNull().default(sql`'[]'::jsonb`),
     inputTokens: integer("input_tokens").notNull().default(0),
@@ -170,5 +173,6 @@ export const statusCardUpdates = pgTable(
   (table) => ({
     cardStartedIdx: index("status_card_updates_card_started_idx").on(table.cardId, table.startedAt),
     generationIssueIdx: index("status_card_updates_generation_issue_idx").on(table.generationIssueId),
+    operationalClaimUq: uniqueIndex("status_card_updates_operational_claim_uq").on(table.operationalClaimId),
   }),
 );

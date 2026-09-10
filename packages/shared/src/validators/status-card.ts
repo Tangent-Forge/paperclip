@@ -25,6 +25,7 @@ export const operationalEvidenceRequirementSchema = z.object({
   sourceKey: z.string().trim().min(1).max(120),
   subjectKey: z.string().trim().min(1).max(240),
   label: z.string().trim().min(1).max(200),
+  writerAgentId: z.string().uuid(),
 }).strict();
 
 export const operationalExceptionPolicySchema = z.object({
@@ -106,6 +107,7 @@ export const writeOperationalStatusCardSummarySchema = z.object({
   markdown: z.string().trim().min(1).max(200_000),
   changeSummary: z.string().trim().min(1).max(2_000),
   generationIssueId: z.string().uuid(),
+  updateId: z.string().uuid(),
   claimId: z.string().uuid(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   model: z.string().trim().min(1).max(200).optional().nullable(),
@@ -198,6 +200,7 @@ export const statusCardSchema = z.object({
   operationalFailureStreak: z.number().int().nonnegative().optional(),
   operationalRecoveryStreak: z.number().int().nonnegative().optional(),
   operationalLatestClaimId: z.string().uuid().nullable().optional(),
+  operationalGenerationUpdateId: z.string().uuid().nullable().optional(),
   operationalExceptionIssueId: z.string().uuid().nullable().optional(),
   operationalSummary: z.string().nullable().optional(),
   operationalClaim: z.object({
@@ -232,6 +235,7 @@ export const statusCardUpdateSchema = z.object({
   kind: statusCardUpdateKindSchema,
   trigger: statusCardUpdateTriggerSchema,
   generationIssueId: z.string().uuid().nullable(),
+  operationalClaimId: z.string().uuid().nullable().optional(),
   runId: z.string().uuid().nullable(),
   changes: z.array(statusCardUpdateChangeSchema),
   inputTokens: z.number().int().nonnegative(),

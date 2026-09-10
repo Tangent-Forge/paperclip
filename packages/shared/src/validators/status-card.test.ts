@@ -30,7 +30,12 @@ describe("statusCardRefreshPolicySchema", () => {
 
 describe("operational status-card schemas", () => {
   it("rejects duplicate evidence requirements", () => {
-    const requirement = { sourceKey: "api", subjectKey: "health", label: "API" };
+    const requirement = {
+      sourceKey: "api",
+      subjectKey: "health",
+      label: "API",
+      writerAgentId: "123e4567-e89b-42d3-a456-426614174099",
+    };
     expect(operationalStatusCardConfigSchema.safeParse({ requiredEvidence: [requirement, requirement] }).success).toBe(false);
   });
 
@@ -55,6 +60,7 @@ describe("operational status-card schemas", () => {
       markdown: "The server-calculated state is RED.",
       changeSummary: "Explain failed evidence",
       generationIssueId: "123e4567-e89b-12d3-a456-426614174000",
+      updateId: "123e4567-e89b-12d3-a456-426614174002",
       claimId: "123e4567-e89b-12d3-a456-426614174001",
       fingerprint: "a".repeat(64),
       model: "gpt-5.4",

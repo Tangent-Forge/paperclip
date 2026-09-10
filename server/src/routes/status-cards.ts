@@ -59,6 +59,26 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertCanSubmitObservation(
+    req: Request,
+    companyId: string,
+    sourceKey: string,
+    subjectKey: string,
+  ) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent") {
+      throw forbidden("Operational receipts require an explicitly authorized observation agent");
+    }
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "status_cards:submit_observations",
+      resource: { type: "company", companyId },
+      scope: { evidenceKey: JSON.stringify([sourceKey, subjectKey]) },
+    });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    return decision.grant?.scope?.allowSummaryGenerationRuns === true;
+  }
+
   async function assertCanManageCard(req: Request, card: { companyId: string; createdByAgentId: string | null }) {
     await assertCanMutate(req, card.companyId);
     if (req.actor.type === "agent" && card.createdByAgentId !== req.actor.agentId) {
@@ -151,20 +171,35 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     return result;
   }
 
-  async function queueOperationalSummaries(req: Request, results: Array<{ summarizerIssue: { id: string; assigneeAgentId: string | null; status: string } | null }>) {
+  async function queueOperationalSummaries(req: Request, results: Array<{
+    card: { id: string } | null;
+    summarizerIssue: { id: string; assigneeAgentId: string | null; status: string } | null;
+    summaryUpdateId: string | null;
+  }>) {
     const actor = getActorInfo(req);
     await Promise.all(results.map(async (result) => {
-      if (!result.summarizerIssue) return;
-      await queueIssueAssignmentWakeup({
-        heartbeat,
-        issue: result.summarizerIssue,
-        reason: "operational_status_summary_assigned",
-        mutation: "status_card.operational_summary_requested",
-        contextSource: "operational_status_card",
-        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
-        requestedByActorId: actor.actorId,
-        taskKey: `status-card:${result.summarizerIssue.id}`,
-      });
+      if (!result.card || !result.summarizerIssue || !result.summaryUpdateId) return;
+      try {
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: result.summarizerIssue,
+          reason: "operational_status_summary_assigned",
+          mutation: "status_card.operational_summary_requested",
+          contextSource: "operational_status_card",
+          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+          taskKey: `status-card:${result.card.id}`,
+          rethrowOnError: true,
+        });
+      } catch (error) {
+        await operational.recoverSummaryWakeFailure({
+          cardId: result.card.id,
+          generationIssueId: result.summarizerIssue.id,
+          updateId: result.summaryUpdateId,
+          error,
+        });
+        throw error;
+      }
     }));
   }
 
@@ -217,12 +252,18 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
   router.post("/companies/:companyId/operational-receipts", validate(ingestOperationalReceiptSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertStatusCardsEnabled();
-    await assertCanMutate(req, companyId);
+    const allowSummaryGenerationRuns = await assertCanSubmitObservation(
+      req,
+      companyId,
+      req.body.sourceKey,
+      req.body.subjectKey,
+    );
     const actor = getActorInfo(req);
     const result = await operational.ingest(companyId, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
       runId: actor.runId ?? null,
+      allowSummaryGenerationRuns,
     });
     await queueOperationalSummaries(req, result.evaluations);
     await logActivity(db, {
@@ -437,6 +478,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await logMutation(req, card.companyId, "status_card.operational_summary_written", card.id, {
       claimId: req.body.claimId,
       generationIssueId: req.body.generationIssueId,
+      updateId: req.body.updateId,
       fingerprint: req.body.fingerprint,
       model: req.body.model ?? null,
     });

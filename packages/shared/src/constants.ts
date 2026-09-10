@@ -1014,6 +1014,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  "status_cards:submit_observations",
   "pipelines:write",
   "joins:approve",
 ] as const;

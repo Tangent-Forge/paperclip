@@ -10,8 +10,9 @@ import {
 } from "../services/operational-status-engine.js";
 
 const now = new Date("2026-09-09T18:00:00.000Z");
+const writerAgentId = "123e4567-e89b-42d3-a456-426614174099";
 const config: OperationalStatusCardConfig = {
-  requiredEvidence: [{ sourceKey: "paperclip-api", subjectKey: "health", label: "Paperclip API" }],
+  requiredEvidence: [{ sourceKey: "paperclip-api", subjectKey: "health", label: "Paperclip API", writerAgentId }],
   summarizerMode: "exceptions",
   exceptionPolicy: { states: ["RED", "GRAY"], openAfterConsecutive: 2, resolveAfterConsecutive: 1 },
 };

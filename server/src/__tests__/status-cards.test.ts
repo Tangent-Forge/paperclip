@@ -7,6 +7,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   documentRevisions,
@@ -17,6 +18,7 @@ import {
   issues,
   operationalReceipts,
   operationalStatusClaims,
+  principalPermissionGrants,
   statusCards,
   statusCardUpdates,
 } from "@paperclipai/db";
@@ -32,6 +34,7 @@ import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
+import { operationalStatusCardService } from "../services/operational-status-cards.js";
 import { statusCardService } from "../services/status-cards.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -95,6 +98,8 @@ describeEmbeddedPostgres("status card routes", () => {
     await db.delete(issues);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(instanceSettings);
     await db.delete(agents);
     await db.delete(companies);
@@ -128,8 +133,36 @@ describeEmbeddedPostgres("status card routes", () => {
     }).returning().then((rows) => rows[0]!);
   }
 
-  async function seedRun(companyId: string, agentId: string) {
-    return db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning().then((rows) => rows[0]!);
+  async function seedRun(companyId: string, agentId: string, contextSnapshot?: Record<string, unknown>) {
+    return db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", contextSnapshot }).returning().then((rows) => rows[0]!);
+  }
+
+  async function seedObservationWriter(companyId: string, sourceKey: string, subjectKey: string) {
+    const writer = await db.insert(agents).values({
+      companyId,
+      name: "Observation Writer",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: writer.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "agent",
+      principalId: writer.id,
+      permissionKey: "status_cards:submit_observations",
+      scope: { evidenceKeys: [JSON.stringify([sourceKey, subjectKey])] },
+      grantedByUserId: "board-user",
+    });
+    const run = await seedRun(companyId, writer.id);
+    return { writer, run, app: createApp(db, agentActor(companyId, writer.id, run.id)) };
   }
 
   function agentActor(companyId: string, agentId: string, runId: string | null): Express.Request["actor"] {
@@ -229,15 +262,23 @@ describeEmbeddedPostgres("status card routes", () => {
     const company = await seedCompany();
     await enableStatusCards();
     const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "paperclip-api", "health");
     const wakeups: Array<{ agentId: string; issueId: string }> = [];
-    const boardApp = createApp(db, localBoardActor(), {
+    const heartbeat = {
       wakeup: async (agentId, options) => {
         wakeups.push({ agentId, issueId: String(options.payload?.issueId) });
         return { queued: true };
       },
-    });
+    } satisfies IssueAssignmentWakeupDeps;
+    const boardApp = createApp(db, localBoardActor(), heartbeat);
+    const probeApp = createApp(db, agentActor(company.id, observation.writer.id, observation.run.id), heartbeat);
     const operationalConfig = {
-      requiredEvidence: [{ sourceKey: "paperclip-api", subjectKey: "health", label: "Paperclip API" }],
+      requiredEvidence: [{
+        sourceKey: "paperclip-api",
+        subjectKey: "health",
+        label: "Paperclip API",
+        writerAgentId: observation.writer.id,
+      }],
       summarizerMode: "exceptions",
       exceptionPolicy: { states: ["RED"], openAfterConsecutive: 3, resolveAfterConsecutive: 1 },
     };
@@ -274,7 +315,7 @@ describeEmbeddedPostgres("status card routes", () => {
       provenance: { probe: "paperclip-api-health-probe", host: "TF-Home", executionId: `probe-${minute}` },
       observation: { kind: "check", result, detail: { httpStatus: result === "failed" ? 503 : 200 } },
     });
-    const rejectedAction = await request(boardApp)
+    const rejectedAction = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send({ ...receiptBody(randomUUID(), "failed", 1), restartService: true });
     expect(rejectedAction.status).toBe(400);
@@ -284,7 +325,7 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(unboundAgentReceipt.status).toBe(403);
 
     const firstReceipt = receiptBody(randomUUID(), "failed", 1);
-    const firstFailure = await request(boardApp)
+    const firstFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(firstReceipt);
     expect(firstFailure.status, JSON.stringify(firstFailure.body)).toBe(201);
@@ -295,7 +336,7 @@ describeEmbeddedPostgres("status card routes", () => {
     const summaryIssueId = firstFailure.body.evaluations[0].summarizerIssue.id as string;
     expect(wakeups).toEqual([{ agentId: summarizer.id, issueId: summaryIssueId }]);
 
-    const inFlightFailure = await request(boardApp)
+    const inFlightFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "failed", 2));
     expect(inFlightFailure.body.evaluations[0]).toMatchObject({
@@ -314,6 +355,7 @@ describeEmbeddedPostgres("status card routes", () => {
         markdown: "The API probe failed with HTTP 503. The RED state was calculated by the server.",
         changeSummary: "Explain the observed API failure",
         generationIssueId: summaryIssueId,
+        updateId: firstFailure.body.evaluations[0].summaryUpdateId,
         claimId: claim.id,
         fingerprint: claim.fingerprint,
         model: "gpt-5.4",
@@ -322,14 +364,14 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(summaryWrite.body).toMatchObject({ operationalState: "RED", pendingChangeCount: 0 });
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, summaryIssueId));
 
-    const retriedReceipt = await request(boardApp)
+    const retriedReceipt = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(firstReceipt);
     expect(retriedReceipt.status).toBe(200);
     expect(retriedReceipt.body).toMatchObject({ duplicate: true, evaluations: [] });
     expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toEqual([]);
 
-    const secondFailure = await request(boardApp)
+    const secondFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "failed", 3));
     expect(secondFailure.body.evaluations[0]).toMatchObject({
@@ -338,7 +380,7 @@ describeEmbeddedPostgres("status card routes", () => {
     });
     const exceptionId = secondFailure.body.evaluations[0].exception.id as string;
 
-    const duplicateFailure = await request(boardApp)
+    const duplicateFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "failed", 4));
     expect(duplicateFailure.body.evaluations[0]).toMatchObject({
@@ -347,7 +389,7 @@ describeEmbeddedPostgres("status card routes", () => {
     });
     expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toHaveLength(1);
 
-    const recovery = await request(boardApp)
+    const recovery = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "passed", 5));
     expect(recovery.body.evaluations[0]).toMatchObject({
@@ -365,7 +407,7 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(finalCard.body.summaryBody).toContain("All required evidence is fresh and passing");
     expect(finalCard.body.operationalClaim.receiptIds).toHaveLength(1);
 
-    const healthyTick = await request(boardApp)
+    const healthyTick = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "passed", 6));
     expect(healthyTick.body.evaluations[0]).toMatchObject({
@@ -374,6 +416,327 @@ describeEmbeddedPostgres("status card routes", () => {
       exception: null,
     });
     expect(wakeups).toHaveLength(1);
+  });
+
+  it("rejects generic task authority and summary-generation runs as evidence writers", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: summarizer.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: summarizer.id,
+      permissionKey: "status_cards:submit_observations",
+      scope: { evidenceKeys: [JSON.stringify(["api", "health"])] },
+      grantedByUserId: "board-user",
+    });
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards/operational`)
+      .send({
+        title: "API health",
+        interestPrompt: "Explain exceptions.",
+        agentId: summarizer.id,
+        operationalConfig: {
+          requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: summarizer.id }],
+          summarizerMode: "exceptions",
+          exceptionPolicy: { states: ["RED"], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+        },
+      });
+    expect(created.status).toBe(201);
+
+    const ordinary = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Ordinary Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: ordinary.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: ordinary.id,
+      permissionKey: "tasks:assign",
+      scope: null,
+      grantedByUserId: "board-user",
+    });
+    const ordinaryRun = await seedRun(company.id, ordinary.id);
+    const receipt = (receiptId: string, result: "passed" | "failed") => ({
+      receiptId,
+      sourceKey: "api",
+      subjectKey: "health",
+      summary: `${result} probe`,
+      observedAt: new Date(Date.now() - 1_000).toISOString(),
+      freshUntil: new Date(Date.now() + 300_000).toISOString(),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check", result, detail: {} },
+    });
+    const ordinaryWrite = await request(createApp(db, agentActor(company.id, ordinary.id, ordinaryRun.id)))
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt(randomUUID(), "passed"));
+    expect(ordinaryWrite.status).toBe(403);
+
+    const probeRun = await seedRun(company.id, summarizer.id);
+    const failed = await request(createApp(db, agentActor(company.id, summarizer.id, probeRun.id)))
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt(randomUUID(), "failed"));
+    expect(failed.status).toBe(201);
+    const summaryIssueId = failed.body.evaluations[0].summarizerIssue.id as string;
+    const summaryRun = await seedRun(company.id, summarizer.id, { issueId: summaryIssueId });
+    await db.update(issues).set({ checkoutRunId: summaryRun.id }).where(eq(issues.id, summaryIssueId));
+    const summaryRunWrite = await request(createApp(db, agentActor(company.id, summarizer.id, summaryRun.id)))
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt(randomUUID(), "passed"));
+    expect(summaryRunWrite.status).toBe(403);
+    expect(summaryRunWrite.body.error).toContain("separate explicit authority");
+    expect(await db.select().from(operationalReceipts)).toHaveLength(1);
+    expect(await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]))
+      .toMatchObject({ operationalState: "RED" });
+
+    await db.update(principalPermissionGrants).set({
+      scope: {
+        evidenceKeys: [JSON.stringify(["api", "health"])],
+        allowSummaryGenerationRuns: true,
+      },
+    }).where(eq(principalPermissionGrants.principalId, summarizer.id));
+    const explicitlyAuthorized = await request(createApp(db, agentActor(company.id, summarizer.id, summaryRun.id)))
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt(randomUUID(), "passed"));
+    expect(explicitlyAuthorized.status).toBe(201);
+    expect(explicitlyAuthorized.body.evaluations[0].evaluation.state).toBe("GREEN");
+  });
+
+  it("serializes an old evaluation behind newer evidence without regressing the card", async () => {
+    const company = await seedCompany();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const service = operationalStatusCardService(db);
+    const created = await service.create(company.id, {
+      title: "API health",
+      interestPrompt: "Deterministic only.",
+      agentId: summarizer.id,
+      operationalConfig: {
+        requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+        summarizerMode: "never",
+        exceptionPolicy: { states: ["RED"], openAfterConsecutive: 100, resolveAfterConsecutive: 1 },
+      },
+    }, { agentId: null, userId: "board-user" });
+    const cardId = created.card!.id;
+    const now = new Date("2026-09-10T12:00:00.000Z");
+    const insertReceipt = async (result: "passed" | "failed", observedAt: Date) => {
+      await db.insert(operationalReceipts).values({
+        id: randomUUID(),
+        companyId: company.id,
+        sourceKey: "api",
+        subjectKey: "health",
+        status: result,
+        summary: `${result} probe`,
+        observedAt,
+        freshUntil: new Date("2026-09-10T12:10:00.000Z"),
+        provenance: { probe: "api-health" },
+        observation: { kind: "check", result, detail: {} },
+        createdByAgentId: observation.writer.id,
+        createdByRunId: observation.run.id,
+      });
+    };
+    await insertReceipt("failed", new Date("2026-09-10T11:58:00.000Z"));
+
+    let releaseOld!: () => void;
+    let markOldStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { markOldStarted = resolve; });
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const oldEvaluation = operationalStatusCardService(db, {
+      beforeEvaluationLock: async () => {
+        markOldStarted();
+        await oldGate;
+      },
+    }).evaluate(cardId, now);
+    await oldStarted;
+    await insertReceipt("passed", new Date("2026-09-10T11:59:00.000Z"));
+    const newer = await service.evaluate(cardId, now);
+    expect(newer.evaluation.state).toBe("GREEN");
+    releaseOld();
+    const resumedOld = await oldEvaluation;
+    expect(resumedOld.evaluation.state).toBe("GREEN");
+    const finalCard = await db.select().from(statusCards).where(eq(statusCards.id, cardId)).then((rows) => rows[0]!);
+    const finalClaim = await db.select().from(operationalStatusClaims)
+      .where(eq(operationalStatusClaims.id, finalCard.operationalLatestClaimId!))
+      .then((rows) => rows[0]!);
+    expect(finalCard.operationalState).toBe("GREEN");
+    expect(finalClaim.state).toBe("GREEN");
+  });
+
+  it("resets a failed operational wake and retries unchanged evidence", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards/operational`)
+      .send({
+        title: "API health",
+        interestPrompt: "Explain exceptions.",
+        agentId: summarizer.id,
+        operationalConfig: {
+          requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+          summarizerMode: "exceptions",
+          exceptionPolicy: { states: ["RED"], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+        },
+      });
+    const body = (receiptId: string, offset: number) => ({
+      receiptId,
+      sourceKey: "api",
+      subjectKey: "health",
+      summary: "failed probe",
+      observedAt: new Date(Date.now() - 2_000 + offset).toISOString(),
+      freshUntil: new Date(Date.now() + 300_000 + offset).toISOString(),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check", result: "failed", detail: {} },
+    });
+    const failedWake = await request(createApp(
+      db,
+      agentActor(company.id, observation.writer.id, observation.run.id),
+      { wakeup: async () => { throw new Error("queue unavailable"); } },
+    )).post(`/api/companies/${company.id}/operational-receipts`).send(body(randomUUID(), 0));
+    expect(failedWake.status).toBe(500);
+    const afterFailure = await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!);
+    expect(afterFailure).toMatchObject({
+      generatingIssueId: null,
+      operationalGenerationUpdateId: null,
+      pendingChangeCount: 1,
+      failureReason: expect.stringContaining("queue unavailable"),
+    });
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows[0])).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("queue unavailable"),
+    });
+    expect(await db.select().from(issues).then((rows) => rows.find((row) => row.originKind === "status_card_summary")))
+      .toMatchObject({ status: "cancelled" });
+
+    const wakes: string[] = [];
+    const retry = await request(createApp(
+      db,
+      agentActor(company.id, observation.writer.id, observation.run.id),
+      { wakeup: async (_agentId, options) => { wakes.push(String(options.payload?.issueId)); } },
+    )).post(`/api/companies/${company.id}/operational-receipts`).send(body(randomUUID(), 1_000));
+    expect(retry.status).toBe(201);
+    expect(retry.body.evaluations[0]).toMatchObject({
+      transition: { changed: false, summaryRequired: true },
+      summarizerIssue: { status: "todo" },
+      summaryUpdateId: expect.any(String),
+    });
+    expect(wakes).toEqual([retry.body.evaluations[0].summarizerIssue.id]);
+  });
+
+  it("keeps recurring-fingerprint history immutable and rejects superseded summaries atomically", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const heartbeat = { wakeup: async () => ({ queued: true }) } satisfies IssueAssignmentWakeupDeps;
+    const probeApp = createApp(db, agentActor(company.id, observation.writer.id, observation.run.id), heartbeat);
+    const created = await request(createApp(db, localBoardActor(), heartbeat))
+      .post(`/api/companies/${company.id}/status-cards/operational`)
+      .send({
+        title: "API health",
+        interestPrompt: "Explain exceptions.",
+        agentId: summarizer.id,
+        operationalConfig: {
+          requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+          summarizerMode: "exceptions",
+          exceptionPolicy: { states: ["RED"], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+        },
+      });
+    const base = Date.now() - 5_000;
+    const receipt = (result: "passed" | "failed", offset: number) => ({
+      receiptId: randomUUID(),
+      sourceKey: "api",
+      subjectKey: "health",
+      summary: `${result} probe`,
+      observedAt: new Date(base + offset).toISOString(),
+      freshUntil: new Date(base + 600_000 + offset).toISOString(),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check", result, detail: {} },
+    });
+
+    const firstRed = await request(probeApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt("failed", 1_000));
+    const first = firstRed.body.evaluations[0];
+    const green = await request(probeApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt("passed", 2_000));
+    expect(green.body.evaluations[0].evaluation.state).toBe("GREEN");
+    const firstHistoryBeforeRejectedWrite = await db.select().from(statusCardUpdates)
+      .where(eq(statusCardUpdates.id, first.summaryUpdateId))
+      .then((rows) => rows[0]!);
+    const claimBefore = await db.select().from(operationalStatusClaims)
+      .where(eq(operationalStatusClaims.id, first.claim.id))
+      .then((rows) => rows[0]!);
+    const cardBefore = await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!);
+
+    const staleRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: staleRun.id }).where(eq(issues.id, first.summarizerIssue.id));
+    const rejected = await request(createApp(db, agentActor(company.id, summarizer.id, staleRun.id)))
+      .put(`/api/status-cards/${created.body.id}/operational-summary`)
+      .send({
+        markdown: "This stale summary must not persist.",
+        changeSummary: "stale",
+        generationIssueId: first.summarizerIssue.id,
+        updateId: first.summaryUpdateId,
+        claimId: first.claim.id,
+        fingerprint: first.claim.fingerprint,
+        model: "gpt-test",
+      });
+    expect(rejected.status).toBe(409);
+    expect(await db.select().from(operationalStatusClaims).where(eq(operationalStatusClaims.id, first.claim.id)).then((rows) => rows[0]!))
+      .toEqual(claimBefore);
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.id, first.summaryUpdateId)).then((rows) => rows[0]!))
+      .toEqual(firstHistoryBeforeRejectedWrite);
+    expect(await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!))
+      .toEqual(cardBefore);
+
+    const recurringRed = await request(probeApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receipt("failed", 3_000));
+    const recurring = recurringRed.body.evaluations[0];
+    expect(recurring.evaluation.state).toBe("RED");
+    expect(recurring.claim.fingerprint).toBe(first.claim.fingerprint);
+    expect(recurring.summaryUpdateId).not.toBe(first.summaryUpdateId);
+    expect(recurring.summarizerIssue.id).not.toBe(first.summarizerIssue.id);
+    const recurringRun = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ status: "in_progress", checkoutRunId: recurringRun.id })
+      .where(eq(issues.id, recurring.summarizerIssue.id));
+    const written = await request(createApp(db, agentActor(company.id, summarizer.id, recurringRun.id)))
+      .put(`/api/status-cards/${created.body.id}/operational-summary`)
+      .send({
+        markdown: "The recurring RED state was calculated from failed evidence.",
+        changeSummary: "Explain recurring failure",
+        generationIssueId: recurring.summarizerIssue.id,
+        updateId: recurring.summaryUpdateId,
+        claimId: recurring.claim.id,
+        fingerprint: recurring.claim.fingerprint,
+        model: "gpt-test",
+      });
+    expect(written.status).toBe(200);
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.id, first.summaryUpdateId)).then((rows) => rows[0]!))
+      .toEqual(firstHistoryBeforeRejectedWrite);
+    expect(await db.select().from(statusCardUpdates).where(eq(statusCardUpdates.id, recurring.summaryUpdateId)).then((rows) => rows[0]!))
+      .toMatchObject({ status: "ok", changeSummary: "Explain recurring failure", runId: recurringRun.id });
   });
 
   it("continues evaluating due cards after one scheduled refresh fails", async () => {
