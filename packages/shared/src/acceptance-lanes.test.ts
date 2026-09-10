@@ -525,6 +525,18 @@ describe("bindAnsweredInteractionToLane", () => {
     expect(r.code).toBe("refused_non_waivable");
   });
 
+  it("refuses not_applicable bind on non-runtime lane with merely answered", () => {
+    const r = bindAnsweredInteractionToLane({
+      lanes: {},
+      laneKey: "pre_runtime_review",
+      state: "not_applicable",
+      interactionId: "x",
+      resolutionStatus: "answered",
+    });
+    expect(r.applied).toBe(false);
+    expect(r.code).toBe("refused_lane_mismatch");
+  });
+
   it("ignores protectNonWaivable:false for independent_review", () => {
     const r = bindAnsweredInteractionToLane({
       lanes: { independent_review: { state: "pending" } },
