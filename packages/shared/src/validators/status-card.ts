@@ -18,6 +18,99 @@ export const statusCardUpdateKindSchema = z.enum(["compile", "full", "incrementa
 export const statusCardUpdateTriggerSchema = z.enum(["manual", "interval", "reactive", "restore"]);
 export const statusCardUpdateStatusSchema = z.enum(["running", "ok", "failed"]);
 
+export const operationalStatusSchema = z.enum(["GREEN", "YELLOW", "RED", "GRAY"]);
+export const operationalReceiptStatusSchema = z.enum(["passed", "degraded", "failed"]);
+
+export const operationalEvidenceRequirementSchema = z.object({
+  sourceKey: z.string().trim().min(1).max(120),
+  subjectKey: z.string().trim().min(1).max(240),
+  label: z.string().trim().min(1).max(200),
+}).strict();
+
+export const operationalExceptionPolicySchema = z.object({
+  states: z.array(z.enum(["YELLOW", "RED", "GRAY"])).min(1).default(["RED", "GRAY"]),
+  openAfterConsecutive: z.number().int().min(1).max(100).default(2),
+  resolveAfterConsecutive: z.number().int().min(1).max(100).default(1),
+}).strict();
+
+export const operationalStatusCardConfigSchema = z.object({
+  requiredEvidence: z.array(operationalEvidenceRequirementSchema).min(1).max(50),
+  summarizerMode: z.enum(["exceptions", "never"]).default("exceptions"),
+  exceptionPolicy: operationalExceptionPolicySchema.default({}),
+}).strict().superRefine((config, ctx) => {
+  const keys = new Set<string>();
+  config.requiredEvidence.forEach((requirement, index) => {
+    const key = `${requirement.sourceKey}\u0000${requirement.subjectKey}`;
+    if (keys.has(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["requiredEvidence", index],
+        message: "Evidence requirements must be unique by sourceKey and subjectKey",
+      });
+    }
+    keys.add(key);
+  });
+});
+
+const operationalReceiptProvenanceSchema = z.object({
+  probe: z.string().trim().min(1).max(240),
+  sourceUri: z.string().trim().min(1).max(2_000).optional(),
+  host: z.string().trim().min(1).max(240).optional(),
+  executionId: z.string().trim().min(1).max(240).optional(),
+  writerVersion: z.string().trim().min(1).max(120).optional(),
+}).strict();
+
+export const operationalReceiptObservationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("check"),
+    result: operationalReceiptStatusSchema,
+    detail: z.record(z.string(), z.unknown()).default({}),
+  }).strict(),
+  z.object({
+    kind: z.literal("systemd_unit"),
+    unitType: z.enum(["service", "oneshot"]),
+    activeState: z.string().trim().min(1).max(80),
+    subState: z.string().trim().min(1).max(80).optional(),
+    result: z.string().trim().min(1).max(80),
+    detail: z.record(z.string(), z.unknown()).default({}),
+  }).strict(),
+]);
+
+export const ingestOperationalReceiptSchema = z.object({
+  receiptId: z.string().uuid(),
+  sourceKey: z.string().trim().min(1).max(120),
+  subjectKey: z.string().trim().min(1).max(240),
+  summary: z.string().trim().min(1).max(2_000),
+  observedAt: z.string().datetime(),
+  freshUntil: z.string().datetime(),
+  provenance: operationalReceiptProvenanceSchema,
+  observation: operationalReceiptObservationSchema,
+}).strict().superRefine((receipt, ctx) => {
+  if (Date.parse(receipt.freshUntil) <= Date.parse(receipt.observedAt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["freshUntil"],
+      message: "freshUntil must be later than observedAt",
+    });
+  }
+});
+
+export const createOperationalStatusCardSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  interestPrompt: z.string().trim().min(1).max(20_000),
+  agentId: z.string().uuid().nullable().optional(),
+  operationalConfig: operationalStatusCardConfigSchema,
+}).strict();
+
+export const writeOperationalStatusCardSummarySchema = z.object({
+  markdown: z.string().trim().min(1).max(200_000),
+  changeSummary: z.string().trim().min(1).max(2_000),
+  generationIssueId: z.string().uuid(),
+  claimId: z.string().uuid(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  model: z.string().trim().min(1).max(200).optional().nullable(),
+}).strict();
+
 export const statusCardRefreshTriggersSchema = z.object({
   statusTransitions: z.boolean().default(true),
   membershipChanges: z.boolean().default(true),
@@ -98,6 +191,27 @@ export const statusCardSchema = z.object({
   archivedByAgentId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  kind: z.enum(["issues", "operational"]).optional(),
+  operationalConfig: operationalStatusCardConfigSchema.nullable().optional(),
+  operationalState: operationalStatusSchema.nullable().optional(),
+  operationalFingerprint: z.string().nullable().optional(),
+  operationalFailureStreak: z.number().int().nonnegative().optional(),
+  operationalRecoveryStreak: z.number().int().nonnegative().optional(),
+  operationalLatestClaimId: z.string().uuid().nullable().optional(),
+  operationalExceptionIssueId: z.string().uuid().nullable().optional(),
+  operationalSummary: z.string().nullable().optional(),
+  operationalClaim: z.object({
+    id: z.string().uuid(),
+    state: operationalStatusSchema,
+    reason: z.string(),
+    fingerprint: z.string(),
+    receiptIds: z.array(z.string().uuid()),
+    observedAt: z.string().datetime().nullable(),
+    freshUntil: z.string().datetime().nullable(),
+    changed: z.boolean(),
+    summaryRequired: z.boolean(),
+    createdAt: z.string().datetime(),
+  }).nullable().optional(),
   summaryBody: z.string().nullable().optional(),
   watchedIssueCount: z.number().int().nonnegative().optional(),
   todayTokens: z.number().int().nonnegative().optional(),
@@ -195,3 +309,9 @@ export type PatchStatusCard = z.infer<typeof patchStatusCardSchema>;
 export type RefreshStatusCard = z.infer<typeof refreshStatusCardSchema>;
 export type WriteStatusCardQuery = z.infer<typeof writeStatusCardQuerySchema>;
 export type WriteStatusCardSummary = z.infer<typeof writeStatusCardSummarySchema>;
+export type OperationalStatus = z.infer<typeof operationalStatusSchema>;
+export type OperationalReceiptStatus = z.infer<typeof operationalReceiptStatusSchema>;
+export type OperationalStatusCardConfig = z.infer<typeof operationalStatusCardConfigSchema>;
+export type IngestOperationalReceipt = z.infer<typeof ingestOperationalReceiptSchema>;
+export type CreateOperationalStatusCard = z.infer<typeof createOperationalStatusCardSchema>;
+export type WriteOperationalStatusCardSummary = z.infer<typeof writeOperationalStatusCardSummarySchema>;

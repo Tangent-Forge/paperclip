@@ -15,6 +15,8 @@ import {
   instanceSettings,
   issueComments,
   issues,
+  operationalReceipts,
+  operationalStatusClaims,
   statusCards,
   statusCardUpdates,
 } from "@paperclipai/db";
@@ -84,7 +86,9 @@ describeEmbeddedPostgres("status card routes", () => {
   afterEach(async () => {
     await db.delete(costEvents);
     await db.delete(statusCardUpdates);
+    await db.delete(operationalStatusClaims);
     await db.delete(statusCards);
+    await db.delete(operationalReceipts);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issueComments);
@@ -168,6 +172,7 @@ describeEmbeddedPostgres("status card routes", () => {
     const created = await request(app)
       .post(`/api/companies/${company.id}/status-cards`)
       .send({ interestPrompt: "Recently updated launch tasks" });
+    expect(created.body.kind).toBe("issues");
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({
       companyId: company.id,
@@ -218,6 +223,157 @@ describeEmbeddedPostgres("status card routes", () => {
 
     expect((await request(app).delete(`/api/status-cards/${created.body.id}`)).status).toBe(204);
     expect((await request(app).get(`/api/status-cards/${created.body.id}`)).status).toBe(404);
+  });
+
+  it("runs the operational receipt-to-recovery canary without changing issue-only behavior", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const wakeups: Array<{ agentId: string; issueId: string }> = [];
+    const boardApp = createApp(db, localBoardActor(), {
+      wakeup: async (agentId, options) => {
+        wakeups.push({ agentId, issueId: String(options.payload?.issueId) });
+        return { queued: true };
+      },
+    });
+    const operationalConfig = {
+      requiredEvidence: [{ sourceKey: "paperclip-api", subjectKey: "health", label: "Paperclip API" }],
+      summarizerMode: "exceptions",
+      exceptionPolicy: { states: ["RED"], openAfterConsecutive: 3, resolveAfterConsecutive: 1 },
+    };
+    const created = await request(boardApp)
+      .post(`/api/companies/${company.id}/status-cards/operational`)
+      .send({
+        title: "Paperclip API health",
+        interestPrompt: "Explain actionable changes without choosing the state.",
+        operationalConfig,
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({
+      kind: "operational",
+      operationalState: "GRAY",
+      operationalClaim: { state: "GRAY", receiptIds: [], summaryRequired: false },
+    });
+    expect(created.body.summaryBody).toContain("required receipt(s) missing");
+    expect(wakeups).toEqual([]);
+    expect(await db.select().from(issues)).toEqual([]);
+    const recurringPatch = await request(boardApp).patch(`/api/status-cards/${created.body.id}`).send({
+      refreshPolicy: { mode: "interval", intervalMinutes: 15 },
+    });
+    expect(recurringPatch.status).toBe(422);
+
+    const receiptBase = Date.now() - 60_000;
+    const receiptBody = (receiptId: string, result: "passed" | "failed", minute: number) => ({
+      receiptId,
+      sourceKey: "paperclip-api",
+      subjectKey: "health",
+      summary: `${result} health probe`,
+      observedAt: new Date(receiptBase + minute * 1_000).toISOString(),
+      freshUntil: new Date(receiptBase + 10 * 60_000 + minute * 1_000).toISOString(),
+      provenance: { probe: "paperclip-api-health-probe", host: "TF-Home", executionId: `probe-${minute}` },
+      observation: { kind: "check", result, detail: { httpStatus: result === "failed" ? 503 : 200 } },
+    });
+    const rejectedAction = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send({ ...receiptBody(randomUUID(), "failed", 1), restartService: true });
+    expect(rejectedAction.status).toBe(400);
+    const unboundAgentReceipt = await request(createApp(db, agentActor(company.id, summarizer.id, null)))
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "failed", 1));
+    expect(unboundAgentReceipt.status).toBe(403);
+
+    const firstReceipt = receiptBody(randomUUID(), "failed", 1);
+    const firstFailure = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(firstReceipt);
+    expect(firstFailure.status, JSON.stringify(firstFailure.body)).toBe(201);
+    expect(firstFailure.body.evaluations[0]).toMatchObject({
+      evaluation: { state: "RED" },
+      transition: { changed: true, summaryRequired: true, openException: false },
+    });
+    const summaryIssueId = firstFailure.body.evaluations[0].summarizerIssue.id as string;
+    expect(wakeups).toEqual([{ agentId: summarizer.id, issueId: summaryIssueId }]);
+
+    const inFlightFailure = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "failed", 2));
+    expect(inFlightFailure.body.evaluations[0]).toMatchObject({
+      transition: { changed: false, summaryRequired: false, openException: false },
+      card: { generatingIssueId: summaryIssueId, pendingChangeCount: 1 },
+      summarizerIssue: null,
+    });
+    expect(wakeups).toHaveLength(1);
+
+    const run = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ status: "in_progress", checkoutRunId: run.id }).where(eq(issues.id, summaryIssueId));
+    const claim = firstFailure.body.evaluations[0].claim;
+    const summaryWrite = await request(createApp(db, agentActor(company.id, summarizer.id, run.id)))
+      .put(`/api/status-cards/${created.body.id}/operational-summary`)
+      .send({
+        markdown: "The API probe failed with HTTP 503. The RED state was calculated by the server.",
+        changeSummary: "Explain the observed API failure",
+        generationIssueId: summaryIssueId,
+        claimId: claim.id,
+        fingerprint: claim.fingerprint,
+        model: "gpt-5.4",
+      });
+    expect(summaryWrite.status).toBe(200);
+    expect(summaryWrite.body).toMatchObject({ operationalState: "RED", pendingChangeCount: 0 });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, summaryIssueId));
+
+    const retriedReceipt = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(firstReceipt);
+    expect(retriedReceipt.status).toBe(200);
+    expect(retriedReceipt.body).toMatchObject({ duplicate: true, evaluations: [] });
+    expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toEqual([]);
+
+    const secondFailure = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "failed", 3));
+    expect(secondFailure.body.evaluations[0]).toMatchObject({
+      transition: { changed: false, summaryRequired: false, openException: true },
+      exception: { originKind: "status_card_exception", status: "todo" },
+    });
+    const exceptionId = secondFailure.body.evaluations[0].exception.id as string;
+
+    const duplicateFailure = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "failed", 4));
+    expect(duplicateFailure.body.evaluations[0]).toMatchObject({
+      transition: { openException: false, resolveException: false },
+      exception: null,
+    });
+    expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toHaveLength(1);
+
+    const recovery = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "passed", 5));
+    expect(recovery.body.evaluations[0]).toMatchObject({
+      evaluation: { state: "GREEN" },
+      transition: { changed: true, summaryRequired: false, resolveException: true },
+      resolvedExceptionIssueId: exceptionId,
+    });
+    expect(await db.select().from(issues).where(eq(issues.id, exceptionId)).then((rows) => rows[0]?.status)).toBe("done");
+    const finalCard = await request(boardApp).get(`/api/status-cards/${created.body.id}`);
+    expect(finalCard.body).toMatchObject({
+      operationalState: "GREEN",
+      operationalExceptionIssueId: null,
+      operationalClaim: { state: "GREEN", summaryRequired: false },
+    });
+    expect(finalCard.body.summaryBody).toContain("All required evidence is fresh and passing");
+    expect(finalCard.body.operationalClaim.receiptIds).toHaveLength(1);
+
+    const healthyTick = await request(boardApp)
+      .post(`/api/companies/${company.id}/operational-receipts`)
+      .send(receiptBody(randomUUID(), "passed", 6));
+    expect(healthyTick.body.evaluations[0]).toMatchObject({
+      transition: { changed: false, summaryRequired: false, openException: false, resolveException: false },
+      summarizerIssue: null,
+      exception: null,
+    });
+    expect(wakeups).toHaveLength(1);
   });
 
   it("continues evaluating due cards after one scheduled refresh fails", async () => {

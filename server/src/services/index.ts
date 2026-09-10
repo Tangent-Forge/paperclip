@@ -24,6 +24,7 @@ export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } fr
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { statusCardService } from "./status-cards.js";
+export { operationalStatusCardService } from "./operational-status-cards.js";
 export { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 export { documentAnnotationService } from "./document-annotations.js";
 export {

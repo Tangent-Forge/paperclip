@@ -2,17 +2,28 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createStatusCardSchema,
+  createOperationalStatusCardSchema,
+  ingestOperationalReceiptSchema,
   listStatusCardsQuerySchema,
   patchStatusCardSchema,
   refreshStatusCardSchema,
   STATUS_CARD_AGENT_MAX_INTEREST_PROMPT_LENGTH,
   writeStatusCardQuerySchema,
   writeStatusCardSummarySchema,
+  writeOperationalStatusCardSummarySchema,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import { accessService, heartbeatService, instanceSettingsService, issueService, logActivity, statusCardService } from "../services/index.js";
+import {
+  accessService,
+  heartbeatService,
+  instanceSettingsService,
+  issueService,
+  logActivity,
+  operationalStatusCardService,
+  statusCardService,
+} from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -21,6 +32,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const service = statusCardService(db);
+  const operational = operationalStatusCardService(db);
   const issueSvc = issueService(db);
   const heartbeat = opts.heartbeat ?? heartbeatService(db);
 
@@ -139,6 +151,23 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     return result;
   }
 
+  async function queueOperationalSummaries(req: Request, results: Array<{ summarizerIssue: { id: string; assigneeAgentId: string | null; status: string } | null }>) {
+    const actor = getActorInfo(req);
+    await Promise.all(results.map(async (result) => {
+      if (!result.summarizerIssue) return;
+      await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue: result.summarizerIssue,
+        reason: "operational_status_summary_assigned",
+        mutation: "status_card.operational_summary_requested",
+        contextSource: "operational_status_card",
+        requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+        requestedByActorId: actor.actorId,
+        taskKey: `status-card:${result.summarizerIssue.id}`,
+      });
+    }));
+  }
+
   router.get("/companies/:companyId/status-cards", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -167,6 +196,55 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     }
   });
 
+  router.post("/companies/:companyId/status-cards/operational", validate(createOperationalStatusCardSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertStatusCardsEnabled();
+    await assertCanMutate(req, companyId);
+    assertAgentPromptLimit(req, req.body.interestPrompt);
+    const actor = getActorInfo(req);
+    const result = await operational.create(companyId, req.body, {
+      agentId: actor.actorType === "agent" ? actor.actorId : null,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId ?? null,
+    });
+    await logMutation(req, companyId, "status_card.operational_created", result.card!.id, {
+      operationalState: result.evaluation.state,
+      claimId: result.claim.id,
+    });
+    res.status(201).json(await service.hydrate(result.card!));
+  });
+
+  router.post("/companies/:companyId/operational-receipts", validate(ingestOperationalReceiptSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertStatusCardsEnabled();
+    await assertCanMutate(req, companyId);
+    const actor = getActorInfo(req);
+    const result = await operational.ingest(companyId, req.body, {
+      agentId: actor.actorType === "agent" ? actor.actorId : null,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId ?? null,
+    });
+    await queueOperationalSummaries(req, result.evaluations);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: result.duplicate ? "operational_receipt.deduplicated" : "operational_receipt.ingested",
+      entityType: "operational_receipt",
+      entityId: result.receipt.id,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      details: {
+        sourceKey: result.receipt.sourceKey,
+        subjectKey: result.receipt.subjectKey,
+        observedAt: result.receipt.observedAt,
+        freshUntil: result.receipt.freshUntil,
+        evaluatedCardIds: result.evaluations.map((evaluation) => evaluation.card!.id),
+      },
+    });
+    res.status(result.duplicate ? 200 : 201).json(result);
+  });
+
   router.get("/status-cards/:id", async (req, res) => {
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
@@ -185,7 +263,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
-    const compile = req.body.interestPrompt !== undefined ? await enqueueCompile(req, card.id) : null;
+    const compile = card.kind === "issues" && req.body.interestPrompt !== undefined
+      ? await enqueueCompile(req, card.id)
+      : null;
     const restore = req.body.archived === false && card.archivedAt && updated.queries.length > 0 && !updated.generatingIssueId
       ? await enqueueRefresh(req, card.id, true, "restore")
       : null;
@@ -220,6 +300,30 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     res.json(await service.listSummaryRevisions(card));
   });
 
+  router.get("/status-cards/:id/operational-claims", async (req, res) => {
+    await assertStatusCardsEnabled();
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
+    if (card.kind !== "operational") throw unprocessable("Status card is not operational");
+    res.json(await operational.listClaims(card.id));
+  });
+
+  router.post("/status-cards/:id/evaluate-operational", async (req, res) => {
+    await assertStatusCardsEnabled();
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
+    await assertCanManageCard(req, card);
+    const result = await operational.evaluate(card.id);
+    await queueOperationalSummaries(req, [result]);
+    await logMutation(req, card.companyId, "status_card.operational_evaluated", card.id, {
+      operationalState: result.evaluation.state,
+      claimId: result.claim.id,
+      changed: result.transition.changed,
+      exceptionIssueId: result.exception?.id ?? result.resolvedExceptionIssueId,
+    });
+    res.json(result);
+  });
+
   router.post("/status-cards/:id/recompile", async (req, res) => {
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
@@ -238,6 +342,17 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
     await assertCanManageCard(req, card);
+    if (card.kind === "operational") {
+      const result = await operational.evaluate(card.id);
+      await queueOperationalSummaries(req, [result]);
+      await logMutation(req, card.companyId, "status_card.operational_evaluated", card.id, {
+        operationalState: result.evaluation.state,
+        claimId: result.claim.id,
+        changed: result.transition.changed,
+      });
+      res.status(200).json(await service.hydrate(result.card!));
+      return;
+    }
     const result = await enqueueRefresh(req, card.id, req.body.full);
     await logMutation(req, card.companyId, "status_card.refresh_requested", card.id, {
       full: req.body.full,
@@ -305,6 +420,27 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       changeSummary: req.body.changeSummary,
     });
     res.json(result);
+  });
+
+  router.put("/status-cards/:id/operational-summary", validate(writeOperationalStatusCardSummarySchema), async (req, res) => {
+    await assertStatusCardsEnabled();
+    const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
+    if (!card) return;
+    if (!hasCompanyAccess(req, card.companyId)) throw notFound("Status card not found");
+    assertCompanyAccess(req, card.companyId);
+    const actor = getActorInfo(req);
+    const updated = await operational.writeSummary(card.id, req.body, {
+      agentId: actor.actorType === "agent" ? actor.actorId : null,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId ?? null,
+    });
+    await logMutation(req, card.companyId, "status_card.operational_summary_written", card.id, {
+      claimId: req.body.claimId,
+      generationIssueId: req.body.generationIssueId,
+      fingerprint: req.body.fingerprint,
+      model: req.body.model ?? null,
+    });
+    res.json(updated);
   });
 
   return router;

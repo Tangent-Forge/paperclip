@@ -18,6 +18,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import {
   deriveStatusCardLifecycle,
   describeRefreshPolicy,
+  OPERATIONAL_STATUS_PRESENTATION,
   STATUS_CARD_LIFECYCLE_PRESENTATION,
 } from "@/lib/status-card-state";
 import { formatCents, formatTokens } from "./format";
@@ -62,6 +63,9 @@ export function StatusCardTile({
 }: StatusCardTileProps) {
   const lifecycle = deriveStatusCardLifecycle(card);
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
+  const operationalPresentation = card.kind === "operational" && card.operationalState
+    ? OPERATIONAL_STATUS_PRESENTATION[card.operationalState]
+    : null;
   // A setup run is actually in flight when the card is compiling AND has a
   // generation task. When it's null the first run stalled/died and the card
   // needs a manual re-kick — the only case where "Run now" is offered.
@@ -101,10 +105,11 @@ export function StatusCardTile({
       )}
       data-testid="status-card-tile"
       data-lifecycle={lifecycle}
+      data-operational-state={card.operationalState ?? undefined}
     >
       {/* Header */}
       <div className="flex items-start gap-2 px-4 pt-4">
-        {lifecycle === "compiling" ? null : <StateDot className={presentation.dotClassName} />}
+        {lifecycle === "compiling" ? null : <StateDot className={operationalPresentation?.dotClassName ?? presentation.dotClassName} />}
         <span
           className={cn(
             "line-clamp-1 min-w-0 flex-1 text-sm font-semibold",
@@ -114,6 +119,11 @@ export function StatusCardTile({
         >
           {card.title ?? "New card"}
         </span>
+        {operationalPresentation ? (
+          <span className={cn("rounded border px-1.5 py-0.5 text-(length:--text-micro) font-semibold", operationalPresentation.badgeClassName)}>
+            {operationalPresentation.label}
+          </span>
+        ) : null}
         <div onClick={(event) => event.stopPropagation()}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -126,13 +136,17 @@ export function StatusCardTile({
               <DropdownMenuItem onSelect={onRefresh} disabled={refreshPending || lifecycle === "updating"}>
                 Refresh now
               </DropdownMenuItem>
-              {(lifecycle === "compiling" && !setupRunning) || lifecycle === "error" ? (
+              {card.kind !== "operational" && ((lifecycle === "compiling" && !setupRunning) || lifecycle === "error") ? (
                 <DropdownMenuItem onSelect={onRecompile} disabled={recompilePending}>
                   Run now
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
-              <DropdownMenuItem onSelect={onOpenDebug}>Query debug</DropdownMenuItem>
+              {card.kind !== "operational" ? (
+                <>
+                  <DropdownMenuItem onSelect={onEditInterest}>Edit interest &amp; settings</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={onOpenDebug}>Query debug</DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onArchive} variant="destructive">
                 Archive
@@ -276,7 +290,9 @@ export function StatusCardTile({
             "setting up · first summary pending"
           ) : (
             <>
-              {freshnessLabel} · {policyLabel}
+              {card.kind === "operational"
+                ? `${card.operationalClaim?.observedAt ? `observed ${relativeTime(card.operationalClaim.observedAt)}` : "awaiting evidence"} · receipt-driven`
+                : `${freshnessLabel} · ${policyLabel}`}
               {tokensLabel ? ` · ${tokensLabel}` : ""}
               {costLabel ? ` · ${costLabel}` : ""}
             </>
