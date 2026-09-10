@@ -214,6 +214,82 @@ describe("evaluateRuntimeNaEligibility", () => {
     expect(r.eligible).toBe(true);
     expect(r.code).toBe("ok_accepted_decision");
   });
+
+  it("allows historical acceptance_revision only for runtime lane with exactHead", () => {
+    const ok = evaluateRuntimeNaEligibility({
+      laneKey: "runtime_target_host",
+      decision: {
+        interactionId: "afdc7368-11e6-4a68-bf6b-d8f085799b2d",
+        resolutionStatus: "accepted",
+        laneKey: "runtime_target_host",
+        option: "acceptance_revision",
+        exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        decisionId: "DEC-PAP2585-3221-1",
+      },
+      expected: {
+        exactHead: "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        laneKey: "runtime_target_host",
+      },
+    });
+    expect(ok.eligible).toBe(true);
+
+    const bare = evaluateRuntimeNaEligibility({
+      laneKey: "independent_review",
+      decision: {
+        interactionId: "ix-bare",
+        resolutionStatus: "accepted",
+        laneKey: "independent_review",
+        option: "acceptance_revision",
+      },
+    });
+    expect(bare.eligible).toBe(false);
+    // non-waivable lane refuses before option checks
+    expect(bare.code).toBe("refused_non_waivable_lane");
+
+    const bareCi = evaluateRuntimeNaEligibility({
+      laneKey: "ci",
+      decision: {
+        interactionId: "ix-bare-ci",
+        resolutionStatus: "accepted",
+        laneKey: "ci",
+        option: "acceptance_revision",
+      },
+    });
+    expect(bareCi.eligible).toBe(false);
+    expect(bareCi.code).toBe("refused_unrelated_option");
+
+    const noHead = evaluateRuntimeNaEligibility({
+      laneKey: "runtime_target_host",
+      decision: {
+        interactionId: "ix-nh",
+        resolutionStatus: "accepted",
+        laneKey: "runtime_target_host",
+        option: "acceptance_revision",
+      },
+    });
+    expect(noHead.eligible).toBe(false);
+    expect(noHead.code).toBe("refused_unrelated_option");
+  });
+
+  it("refuses invented standing policy strings not in trusted registry", () => {
+    const r = evaluateRuntimeNaEligibility({
+      laneKey: "runtime_target_host",
+      pathClass: "documentation",
+      standingPolicyId: "ownerGuidance-invented-policy",
+    });
+    expect(r.eligible).toBe(false);
+    expect(r.code).toBe("refused_unrecognized_policy");
+  });
+
+  it("refuses standing policy when pathClass is missing from trusted target", () => {
+    const r = evaluateRuntimeNaEligibility({
+      laneKey: "runtime_target_host",
+      pathClass: null,
+      standingPolicyId: STANDING_POLICY_DOCS_ONLY_RUNTIME_NA,
+    });
+    expect(r.eligible).toBe(false);
+    expect(r.code).toBe("refused_path_only");
+  });
 });
 
 describe("bindAnsweredInteractionToLane", () => {
