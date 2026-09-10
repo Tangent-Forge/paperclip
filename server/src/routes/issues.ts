@@ -10647,7 +10647,39 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
 
     if (req.actor.type === "agent" && checkoutRunId) {
-      const activeRun = await heartbeat.getRun(checkoutRunId);
+      // Scope the *caller's current run* only. Issue-row stale checkoutRunId /
+      // executionRunId recovery remains inside svc.checkout via
+      // clearCheckoutRunIfTerminal / adopt paths and must still run after this gate.
+      type CheckoutScopeRun = {
+        id: string;
+        agentId: string;
+        invocationSource: string | null;
+        contextSnapshot: unknown;
+      };
+      let activeRun: CheckoutScopeRun | null = null;
+      if (typeof heartbeat?.getRun === "function") {
+        const fromHeartbeat = await heartbeat.getRun(checkoutRunId).catch(() => null);
+        if (fromHeartbeat) {
+          activeRun = {
+            id: fromHeartbeat.id,
+            agentId: fromHeartbeat.agentId,
+            invocationSource: fromHeartbeat.invocationSource,
+            contextSnapshot: fromHeartbeat.contextSnapshot,
+          };
+        }
+      }
+      if (!activeRun) {
+        activeRun = await db
+          .select({
+            id: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            invocationSource: heartbeatRuns.invocationSource,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+      }
       if (!activeRun || activeRun.agentId !== req.actor.agentId) {
         res.status(409).json({
           error: "Checkout run is not an active run for this agent",
@@ -10674,6 +10706,7 @@ export function issueRoutes(
         targetIssueId: issue.id,
       });
       if (!scope.ok) {
+        // Rejected scope checks must not reopen workspaces or mutate issue locks.
         res.status(409).json({
           error: scope.message,
           details: {

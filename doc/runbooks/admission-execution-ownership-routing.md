@@ -4,6 +4,8 @@
 
 1. **CTO intake lock** — Linear Sync import assigned `triageAgentId` and immediately `requestWakeup`s that agent. When the run starts, lazy locking stamps `issues.executionRunId`, so the intended worker cannot checkout until the intake run is cancelled.
 2. **Unbound on-demand wake** — `POST /api/agents/:id/wakeup` and legacy `/heartbeat/invoke` allowed empty payloads. Runs with `issueId=null` could still attempt issue checkout.
+3. **Contradictory wake bindings** — callers could supply disagreeing `issueId`/`taskId` across top-level, payload, and contextSnapshot fields.
+4. **Stale checkout self-heal** — issue-row `checkoutRunId` may point at a terminal run; recovery must still run inside `svc.checkout` after the *caller run* passes scope checks.
 
 ## Target sequence (after this fix)
 
@@ -28,10 +30,15 @@ Linear Sync instance config:
 
 ## API
 
-- Wake body may include top-level `issueId` (UUID). It is merged into `payload` and `contextSnapshot`.
-- Agent checkout with an **on_demand** or **automation** run that has no bound issueId → **409** `unbound_on_demand_checkout_forbidden`.
+- Wake body may include top-level `issueId` (UUID). It is merged into `payload` and `contextSnapshot` when consistent.
+- Conflicting non-empty identifiers across top-level `issueId`, `payload.issueId`, `payload.taskId`, `contextSnapshot.issueId`, and `contextSnapshot.taskId` → **400** `contradictory_wake_issue_binding` (fail closed before run creation).
+- Matching duplicated identifiers are accepted.
+- Agent checkout with a **non-timer** run that has no bound issueId → **409** `unbound_on_demand_checkout_forbidden`.
+  - **Timer is the only invocation source allowed to checkout unbound** (inbox pick-work).
+  - Assignment helpers already supply issue binding; unbound assignment checkout is not a supported path.
 - Run bound to issue A cannot checkout issue B → **409** `run_issue_scope_mismatch`.
-- **Timer** wakes may still start unbound and pick inbox work.
+- Scope gate inspects the **caller's current run** only. Rejected scope checks do not reopen workspaces or clear locks. Terminal stale `issues.checkoutRunId` is still cleared by `clearCheckoutRunIfTerminal` inside `svc.checkout` after the caller run is in-scope.
+- Legacy empty `/heartbeat/invoke` body omits `payload` (does not send `payload: null`).
 
 ## Operator notes
 

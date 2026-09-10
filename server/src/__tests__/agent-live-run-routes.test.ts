@@ -612,11 +612,8 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
-    // The legacy /heartbeat/invoke endpoint forwards only the wake fields the
-    // caller actually supplied so empty-body callers (e.g. e2e suites) match
-    // the original fixed-arg `heartbeat.invoke()` shape exactly. When the
-    // caller supplies reason / payload / forceFreshSession those are
-    // forwarded; idempotencyKey is omitted unless explicitly set.
+    // Intended binding behavior: payload issueId/taskId are also mirrored into
+    // contextSnapshot so checkout scope and run provenance stay consistent.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -632,6 +629,8 @@ describe("agent live run routes", () => {
         triggeredBy: "board",
         actorId: "local-board",
         forceFreshSession: true,
+        issueId: "issue-1",
+        taskId: "issue-1",
       },
     });
   });
@@ -645,6 +644,8 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
+    // Empty body must omit payload (not pass payload: null) to preserve the
+    // historical heartbeat.invoke() shape used by e2e callers.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
       source: "on_demand",
       triggerDetail: "manual",

@@ -38,6 +38,19 @@ describe("assertRunMayCheckoutIssue", () => {
     });
   });
 
+  it("fail-closes unbound assignment checkout (timer is the only unbound source)", () => {
+    expect(
+      assertRunMayCheckoutIssue({
+        invocationSource: "assignment",
+        runIssueId: null,
+        targetIssueId: "issue-1",
+      }),
+    ).toMatchObject({
+      ok: false,
+      code: "unbound_on_demand_checkout_forbidden",
+    });
+  });
+
   it("allows issue-bound on_demand checkout when ids match", () => {
     expect(
       assertRunMayCheckoutIssue({
@@ -61,14 +74,7 @@ describe("assertRunMayCheckoutIssue", () => {
     });
   });
 
-  it("allows assignment wake without issueId (unusual) and with matching issueId", () => {
-    expect(
-      assertRunMayCheckoutIssue({
-        invocationSource: "assignment",
-        runIssueId: null,
-        targetIssueId: "issue-1",
-      }),
-    ).toEqual({ ok: true });
+  it("allows assignment wake with matching issueId", () => {
     expect(
       assertRunMayCheckoutIssue({
         invocationSource: "assignment",
@@ -86,22 +92,73 @@ describe("bindIssueIdToWakeContext", () => {
       payload: { reasonTag: "x" },
       contextSnapshot: { triggeredBy: "user" },
     });
-    expect(bound.issueId).toBe("issue-9");
-    expect(bound.payload).toMatchObject({ issueId: "issue-9", reasonTag: "x" });
-    expect(bound.contextSnapshot).toMatchObject({
+    expect(bound).toMatchObject({
+      ok: true,
       issueId: "issue-9",
-      taskId: "issue-9",
-      triggeredBy: "user",
+      payload: { issueId: "issue-9", reasonTag: "x" },
+      contextSnapshot: {
+        issueId: "issue-9",
+        taskId: "issue-9",
+        triggeredBy: "user",
+      },
     });
   });
 
-  it("prefers existing payload issueId over empty top-level", () => {
+  it("accepts payload-only legacy binding", () => {
     const bound = bindIssueIdToWakeContext({
       issueId: null,
       payload: { issueId: "from-payload" },
       contextSnapshot: {},
     });
-    expect(bound.issueId).toBe("from-payload");
-    expect(bound.contextSnapshot.issueId).toBe("from-payload");
+    expect(bound).toMatchObject({
+      ok: true,
+      issueId: "from-payload",
+      contextSnapshot: { issueId: "from-payload", taskId: "from-payload" },
+    });
+  });
+
+  it("accepts matching duplicated identifiers", () => {
+    const bound = bindIssueIdToWakeContext({
+      issueId: "same",
+      payload: { issueId: "same", taskId: "same" },
+      contextSnapshot: { issueId: "same", taskId: "same" },
+    });
+    expect(bound).toMatchObject({ ok: true, issueId: "same" });
+  });
+
+  it("rejects top-level A vs payload.issueId B", () => {
+    const bound = bindIssueIdToWakeContext({
+      issueId: "A",
+      payload: { issueId: "B" },
+      contextSnapshot: {},
+    });
+    expect(bound).toMatchObject({
+      ok: false,
+      code: "contradictory_wake_issue_binding",
+    });
+  });
+
+  it("rejects payload.issueId A vs payload.taskId B", () => {
+    const bound = bindIssueIdToWakeContext({
+      issueId: null,
+      payload: { issueId: "A", taskId: "B" },
+      contextSnapshot: {},
+    });
+    expect(bound).toMatchObject({
+      ok: false,
+      code: "contradictory_wake_issue_binding",
+    });
+  });
+
+  it("rejects payload issueId vs snapshot taskId mismatch", () => {
+    const bound = bindIssueIdToWakeContext({
+      issueId: null,
+      payload: { issueId: "A" },
+      contextSnapshot: { taskId: "B" },
+    });
+    expect(bound).toMatchObject({
+      ok: false,
+      code: "contradictory_wake_issue_binding",
+    });
   });
 });

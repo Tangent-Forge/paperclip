@@ -4367,6 +4367,17 @@ export function agentRoutes(
         forceFreshSession: req.body.forceFreshSession === true,
       },
     });
+    if (!wakeBound.ok) {
+      res.status(400).json({
+        error: wakeBound.message,
+        details: {
+          code: wakeBound.code,
+          identifiers: wakeBound.details.identifiers,
+          securityPrinciples: ["Fail Securely", "Complete Mediation"],
+        },
+      });
+      return;
+    }
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
@@ -4453,14 +4464,28 @@ export function agentRoutes(
         ...(body.forceFreshSession === true ? { forceFreshSession: true } : {}),
       },
     });
+    if (!wakeBound.ok) {
+      res.status(400).json({
+        error: wakeBound.message,
+        details: {
+          code: wakeBound.code,
+          identifiers: wakeBound.details.identifiers,
+          securityPrinciples: ["Fail Securely", "Complete Mediation"],
+        },
+      });
+      return;
+    }
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: wakeBound.contextSnapshot,
-      payload: wakeBound.payload,
     };
+    // Preserve legacy empty-body contract: omit payload entirely when unbound/empty.
+    if (wakeBound.payload != null) {
+      wakeOpts.payload = wakeBound.payload;
+    }
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
     }
