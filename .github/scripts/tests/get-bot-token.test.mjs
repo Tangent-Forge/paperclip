@@ -24,34 +24,55 @@ function pemFence(kind, body = 'ABC') {
   return begin + '\n' + body + '\n' + end;
 }
 
-test('resolveInstallationId: uses the repo installation endpoint when repo context is available', async () => {
-  const seenPaths = [];
-  const installationId = await resolveInstallationId(async (path) => {
-    seenPaths.push(path);
-    return { id: 42 };
-  }, 'jwt', 'paperclipai/paperclip', 'paperclipai');
+function withReviewAppIdentity(fn) {
+  const previousId = process.env.REVIEW_APP_ID;
+  const previousSlug = process.env.REVIEW_APP_SLUG;
+  process.env.REVIEW_APP_ID = '4541043';
+  process.env.REVIEW_APP_SLUG = 'tfrm-review';
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (previousId === undefined) delete process.env.REVIEW_APP_ID;
+      else process.env.REVIEW_APP_ID = previousId;
+      if (previousSlug === undefined) delete process.env.REVIEW_APP_SLUG;
+      else process.env.REVIEW_APP_SLUG = previousSlug;
+    });
+}
 
-  assert.equal(installationId, 42);
-  assert.deepEqual(seenPaths, ['/repos/paperclipai/paperclip/installation']);
+test('resolveInstallationId: uses the repo installation endpoint when repo context is available', async () => {
+  await withReviewAppIdentity(async () => {
+    const seenPaths = [];
+    const installationId = await resolveInstallationId(async (path) => {
+      seenPaths.push(path);
+      return { id: 42 };
+    }, 'jwt', 'paperclipai/paperclip', 'paperclipai');
+
+    assert.equal(installationId, 42);
+    assert.deepEqual(seenPaths, ['/repos/paperclipai/paperclip/installation']);
+  });
 });
 
 test('resolveInstallationId: falls back to the matching owner installation', async () => {
-  const installationId = await resolveInstallationId(async () => ([
-    { id: 1, account: { login: 'someone-else' } },
-    { id: 7, account: { login: 'PaperclipAI' } },
-  ]), 'jwt', undefined, 'paperclipai');
+  await withReviewAppIdentity(async () => {
+    const installationId = await resolveInstallationId(async () => ([
+      { id: 1, account: { login: 'someone-else' } },
+      { id: 7, account: { login: 'PaperclipAI' } },
+    ]), 'jwt', undefined, 'paperclipai');
 
-  assert.equal(installationId, 7);
+    assert.equal(installationId, 7);
+  });
 });
 
 test('resolveInstallationId: rejects ambiguous installations without repo or owner context', async () => {
-  await assert.rejects(
-    resolveInstallationId(async () => ([
-      { id: 1, account: { login: 'org-one' } },
-      { id: 2, account: { login: 'org-two' } },
-    ]), 'jwt'),
-    /Multiple .+ installations found/
-  );
+  await withReviewAppIdentity(async () => {
+    await assert.rejects(
+      resolveInstallationId(async () => ([
+        { id: 1, account: { login: 'org-one' } },
+        { id: 2, account: { login: 'org-two' } },
+      ]), 'jwt'),
+      /Multiple .+ installations found/
+    );
+  });
 });
 
 test('normalizePrivateKey: expands literal backslash-n escapes', () => {
@@ -79,24 +100,34 @@ test('describePrivateKeyShape: flags missing PEM header without leaking content'
 });
 
 test('generateJWT: signs a throwaway RSA key and embeds numeric iss', () => {
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const pem = privateKey.export({ type: 'pkcs1', format: 'pem' });
-  const jwt = generateJWT(pem);
-  const [, body] = jwt.split('.');
-  const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-  assert.equal(typeof payload.iss, 'string');
-  assert.match(payload.iss, /^\d+$/);
-  createPrivateKey(normalizePrivateKey(pem));
+  const previousId = process.env.REVIEW_APP_ID;
+  const previousSlug = process.env.REVIEW_APP_SLUG;
+  process.env.REVIEW_APP_ID = '4541043';
+  process.env.REVIEW_APP_SLUG = 'tfrm-review';
+  try {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = privateKey.export({ type: 'pkcs1', format: 'pem' });
+    const jwt = generateJWT(pem);
+    const [, body] = jwt.split('.');
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    assert.equal(payload.iss, '4541043');
+    createPrivateKey(normalizePrivateKey(pem));
+  } finally {
+    if (previousId === undefined) delete process.env.REVIEW_APP_ID;
+    else process.env.REVIEW_APP_ID = previousId;
+    if (previousSlug === undefined) delete process.env.REVIEW_APP_SLUG;
+    else process.env.REVIEW_APP_SLUG = previousSlug;
+  }
 });
 
-test('generateJWT: REVIEW_APP_ID overrides default iss in a fresh process', () => {
+test('generateJWT: refuses implicit App identity when REVIEW_APP_* unset', () => {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const pem = privateKey.export({ type: 'pkcs1', format: 'pem' });
   const dir = mkdtempSync(join(tmpdir(), 'bot-token-'));
   const pemPath = join(dir, 'k.pem');
   writeFileSync(pemPath, pem);
 
-  function readIss(env) {
+  function run(env) {
     const code = [
       "import { readFileSync } from 'node:fs';",
       `import { generateJWT } from ${JSON.stringify(SCRIPT)};`,
@@ -104,14 +135,39 @@ test('generateJWT: REVIEW_APP_ID overrides default iss in a fresh process', () =
       "const body = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString('utf8'));",
       'process.stdout.write(String(body.iss));',
     ].join('\n');
-    const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
-      env: { ...process.env, ...env },
+    // Strip inherited identity so the child process sees only the env we pass.
+    const base = { ...process.env };
+    delete base.REVIEW_APP_ID;
+    delete base.REVIEW_APP_SLUG;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+      env: { ...base, ...env },
       encoding: 'utf8',
     });
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    return r.stdout.trim();
   }
 
-  assert.equal(readIss({ REVIEW_APP_ID: '', REVIEW_APP_SLUG: '' }), '3718661');
-  assert.equal(readIss({ REVIEW_APP_ID: '4541043', REVIEW_APP_SLUG: 'tfrm-review' }), '4541043');
+  const missing = run({ REVIEW_APP_ID: '', REVIEW_APP_SLUG: '' });
+  assert.notEqual(missing.status, 0);
+  assert.match(`${missing.stderr}\n${missing.stdout}`, /refusing implicit GitHub App identity/);
+
+  const ok = run({ REVIEW_APP_ID: '4541043', REVIEW_APP_SLUG: 'tfrm-review' });
+  assert.equal(ok.status, 0, ok.stderr || ok.stdout);
+  assert.equal(ok.stdout.trim(), '4541043');
+});
+
+test('resolveInstallationId: refuses implicit App identity without REVIEW_APP_*', async () => {
+  const previousId = process.env.REVIEW_APP_ID;
+  const previousSlug = process.env.REVIEW_APP_SLUG;
+  delete process.env.REVIEW_APP_ID;
+  delete process.env.REVIEW_APP_SLUG;
+  try {
+    await assert.rejects(
+      resolveInstallationId(async () => ({ id: 1 }), 'jwt', 'Tangent-Forge/paperclip', 'Tangent-Forge'),
+      /refusing implicit GitHub App identity/
+    );
+  } finally {
+    if (previousId === undefined) delete process.env.REVIEW_APP_ID;
+    else process.env.REVIEW_APP_ID = previousId;
+    if (previousSlug === undefined) delete process.env.REVIEW_APP_SLUG;
+    else process.env.REVIEW_APP_SLUG = previousSlug;
+  }
 });

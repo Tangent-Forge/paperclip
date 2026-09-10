@@ -2,7 +2,8 @@
 /**
  * get-bot-token.mjs
  * Generates a short-lived GitHub installation token for the review App.
- * Reads COMMITPERCLIP_KEY env var (PEM content of private key).
+ * Reads REVIEW_APP_PRIVATE_KEY (or COMMITPERCLIP_KEY alias) PEM content.
+ * Requires REVIEW_APP_ID + REVIEW_APP_SLUG (no upstream App-id fallback).
  * Prints the token to stdout.
  *
  * Also exports: generateJWT(privateKey), ghFetch(path, token, options)
@@ -11,18 +12,28 @@
 import { createPrivateKey, createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-// Which App we authenticate as. The default is upstream's `commitperclip`
-// (app 3718661, owned by the paperclipai org), inherited with this fork --
-// but a fork can never hold that App's private key, so signing as it cannot
-// work here. Tangent-Forge owns `tfrm-review` (app 4541043) for this purpose;
-// the REVIEW_APP_ID / REVIEW_APP_SLUG repository variables select it.
-const APP_ID = (process.env.REVIEW_APP_ID || '3718661').trim();
-const APP_SLUG = (process.env.REVIEW_APP_SLUG || 'commitperclip').trim();
+// Which App we authenticate as. Identity is explicit-only via REVIEW_APP_ID /
+// REVIEW_APP_SLUG. Do not fall back to upstream commitperclip (3718661): a fork
+// never holds that private key, and an implicit iss creates confusing incidents.
+// Tangent-Forge sets vars to tfrm-review (4541043).
+function requireAppIdentity() {
+  const appId = process.env.REVIEW_APP_ID?.trim() ?? '';
+  const appSlug = process.env.REVIEW_APP_SLUG?.trim() ?? '';
 
-if (!/^\d+$/.test(APP_ID)) {
-  console.error(`ERROR: REVIEW_APP_ID must be the numeric App ID, got "${APP_ID}".`);
-  console.error('Find it at Settings -> Developer settings -> GitHub Apps -> your App.');
-  process.exit(1);
+  if (!appId || !appSlug) {
+    throw new Error(
+      'REVIEW_APP_ID and REVIEW_APP_SLUG are required; refusing implicit GitHub App identity.'
+    );
+  }
+
+  if (!/^\d+$/.test(appId)) {
+    throw new Error(
+      `REVIEW_APP_ID must be the numeric App ID, got "${appId}". ` +
+        'Find it at Settings -> Developer settings -> GitHub Apps -> your App.'
+    );
+  }
+
+  return { appId, appSlug };
 }
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -102,6 +113,13 @@ export function describePrivateKeyShape(raw) {
  * rather than that something is "unsupported".
  */
 export function explainPrivateKeyShape(shape) {
+  let appLabel = 'review';
+  try {
+    appLabel = requireAppIdentity().appSlug;
+  } catch {
+    // Shape advice can run before identity is configured; keep messages generic.
+  }
+
   if (shape.isEmpty) {
     return 'The secret is set but empty. Upload the PEM with "gh secret set REVIEW_APP_PRIVATE_KEY < key.pem".';
   }
@@ -115,7 +133,7 @@ export function explainPrivateKeyShape(shape) {
     return 'The key is passphrase-encrypted; CI cannot decrypt it. Export an unencrypted copy: "openssl pkcs8 -topk8 -nocrypt -in key.pem -out key.unencrypted.pem", then re-upload.';
   }
   if (shape.unrecognisedPemType) {
-    return `The value has a PEM header, but not one usable for App JWT signing. Download a fresh private key for the ${APP_SLUG} App and re-upload it.`;
+    return `The value has a PEM header, but not one usable for App JWT signing. Download a fresh private key for the ${appLabel} App and re-upload it.`;
   }
   if (shape.looksBase64Wrapped) {
     return 'The value looks base64-encoded but does not decode to a PEM. Upload the .pem file itself, not an encoding of it.';
@@ -132,10 +150,11 @@ export function explainPrivateKeyShape(shape) {
   if (shape.lineCount < 3) {
     return 'The PEM is a single line, so its body was flattened. Re-upload by redirecting the file rather than pasting.';
   }
-  return `The PEM looks structurally intact, so it may be truncated or from a deleted App key. Generate a fresh private key for the ${APP_SLUG} App and re-upload it.`;
+  return `The PEM looks structurally intact, so it may be truncated or from a deleted App key. Generate a fresh private key for the ${appLabel} App and re-upload it.`;
 }
 
 export function generateJWT(privateKey) {
+  const { appId: APP_ID, appSlug: APP_SLUG } = requireAppIdentity();
   const now = Math.floor(Date.now() / 1000);
   const payload = { iat: now - 10, exp: now + 60, iss: APP_ID };
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
@@ -204,6 +223,7 @@ export async function ghFetch(path, token, options = {}) {
 }
 
 export async function resolveInstallationId(fetchInstallation, token, repo, owner) {
+  const { appSlug: APP_SLUG } = requireAppIdentity();
   if (repo) {
     if (!REPO_PATTERN.test(repo)) {
       throw new Error('ERROR: GH_REPO/GITHUB_REPOSITORY must be in owner/repo format.');
@@ -244,10 +264,12 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
 }
 
 async function main() {
-  const privateKey = process.env.COMMITPERCLIP_KEY;
+  const { appId: APP_ID, appSlug: APP_SLUG } = requireAppIdentity();
+  // Prefer TF secret name; keep COMMITPERCLIP_KEY as a compatibility alias.
+  const privateKey = process.env.REVIEW_APP_PRIVATE_KEY || process.env.COMMITPERCLIP_KEY;
   if (!privateKey) {
-    console.error(`ERROR: COMMITPERCLIP_KEY env var not set (private key for App ${APP_SLUG}, id ${APP_ID}).`);
-    console.error(`Locally: export COMMITPERCLIP_KEY="$(cat ~/.config/${APP_SLUG}/private-key.pem)"`);
+    console.error(`ERROR: REVIEW_APP_PRIVATE_KEY (or COMMITPERCLIP_KEY) env var not set (private key for App ${APP_SLUG}, id ${APP_ID}).`);
+    console.error(`Locally: export REVIEW_APP_PRIVATE_KEY="$(cat ~/.config/${APP_SLUG}/private-key.pem)"`);
     process.exit(1);
   }
 
