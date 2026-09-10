@@ -60,6 +60,7 @@ import {
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { bindIssueIdToWakeContext } from "../services/run-issue-scope.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -4354,19 +4355,27 @@ export function agentRoutes(
       return;
     }
 
-    const run = await heartbeat.wakeup(id, {
-      source: opts.source,
-      triggerDetail: req.body.triggerDetail ?? "manual",
-      reason: req.body.reason ?? null,
-      payload: req.body.payload ?? null,
-      idempotencyKey: req.body.idempotencyKey ?? null,
-      requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
-      requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+    const wakeBound = bindIssueIdToWakeContext({
+      issueId: typeof req.body.issueId === "string" ? req.body.issueId : null,
+      payload:
+        req.body.payload && typeof req.body.payload === "object" && !Array.isArray(req.body.payload)
+          ? (req.body.payload as Record<string, unknown>)
+          : null,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
       },
+    });
+    const run = await heartbeat.wakeup(id, {
+      source: opts.source,
+      triggerDetail: req.body.triggerDetail ?? "manual",
+      reason: req.body.reason ?? null,
+      payload: wakeBound.payload,
+      idempotencyKey: req.body.idempotencyKey ?? null,
+      requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      contextSnapshot: wakeBound.contextSnapshot,
     });
 
     if (!run) {
@@ -4430,26 +4439,30 @@ export function agentRoutes(
       idempotencyKey: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
+      issueId: unknown;
     }>;
-    const contextSnapshot: Record<string, unknown> = {
-      triggeredBy: req.actor.type,
-      actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
-    };
-    if (body.forceFreshSession === true) {
-      contextSnapshot.forceFreshSession = true;
-    }
+    const wakeBound = bindIssueIdToWakeContext({
+      issueId: typeof body.issueId === "string" ? body.issueId : null,
+      payload:
+        body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+          ? (body.payload as Record<string, unknown>)
+          : null,
+      contextSnapshot: {
+        triggeredBy: req.actor.type,
+        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+        ...(body.forceFreshSession === true ? { forceFreshSession: true } : {}),
+      },
+    });
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
-      contextSnapshot,
+      contextSnapshot: wakeBound.contextSnapshot,
+      payload: wakeBound.payload,
     };
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
-    }
-    if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
-      wakeOpts.payload = body.payload as Record<string, unknown>;
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;

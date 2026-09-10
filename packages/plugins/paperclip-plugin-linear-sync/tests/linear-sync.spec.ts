@@ -34,6 +34,7 @@ type IssueRecord = {
   priority: "low" | "medium" | "high" | "critical";
   originKind: string | null;
   originId: string | null;
+  assigneeAgentId?: string | null;
 };
 
 const secretRef = (secretId: string) => ({ type: "secret_ref" as const, secretId, version: "latest" as const });
@@ -146,6 +147,7 @@ function fakeHost() {
           priority: input.priority ?? "medium",
           originKind: input.originKind ?? null,
           originId: input.originId ?? null,
+          assigneeAgentId: input.assigneeAgentId ?? null,
         };
         issues.push(issue);
         return issue as any;
@@ -319,8 +321,8 @@ describe("linear sync", () => {
 
     expect(summary).toMatchObject({ importedCount: 1, contractRejectedCount: 1, failedCount: 0 });
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ originId: "lin-1", status: "todo" });
-    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
+    expect(issues[0]).toMatchObject({ originId: "lin-1", status: "backlog" });
+    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(0);
     const detailsJson = runs.at(-1)?.params?.at(-1);
     const details = typeof detailsJson === "string" ? JSON.parse(detailsJson) : detailsJson;
     expect(details.contractRejections).toEqual([
@@ -384,9 +386,27 @@ describe("linear sync", () => {
     await runLinearSync({ host, linear, companyId: "company-1", config, triggerKind: "manual" });
 
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toMatchObject({ originKind: ORIGIN_KIND_LINEAR_ISSUE, originId: "lin-1", status: "todo" });
-    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
+    expect(issues[0]).toMatchObject({ originKind: ORIGIN_KIND_LINEAR_ISSUE, originId: "lin-1", status: "backlog" });
+    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(0);
     expect(linear.postImportComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("wakes triage agent only when wakeTriageOnImport is explicitly enabled", async () => {
+    const { host, issues } = fakeHost();
+    const linear = fakeLinear([linearIssue()]);
+    const config = readConfig({
+      enabled: true,
+      linearApiKeySecretRef: secretRef("linear-api"),
+      triageAgentId: "chief-of-staff",
+      wakeTriageOnImport: true,
+      postImportComment: false,
+    });
+
+    await runLinearSync({ host, linear, companyId: "company-1", config, triggerKind: "manual" });
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ status: "todo", assigneeAgentId: "chief-of-staff" });
+    expect(host.issues.requestWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("updates an existing imported issue when Linear updatedAt advances", async () => {
