@@ -1,0 +1,159 @@
+{
+  "contract": "tf-acceptance-lane-parity/v1",
+  "normative_runtime": "paperclip/packages/shared/src/acceptance-lanes.ts",
+  "reference_tooling": "agent-systems-hub/scripts/closeout_lane_evaluator.py",
+  "path_class_vocabulary": {
+    "paperclip_short": [
+      "documentation",
+      "tests",
+      "configuration",
+      "executable",
+      "deployment",
+      "security_control",
+      "generated",
+      "mixed",
+      "unknown"
+    ],
+    "hub_canonical": [
+      "documentation",
+      "tests_evaluation",
+      "configuration",
+      "executable_runtime",
+      "deployment_operations",
+      "generated_or_security_sensitive",
+      "program",
+      "mixed"
+    ],
+    "map_short_to_canonical": {
+      "documentation": "documentation",
+      "tests": "tests_evaluation",
+      "configuration": "configuration",
+      "executable": "executable_runtime",
+      "deployment": "deployment_operations",
+      "security_control": "generated_or_security_sensitive",
+      "generated": "generated_or_security_sensitive",
+      "mixed": "mixed",
+      "unknown": "mixed"
+    }
+  },
+  "standing_policy_docs_only_runtime_na": "SR-DECISION-AND-GATE-SYSTEM-v1/docs-only-runtime-na",
+  "cases": [
+    {
+      "id": "docs_path_alone_refused",
+      "laneKey": "runtime_target_host",
+      "pathClass": "documentation",
+      "expectEligible": false,
+      "expectCode": "refused_path_only"
+    },
+    {
+      "id": "generated_default_refused",
+      "laneKey": "runtime_target_host",
+      "pathClass": "generated",
+      "expectEligible": false,
+      "expectCode": "refused_generated_default"
+    },
+    {
+      "id": "docs_standing_policy_ok",
+      "laneKey": "runtime_target_host",
+      "pathClass": "documentation",
+      "standingPolicyId": "SR-DECISION-AND-GATE-SYSTEM-v1/docs-only-runtime-na",
+      "expectEligible": true,
+      "expectCode": "ok_standing_policy"
+    },
+    {
+      "id": "answered_only_refused",
+      "laneKey": "runtime_target_host",
+      "decision": {
+        "interactionId": "afdc7368-11e6-4a68-bf6b-d8f085799b2d",
+        "resolutionStatus": "answered",
+        "laneKey": "runtime_target_host",
+        "option": "runtime_not_applicable",
+        "exactHead": "758457e40184c86410ab57c07a035ab1a4a7ae58"
+      },
+      "expected": {
+        "exactHead": "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        "laneKey": "runtime_target_host"
+      },
+      "expectEligible": false,
+      "expectCode": "refused_decision_not_accepted"
+    },
+    {
+      "id": "rejected_refused",
+      "laneKey": "runtime_target_host",
+      "decision": {
+        "interactionId": "ix-rej",
+        "resolutionStatus": "rejected",
+        "laneKey": "runtime_target_host",
+        "option": "runtime_not_applicable",
+        "exactHead": "abc"
+      },
+      "expected": { "exactHead": "abc" },
+      "expectEligible": false,
+      "expectCode": "refused_decision_rejected"
+    },
+    {
+      "id": "expired_refused",
+      "laneKey": "runtime_target_host",
+      "nowIso": "2026-09-09T00:00:00Z",
+      "decision": {
+        "interactionId": "ix-exp",
+        "resolutionStatus": "accepted",
+        "laneKey": "runtime_target_host",
+        "option": "runtime_not_applicable",
+        "exactHead": "abc",
+        "expiresAt": "2020-01-01T00:00:00Z"
+      },
+      "expected": { "exactHead": "abc" },
+      "expectEligible": false,
+      "expectCode": "refused_decision_expired"
+    },
+    {
+      "id": "head_mismatch_refused",
+      "laneKey": "runtime_target_host",
+      "decision": {
+        "interactionId": "ix-h",
+        "resolutionStatus": "accepted",
+        "laneKey": "runtime_target_host",
+        "option": "runtime_not_applicable",
+        "exactHead": "1111111111111111111111111111111111111111"
+      },
+      "expected": { "exactHead": "758457e40184c86410ab57c07a035ab1a4a7ae58" },
+      "expectEligible": false,
+      "expectCode": "refused_exact_head_mismatch"
+    },
+    {
+      "id": "pap3221_accepted_ok",
+      "laneKey": "runtime_target_host",
+      "decision": {
+        "interactionId": "afdc7368-11e6-4a68-bf6b-d8f085799b2d",
+        "resolutionStatus": "accepted",
+        "decisionStatus": "approved",
+        "laneKey": "runtime_target_host",
+        "option": "runtime_not_applicable",
+        "exactHead": "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        "artifactRef": "Tangent-Forge/agent-systems-hub#491",
+        "issueId": "PAP-3221",
+        "pathClass": "documentation"
+      },
+      "expected": {
+        "exactHead": "758457e40184c86410ab57c07a035ab1a4a7ae58",
+        "artifactRef": "Tangent-Forge/agent-systems-hub#491",
+        "issueId": "PAP-3221",
+        "laneKey": "runtime_target_host"
+      },
+      "expectEligible": true,
+      "expectCode": "ok_accepted_decision"
+    },
+    {
+      "id": "review_non_waivable",
+      "laneKey": "independent_review",
+      "decision": {
+        "interactionId": "x",
+        "resolutionStatus": "accepted",
+        "laneKey": "independent_review"
+      },
+      "expectEligible": false,
+      "expectCode": "refused_non_waivable_lane"
+    }
+  ]
+}

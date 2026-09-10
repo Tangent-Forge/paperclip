@@ -65,6 +65,11 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   buildOwnerTerminalAttentionFields,
+  shouldSurfaceMissingDisposition,
+  buildAgentOpsDispositionDebtItem,
+  summarizeAgentOpsDispositionDebt,
+  isSatisfiedBlockerStatus,
+  type AgentOpsDispositionDebtItem,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -74,6 +79,10 @@ import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
+import {
+  authoritativeAcceptanceLanesFromExecutionState,
+  projectExecutionStateForCloseout,
+} from "./acceptance-closeout-projection.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
@@ -3022,7 +3031,7 @@ async function listIssueReviewAttentionMap(
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
       executionPolicy: issue.executionPolicy,
-      executionState: issue.executionState,
+      executionState: projectExecutionStateForCloseout(issue.executionState as Record<string, unknown> | null | undefined) as typeof issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
@@ -3371,6 +3380,10 @@ async function blockedByMapForIssues(
     for (const row of rows) {
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
+      // Phase 3: satisfied (done/cancelled/superseded) blockers are non-controlling.
+      // Relation rows remain in issue_relations historically; they drop from the
+      // controlling blockedBy projection used by attention/gates.
+      if (isSatisfiedBlockerStatus(String(row.status))) continue;
       blockedBy.push({
         id: row.relatedId,
         identifier: row.identifier,
@@ -3896,7 +3909,7 @@ async function listIssueBlockedInboxAttentionMap(
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
       executionPolicy: issue.executionPolicy,
-      executionState: issue.executionState,
+      executionState: projectExecutionStateForCloseout(issue.executionState as Record<string, unknown> | null | undefined) as typeof issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
@@ -3951,6 +3964,10 @@ async function listIssueBlockedInboxAttentionMap(
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
+      // Single helper: shouldSurfaceMissingDisposition (in_progress | in_review only).
+      if (!shouldSurfaceMissingDisposition(String(row.status))) {
+        continue;
+      }
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -4447,6 +4464,12 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
+    // F3: project authoritative acceptance lanes for closeout consumers.
+    if (enriched && enriched.executionState) {
+      enriched.executionState = projectExecutionStateForCloseout(
+        enriched.executionState as Record<string, unknown>,
+      ) as typeof enriched.executionState;
+    }
     return enriched;
   }
 
@@ -4458,6 +4481,11 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
+    if (enriched && enriched.executionState) {
+      enriched.executionState = projectExecutionStateForCloseout(
+        enriched.executionState as Record<string, unknown>,
+      ) as typeof enriched.executionState;
+    }
     return enriched;
   }
 
@@ -5753,6 +5781,70 @@ export function issueService(db: Db) {
           }),
         };
       });
+    },
+
+    /**
+     * Agent Ops disposition debt query (foundation surface for Phase 3 reconciler).
+     * Missing successful-run dispositions for live execution statuses only.
+     * Never included in Human Decisions lane (inHumanDecisionsLane=false).
+     */
+    listAgentOpsDispositionDebt: async (companyId: string) => {
+      const eligibleStatuses = ["in_progress", "in_review"] as const;
+      const rows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          updatedAt: issues.updatedAt,
+          hiddenAt: issues.hiddenAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          visibleIssueCondition(),
+          inArray(issues.status, [...eligibleStatuses]),
+        ));
+      const visible = (rows as Array<{
+        id: string;
+        identifier: string | null;
+        status: string;
+        companyId: string;
+        assigneeAgentId: string | null;
+        updatedAt: Date;
+        hiddenAt: Date | null;
+      }>).filter((row) => !row.hiddenAt && shouldSurfaceMissingDisposition(String(row.status)));
+      const handoffMap = await listSuccessfulRunHandoffMapForIssues(
+        db,
+        companyId,
+        visible.map((row) => row.id),
+        { hydrateLiveness: true },
+      );
+      const items: AgentOpsDispositionDebtItem[] = [];
+      const nowMs = Date.now();
+      for (const row of visible) {
+        const handoff = handoffMap.get(row.id);
+        if (!handoff) continue;
+        if (handoff.hasLiveContinuation) continue;
+        if (!(handoff.required || handoff.state === "escalated")) continue;
+        const stopped = handoff.createdAt
+          ? (handoff.createdAt instanceof Date
+            ? handoff.createdAt.toISOString()
+            : String(handoff.createdAt))
+          : row.updatedAt.toISOString();
+        items.push(buildAgentOpsDispositionDebtItem({
+          issueId: row.id,
+          issueIdentifier: row.identifier,
+          issueStatus: row.status,
+          companyId: row.companyId,
+          stoppedSinceAt: stopped,
+          sourceRunId: handoff.sourceRunId ?? null,
+          assigneeAgentId: row.assigneeAgentId ?? handoff.assigneeAgentId ?? null,
+          nowMs,
+        }));
+      }
+      return summarizeAgentOpsDispositionDebt(items);
     },
 
     count: async (companyId: string, filters?: IssueFilters) => {

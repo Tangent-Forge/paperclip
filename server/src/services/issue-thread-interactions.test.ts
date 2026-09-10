@@ -12,15 +12,22 @@ vi.mock("./issues.js", () => ({
 type SelectRow = Record<string, unknown>;
 
 function createSelectChain(rows: SelectRow[]) {
+  const terminal = {
+    then(callback: (rows: SelectRow[]) => unknown) {
+      return Promise.resolve(callback(rows));
+    },
+    for() {
+      return terminal;
+    },
+  };
   return {
     from() {
       return {
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return terminal;
+        },
+        for() {
+          return terminal;
         },
       };
     },
@@ -30,8 +37,15 @@ function createSelectChain(rows: SelectRow[]) {
 function createFakeDb(args: {
   interactionRow: Record<string, unknown>;
   parentRows?: SelectRow[];
+  issueRow?: SelectRow;
 }) {
   let interactionRow = { ...args.interactionRow };
+  const issueRow = args.issueRow ?? {
+    id: interactionRow.issueId,
+    companyId: interactionRow.companyId,
+    executionState: null,
+    status: "in_progress",
+  };
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
@@ -40,7 +54,18 @@ function createFakeDb(args: {
   const db: any = {
     select: vi.fn(() => {
       selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      if (selectCallCount === 1) return createSelectChain([interactionRow]);
+      const kind = String(interactionRow.kind ?? "");
+      if (kind === "ask_user_questions") {
+        // answerQuestions tx: issue lock then interaction lock
+        if (selectCallCount === 2) return createSelectChain([issueRow]);
+        return createSelectChain([interactionRow]);
+      }
+      if (args.parentRows && args.parentRows.length > 0) {
+        return createSelectChain(args.parentRows);
+      }
+      // tool-action probes and other lookups → empty (no active tool action)
+      return createSelectChain([]);
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
@@ -57,7 +82,7 @@ function createFakeDb(args: {
                 returning: async () => [interactionRow],
               };
             }
-            if ("updatedAt" in values) {
+            if ("updatedAt" in values || "executionState" in values) {
               issueTouches.push(values);
               return Promise.resolve(undefined);
             }
