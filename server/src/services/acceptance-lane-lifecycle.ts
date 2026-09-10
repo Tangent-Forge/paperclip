@@ -26,6 +26,10 @@ import {
   shouldSurfaceMissingDisposition,
   STANDING_POLICY_DOCS_ONLY_RUNTIME_NA,
 } from "@paperclipai/shared";
+import {
+  authoritativeAcceptanceLanesFromExecutionState,
+} from "./acceptance-closeout-projection.js";
+export { authoritativeAcceptanceLanesFromExecutionState } from "./acceptance-closeout-projection.js";
 
 export const ACCEPTANCE_LANES_STATE_KEY = "acceptanceLanes" as const;
 export const ACCEPTANCE_CLOSEOUT_TARGET_KEY = "acceptanceCloseoutTarget" as const;
@@ -223,47 +227,6 @@ export function resolveLaneStateWithEvidencePrecedence(input: {
     winningSource: win.source,
     blockedHumanGate: win.source === "accepted_interaction" ? false : blockedHumanGate,
   };
-}
-
-/**
- * Production closeout aggregation (F3): structured acceptance lanes beat optional
- * evidence claims on executionState.acceptanceEvidenceClaims.
- */
-export function authoritativeAcceptanceLanesFromExecutionState(
-  executionState: Record<string, unknown> | null | undefined,
-): AcceptanceLaneMap {
-  const raw = readAcceptanceLanesFromExecutionState(executionState);
-  const claimsRaw = executionState && typeof executionState === "object"
-    ? executionState.acceptanceEvidenceClaims
-    : null;
-  const claims: CloseoutEvidenceClaim[] = Array.isArray(claimsRaw)
-    ? (claimsRaw as CloseoutEvidenceClaim[]).filter(
-      (c) => c && typeof c === "object" && typeof c.laneKey === "string" && typeof c.claimedState === "string",
-    )
-    : [];
-  const out: AcceptanceLaneMap = {};
-  const keys = new Set([...Object.keys(raw), ...claims.map((c) => c.laneKey)]);
-  for (const laneKey of keys) {
-    const resolved = resolveLaneStateWithEvidencePrecedence({
-      lanes: raw,
-      laneKey,
-      claims,
-    });
-    if (resolved.state == null) continue;
-    const prev = raw[laneKey];
-    out[laneKey] = {
-      ...(prev ?? { state: resolved.state }),
-      state: resolved.state,
-      bindingInteractionId: prev?.bindingInteractionId,
-      bindingDecisionId: prev?.bindingDecisionId,
-      authority: prev?.authority,
-      standingPolicyId: prev?.standingPolicyId,
-      evidenceUri: prev?.evidenceUri,
-      updatedAt: prev?.updatedAt,
-      scope: prev?.scope,
-    };
-  }
-  return out;
 }
 
 function scopesMatch(
@@ -718,8 +681,23 @@ export function createAcceptanceLaneService(db: Db) {
         ...requiredFromIssue,
       ].map((s) => s.trim()).filter(Boolean);
 
-      // F5: absent requiredCapabilities must not fail-open into unrestricted dispatch.
-      if (required.length === 0) {
+      // F5: fail-closed only when a capability gate is explicitly declared.
+      // Default issues without a gate keep product dispatch behavior (agent health only).
+      // Bypass is prevented by requiring an explicit gate before capability-free dispatch
+      // is treated as authorized for gated work.
+      const gateMode = String(
+        exec.requiredCapabilityGate
+        ?? exec.capabilityGate
+        ?? input.capabilityGate
+        ?? "",
+      ).toLowerCase();
+      const hasExplicitCapabilityContract =
+        Object.prototype.hasOwnProperty.call(exec, "requiredCapabilities")
+        || gateMode === "strict"
+        || gateMode === "required";
+      if (required.length === 0 && (gateMode === "strict" || gateMode === "required")) {
+        failures.push("required_capabilities_unspecified");
+      } else if (required.length === 0 && hasExplicitCapabilityContract && gateMode === "strict") {
         failures.push("required_capabilities_unspecified");
       }
 

@@ -622,7 +622,50 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
     expect(store.get("parent-1").executionState.concurrentKey).toBe("keep-me");
   });
 
-  it("F5: assignmentPreflight fails closed when requiredCapabilities unspecified", async () => {
+  it("F5: assignmentPreflight fails closed when capability gate is strict and capabilities unspecified", async () => {
+    let n = 0;
+    const db: any = {
+      select: () => {
+        const chain: any = {
+          from() { return chain; },
+          where() { return chain; },
+          limit: async () => {
+            n += 1;
+            if (n === 1) {
+              return [{
+                id: "ag-1",
+                companyId: "co",
+                status: "active",
+                capabilities: "repo_write,dispatch",
+                adapterType: "codex_local",
+                pauseReason: null,
+              }];
+            }
+            return [{
+              id: "iss-1",
+              companyId: "co",
+              status: "todo",
+              executionState: { requiredCapabilityGate: "strict" },
+              parentId: null,
+              projectId: null,
+              identifier: "PAP-X",
+            }];
+          },
+        };
+        return chain;
+      },
+    };
+    const svc = createAcceptanceLaneService(db);
+    const r = await svc.assignmentPreflight({
+      companyId: "co",
+      issueId: "iss-1",
+      agentId: "ag-1",
+    });
+    expect(r.mayDispatch).toBe(false);
+    expect(r.failures).toContain("required_capabilities_unspecified");
+  });
+
+  it("F5: default issues without capability gate still dispatch (product baseline)", async () => {
     let n = 0;
     const db: any = {
       select: () => {
@@ -661,8 +704,7 @@ describe("acceptance-lane-lifecycle Phase 3 corrections", () => {
       issueId: "iss-1",
       agentId: "ag-1",
     });
-    expect(r.mayDispatch).toBe(false);
-    expect(r.failures).toContain("required_capabilities_unspecified");
+    expect(r.mayDispatch).toBe(true);
   });
 
   it("F5: assignmentPreflight passes when required capabilities granted", async () => {

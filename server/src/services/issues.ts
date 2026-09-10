@@ -79,21 +79,10 @@ import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
-import { authoritativeAcceptanceLanesFromExecutionState } from "./acceptance-lane-lifecycle.js";
-
-/** F3 production closeout projection: structured lanes beat prose claims. */
-export function projectExecutionStateForCloseout(
-  executionState: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null | undefined {
-  if (!executionState || typeof executionState !== "object") return executionState;
-  const lanes = authoritativeAcceptanceLanesFromExecutionState(executionState);
-  if (Object.keys(lanes).length === 0) return executionState;
-  return {
-    ...executionState,
-    acceptanceLanes: lanes,
-    acceptanceLanesAuthoritative: true,
-  };
-}
+import {
+  authoritativeAcceptanceLanesFromExecutionState,
+  projectExecutionStateForCloseout,
+} from "./acceptance-closeout-projection.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
