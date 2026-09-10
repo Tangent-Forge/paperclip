@@ -65,6 +65,10 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   buildOwnerTerminalAttentionFields,
+  shouldSurfaceMissingDisposition,
+  buildAgentOpsDispositionDebtItem,
+  summarizeAgentOpsDispositionDebt,
+  type AgentOpsDispositionDebtItem,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -3951,6 +3955,10 @@ async function listIssueBlockedInboxAttentionMap(
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       // Owner Decision Projection v1: disposition is agent-ops bookkeeping — never project as a human Decide owner.
+      // Single helper: shouldSurfaceMissingDisposition (in_progress | in_review only).
+      if (!shouldSurfaceMissingDisposition(String(row.status))) {
+        continue;
+      }
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -5753,6 +5761,70 @@ export function issueService(db: Db) {
           }),
         };
       });
+    },
+
+    /**
+     * Agent Ops disposition debt query (foundation surface for Phase 3 reconciler).
+     * Missing successful-run dispositions for live execution statuses only.
+     * Never included in Human Decisions lane (inHumanDecisionsLane=false).
+     */
+    listAgentOpsDispositionDebt: async (companyId: string) => {
+      const eligibleStatuses = ["in_progress", "in_review"] as const;
+      const rows = await db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          status: issues.status,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          updatedAt: issues.updatedAt,
+          hiddenAt: issues.hiddenAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          visibleIssueCondition(),
+          inArray(issues.status, [...eligibleStatuses]),
+        ));
+      const visible = (rows as Array<{
+        id: string;
+        identifier: string | null;
+        status: string;
+        companyId: string;
+        assigneeAgentId: string | null;
+        updatedAt: Date;
+        hiddenAt: Date | null;
+      }>).filter((row) => !row.hiddenAt && shouldSurfaceMissingDisposition(String(row.status)));
+      const handoffMap = await listSuccessfulRunHandoffMapForIssues(
+        db,
+        companyId,
+        visible.map((row) => row.id),
+        { hydrateLiveness: true },
+      );
+      const items: AgentOpsDispositionDebtItem[] = [];
+      const nowMs = Date.now();
+      for (const row of visible) {
+        const handoff = handoffMap.get(row.id);
+        if (!handoff) continue;
+        if (handoff.hasLiveContinuation) continue;
+        if (!(handoff.required || handoff.state === "escalated")) continue;
+        const stopped = handoff.createdAt
+          ? (handoff.createdAt instanceof Date
+            ? handoff.createdAt.toISOString()
+            : String(handoff.createdAt))
+          : row.updatedAt.toISOString();
+        items.push(buildAgentOpsDispositionDebtItem({
+          issueId: row.id,
+          issueIdentifier: row.identifier,
+          issueStatus: row.status,
+          companyId: row.companyId,
+          stoppedSinceAt: stopped,
+          sourceRunId: handoff.sourceRunId ?? null,
+          assigneeAgentId: row.assigneeAgentId ?? handoff.assigneeAgentId ?? null,
+          nowMs,
+        }));
+      }
+      return summarizeAgentOpsDispositionDebt(items);
     },
 
     count: async (companyId: string, filters?: IssueFilters) => {
