@@ -49,6 +49,25 @@ Creating a card immediately queues the Summarizer compile run. Agents should not
 
 See the bundled `status-card-query` skill for a copy-pasteable agent API recipe.
 
+## Evidence-backed operational cards
+
+Operational cards are an additive card kind for infrastructure and workflow observations. They do not compile issue queries and never use interval or reactive refresh. Create them through `POST /api/companies/:companyId/status-cards/operational`, then submit observation-only receipts through `POST /api/companies/:companyId/operational-receipts`.
+
+Paperclip calculates the displayed state on the server:
+
+- **GREEN** — every required receipt is present, fresh, and passing
+- **YELLOW** — every required receipt is present and fresh, with at least one degraded result and no failures
+- **RED** — every required receipt is present and fresh, with at least one failure
+- **GRAY** — one or more required receipts are missing, expired, or future-dated
+
+Missing and stale evidence reaches GRAY without starting a model run. A model may explain a changed YELLOW or RED claim, but its write-back cannot include or alter the state and must match the latest server fingerprint. Successful systemd oneshots are treated as passing while inactive between executions when their last result is `success`.
+
+Every evaluation writes an immutable operational claim with the contributing receipt IDs, observed-at and fresh-until bounds, and receipt provenance. Semantic fingerprints omit receipt IDs and timestamps, so identical healthy observations refresh the evidence trail without repeatedly invoking the Summarizer. Exception issues open only after the configured consecutive-failure threshold, remain deduplicated while active, and resolve only after the configured consecutive-recovery threshold.
+
+Receipt payloads are strict observation contracts. Action fields are rejected, and the ingestion/evaluation path exposes no operation that can restart a service, edit configuration, drain a queue, kill a process, deploy, merge, resolve an approval, or perform recovery. Probes and recovery routines must remain separately named and separately authorized.
+
+Operational cards remain manual/receipt-driven until recurring evaluation is approved separately. Creating or enabling production cards is also a separate operational decision; adding the API and schema does not create any live cards.
+
 ## Temporary debug view
 
 The debug tab exposes the interest prompt, compiled query JSON, and a dry-run result while the experimental query compiler is being tuned. It is not intended to become a permanent operator workflow.

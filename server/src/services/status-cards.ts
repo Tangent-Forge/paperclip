@@ -9,6 +9,7 @@ import {
   issueComments,
   statusCards,
   statusCardUpdates,
+  operationalStatusClaims,
   type Db,
 } from "@paperclipai/db";
 import type {
@@ -155,6 +156,7 @@ export function statusCardService(
   const searchSvc = companySearchService(db);
 
   async function readWatchedIssueCount(card: StatusCardRow) {
+    if (card.kind === "operational") return undefined;
     if (card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0) return 0;
     try {
       return (await executeQueries(card)).length;
@@ -170,7 +172,7 @@ export function statusCardService(
   async function hydrate(card: StatusCardRow) {
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
-    const [document, today, watchedIssues] = await Promise.all([
+    const [document, today, watchedIssues, operationalClaim] = await Promise.all([
       card.documentId
         ? db.select({ latestBody: documents.latestBody })
           .from(documents)
@@ -185,11 +187,31 @@ export function statusCardService(
         .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)))
         .then((rows) => rows[0] ?? { tokens: 0, costCents: 0 }),
       readWatchedIssueCount(card),
+      card.kind === "operational" && card.operationalLatestClaimId
+        ? db.select({
+          id: operationalStatusClaims.id,
+          state: operationalStatusClaims.state,
+          reason: operationalStatusClaims.reason,
+          fingerprint: operationalStatusClaims.fingerprint,
+          receiptIds: operationalStatusClaims.receiptIds,
+          observedAt: operationalStatusClaims.observedAt,
+          freshUntil: operationalStatusClaims.freshUntil,
+          changed: operationalStatusClaims.changed,
+          summaryRequired: operationalStatusClaims.summaryRequired,
+          createdAt: operationalStatusClaims.createdAt,
+        }).from(operationalStatusClaims)
+          .where(and(
+            eq(operationalStatusClaims.id, card.operationalLatestClaimId),
+            eq(operationalStatusClaims.cardId, card.id),
+          ))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     return {
       ...card,
-      summaryBody: document?.latestBody ?? null,
+      summaryBody: card.kind === "operational" ? card.operationalSummary : document?.latestBody ?? null,
+      operationalClaim,
       ...(watchedIssues === undefined ? {} : { watchedIssueCount: watchedIssues }),
       todayTokens: today.tokens,
       todayCostCents: today.costCents,
@@ -258,6 +280,9 @@ export function statusCardService(
 
   async function update(card: StatusCardRow, input: PatchStatusCard, actor: StatusCardActor) {
     const now = new Date();
+    if (card.kind === "operational" && input.refreshPolicy?.mode !== undefined && input.refreshPolicy.mode !== "manual") {
+      throw unprocessable("Operational status cards support manual evaluation only");
+    }
     if (input.agentId) {
       const summarizer = await db
         .select({ id: agents.id })
@@ -273,7 +298,11 @@ export function statusCardService(
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.titlePinned !== undefined ? { titlePinned: input.titlePinned } : {}),
       ...(input.interestPrompt !== undefined
-        ? { interestPrompt: input.interestPrompt, state: "compiling", failureReason: null }
+        ? {
+            interestPrompt: input.interestPrompt,
+            ...(card.kind === "issues" ? { state: "compiling" as const } : {}),
+            failureReason: null,
+          }
         : {}),
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       // A new summarizer or a new card prompt (which doubles as the summary
@@ -364,6 +393,7 @@ export function statusCardService(
   async function requestCompile(cardId: string, actor: StatusCardActor) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
+    if (card.kind !== "issues") throw conflict("Operational status cards do not compile issue queries");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot be compiled");
     const summarizerAgentId = await resolveSummarizerAgentId(card);
 
@@ -452,6 +482,7 @@ export function statusCardService(
   async function writeQuery(cardId: string, input: WriteStatusCardQuery, actor: StatusCardWriter) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
+    if (card.kind !== "issues") throw conflict("Operational status cards do not accept issue queries");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot accept generation writes");
     await assertSummarizerWriter(card, input.generationIssueId, actor);
     const now = new Date();
@@ -610,6 +641,7 @@ export function statusCardService(
   } = {}) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
+    if (card.kind !== "issues") throw conflict("Use operational evaluation for operational status cards");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot be refreshed");
     if (card.queries.length === 0) throw conflict("Compile the status-card query before refreshing it");
     if (card.generatingIssueId) {
@@ -772,6 +804,7 @@ export function statusCardService(
   async function writeSummary(cardId: string, input: WriteStatusCardSummary, actor: StatusCardWriter) {
     const card = await getById(cardId);
     if (!card) throw notFound("Status card not found");
+    if (card.kind !== "issues") throw conflict("Use the operational summary endpoint for operational status cards");
     if (card.archivedAt) throw unprocessable("Archived status cards cannot accept summaries");
     await assertSummarizerWriter(card, input.generationIssueId, actor);
     if (card.queries.length === 0) throw conflict("Compile the status-card query before writing its summary");
@@ -910,6 +943,7 @@ export function statusCardService(
   }
 
   async function dryRun(card: StatusCardRow) {
+    if (card.kind !== "issues") throw conflict("Operational status cards do not have issue-query dry runs");
     return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
   }
 

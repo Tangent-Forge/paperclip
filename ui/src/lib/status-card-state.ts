@@ -1,4 +1,4 @@
-import type { StatusCard, StatusCardRefreshPolicy } from "@paperclipai/shared";
+import type { OperationalStatus, StatusCard, StatusCardRefreshPolicy } from "@paperclipai/shared";
 
 /**
  * The lifecycle states a status card renders as on the board (plan §7,
@@ -109,6 +109,17 @@ export const STATUS_CARD_LIFECYCLE_PRESENTATION: Record<
     dashedBorder: false,
     keepsLastSummary: true,
   },
+};
+
+export const OPERATIONAL_STATUS_PRESENTATION: Record<OperationalStatus, {
+  label: OperationalStatus;
+  dotClassName: string;
+  badgeClassName: string;
+}> = {
+  GREEN: { label: "GREEN", dotClassName: "bg-emerald-500", badgeClassName: "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" },
+  YELLOW: { label: "YELLOW", dotClassName: "bg-amber-400", badgeClassName: "border-amber-500/40 text-amber-700 dark:text-amber-300" },
+  RED: { label: "RED", dotClassName: "bg-red-500", badgeClassName: "border-red-500/40 text-red-700 dark:text-red-300" },
+  GRAY: { label: "GRAY", dotClassName: "bg-slate-400", badgeClassName: "border-slate-400/50 text-slate-600 dark:text-slate-300" },
 };
 
 /** Compact token count, e.g. `1.1k`, `950`, `12.4k`. */

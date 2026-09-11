@@ -117,6 +117,30 @@ afterEach(() => {
 });
 
 describe("StatusCardTile lifecycle rendering", () => {
+  it("renders the server-calculated operational state instead of the issue-card lifecycle color", () => {
+    render(tile(baseCard({
+      kind: "operational",
+      operationalState: "RED",
+      operationalClaim: {
+        id: "123e4567-e89b-12d3-a456-426614174000",
+        state: "RED",
+        reason: "1 required check(s) failed",
+        fingerprint: "f".repeat(64),
+        receiptIds: ["123e4567-e89b-12d3-a456-426614174001"],
+        observedAt: "2026-07-22T10:59:00.000Z",
+        freshUntil: "2026-07-22T11:04:00.000Z",
+        changed: true,
+        summaryRequired: false,
+        createdAt: "2026-07-22T11:00:00.000Z",
+      },
+    })));
+
+    expect(container.querySelector('[data-operational-state="RED"]')).toBeTruthy();
+    expect(container.textContent).toContain("RED");
+    expect(container.textContent).toContain("receipt-driven");
+    expect(container.textContent).not.toContain("Query debug");
+  });
+
   it("renders a fresh card with its summary and policy footer", () => {
     render(tile(baseCard({ state: "active", pendingChangeCount: 0 })));
     const el = container.querySelector('[data-testid="status-card-tile"]');

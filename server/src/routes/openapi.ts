@@ -15,10 +15,13 @@ import {
   generateSummarySlotSchema,
   writeSummarySlotSchema,
   createStatusCardSchema,
+  createOperationalStatusCardSchema,
+  ingestOperationalReceiptSchema,
   patchStatusCardSchema,
   refreshStatusCardSchema,
   writeStatusCardQuerySchema,
   writeStatusCardSummarySchema,
+  writeOperationalStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1592,6 +1595,24 @@ registry.registerPath({
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/status-cards/operational",
+  tags: ["status-cards"],
+  summary: "Create an evidence-backed operational status card",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(createOperationalStatusCardSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/operational-receipts",
+  tags: ["status-cards"],
+  summary: "Ingest an observation-only operational receipt",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(ingestOperationalReceiptSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
 for (const route of [
   ["get", "/api/status-cards/{id}", "Get a status card"],
   ["delete", "/api/status-cards/{id}", "Delete a status card"],
@@ -1599,6 +1620,8 @@ for (const route of [
   ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
   ["get", "/api/status-cards/{id}/updates", "List status card updates"],
   ["get", "/api/status-cards/{id}/summary-revisions", "List status card summary revisions"],
+  ["get", "/api/status-cards/{id}/operational-claims", "List immutable operational claims"],
+  ["post", "/api/status-cards/{id}/evaluate-operational", "Evaluate an operational status card"],
 ] as const) {
   registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
 }
@@ -1633,6 +1656,14 @@ registerCurrentRoute({
   tags: ["status-cards"],
   summary: "Write a generated status card summary",
   body: writeStatusCardSummarySchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/operational-summary",
+  tags: ["status-cards"],
+  summary: "Write an explanation for a server-calculated operational claim",
+  body: writeOperationalStatusCardSummarySchema,
 });
 
 registry.registerPath({

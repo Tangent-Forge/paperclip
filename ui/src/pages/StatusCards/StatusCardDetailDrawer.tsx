@@ -22,6 +22,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   deriveStatusCardLifecycle,
   describeRefreshPolicy,
+  OPERATIONAL_STATUS_PRESENTATION,
   STATUS_CARD_LIFECYCLE_PRESENTATION,
 } from "@/lib/status-card-state";
 import {
@@ -98,7 +99,7 @@ export function StatusCardDetailDrawer({
   const dryRunQuery = useQuery({
     queryKey: card ? queryKeys.statusCards.dryRun(card.id) : ["status-cards", "detail", "none", "dry-run"],
     queryFn: () => statusCardsApi.dryRun(card!.id),
-    enabled: Boolean(card && open && tab === "watched" && (card.queries.length > 0 || (card.mentionedIssueIds?.length ?? 0) > 0)),
+    enabled: Boolean(card && card.kind !== "operational" && open && tab === "watched" && (card.queries.length > 0 || (card.mentionedIssueIds?.length ?? 0) > 0)),
   });
   const lifecycle = card ? deriveStatusCardLifecycle(card) : "fresh";
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
@@ -199,6 +200,9 @@ export function StatusCardDetailDrawer({
   const revisionNumberOf = (update: StatusCardUpdate) => latestRevisionNumber - summaryRevisions.indexOf(update);
   const displayedChanges = selectedRevision ? selectedRevision.changes : latestUpdate?.changes ?? [];
   const presentation = STATUS_CARD_LIFECYCLE_PRESENTATION[lifecycle];
+  const operationalPresentation = card.kind === "operational" && card.operationalState
+    ? OPERATIONAL_STATUS_PRESENTATION[card.operationalState]
+    : null;
   const hasSummary = Boolean(card.summaryBody && card.summaryBody.trim().length > 0);
   // Setup is genuinely in flight only while a generation task exists; a null id
   // on a compiling card means the first run stalled and needs a manual re-kick.
@@ -209,9 +213,11 @@ export function StatusCardDetailDrawer({
       <SheetContent className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl">
         <SheetHeader className="border-b border-border p-4">
           <div className="flex items-center gap-2 pr-8">
-            <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full", presentation.dotClassName)} aria-hidden="true" />
+            <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full", operationalPresentation?.dotClassName ?? presentation.dotClassName)} aria-hidden="true" />
             <SheetTitle className="min-w-0 flex-1 truncate text-lg">{card.title ?? "Untitled card"}</SheetTitle>
-            <Badge variant="outline">{presentation.label}</Badge>
+            <Badge variant="outline" className={operationalPresentation?.badgeClassName}>
+              {operationalPresentation?.label ?? presentation.label}
+            </Badge>
             {lifecycle === "compiling" ? (
               <Button
                 variant="outline"
@@ -241,16 +247,17 @@ export function StatusCardDetailDrawer({
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            {card.lastGeneratedAt ? `Updated ${relativeTime(card.lastGeneratedAt)}` : "No summary yet"} ·{" "}
-            {describeRefreshPolicy(card.refreshPolicy)}
+            {card.kind === "operational"
+              ? `${card.operationalClaim?.observedAt ? `Observed ${relativeTime(card.operationalClaim.observedAt)}` : "Awaiting required evidence"} · receipt-driven`
+              : `${card.lastGeneratedAt ? `Updated ${relativeTime(card.lastGeneratedAt)}` : "No summary yet"} · ${describeRefreshPolicy(card.refreshPolicy)}`}
           </p>
         </SheetHeader>
 
         <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-0">
           <TabsList variant="line" className="w-full justify-start gap-4 border-b border-border px-4">
             <TabsTrigger value="summary">Summary</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-            <TabsTrigger value="watched">Watched issues</TabsTrigger>
+            {card.kind !== "operational" ? <TabsTrigger value="settings">Settings</TabsTrigger> : null}
+            {card.kind !== "operational" ? <TabsTrigger value="watched">Watched issues</TabsTrigger> : null}
             <TabsTrigger value="history">History</TabsTrigger>
           </TabsList>
 

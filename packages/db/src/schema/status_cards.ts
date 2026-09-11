@@ -1,6 +1,12 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
-import type { CompanySearchQuery, StatusCardRefreshPolicy } from "@paperclipai/shared";
+import { type AnyPgColumn, boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type {
+  CompanySearchQuery,
+  IngestOperationalReceipt,
+  OperationalStatus,
+  OperationalStatusCardConfig,
+  StatusCardRefreshPolicy,
+} from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { documents } from "./documents.js";
@@ -32,6 +38,7 @@ export const statusCards = pgTable(
     createdByUserId: text("created_by_user_id"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     title: text("title"),
+    kind: text("kind").$type<"issues" | "operational">().notNull().default("issues"),
     titlePinned: boolean("title_pinned").notNull().default(false),
     interestPrompt: text("interest_prompt").notNull(),
     queries: jsonb("queries").$type<CompanySearchQuery[]>().notNull().default(sql`'[]'::jsonb`),
@@ -57,6 +64,16 @@ export const statusCards = pgTable(
     generatingIssueId: uuid("generating_issue_id").references(() => issues.id, { onDelete: "set null" }),
     failureReason: text("failure_reason"),
     nextEvalAt: timestamp("next_eval_at", { withTimezone: true }),
+    operationalConfig: jsonb("operational_config").$type<OperationalStatusCardConfig>(),
+    operationalState: text("operational_state").$type<OperationalStatus>(),
+    operationalFingerprint: text("operational_fingerprint"),
+    operationalFailureStreak: integer("operational_failure_streak").notNull().default(0),
+    operationalRecoveryStreak: integer("operational_recovery_streak").notNull().default(0),
+    operationalLatestClaimId: uuid("operational_latest_claim_id"),
+    operationalGenerationUpdateId: uuid("operational_generation_update_id")
+      .references((): AnyPgColumn => statusCardUpdates.id, { onDelete: "set null" }),
+    operationalExceptionIssueId: uuid("operational_exception_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    operationalSummary: text("operational_summary"),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     archivedByUserId: text("archived_by_user_id"),
     archivedByAgentId: uuid("archived_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
@@ -69,6 +86,68 @@ export const statusCards = pgTable(
   }),
 );
 
+export const operationalReceipts = pgTable(
+  "operational_receipts",
+  {
+    id: uuid("id").primaryKey(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    sourceKey: text("source_key").notNull(),
+    subjectKey: text("subject_key").notNull(),
+    status: text("status").$type<"passed" | "degraded" | "failed">().notNull(),
+    summary: text("summary").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    freshUntil: timestamp("fresh_until", { withTimezone: true }).notNull(),
+    provenance: jsonb("provenance").$type<IngestOperationalReceipt["provenance"]>().notNull(),
+    observation: jsonb("observation").$type<IngestOperationalReceipt["observation"]>().notNull(),
+    createdByUserId: text("created_by_user_id"),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    latestEvidenceIdx: index("operational_receipts_latest_evidence_idx").on(
+      table.companyId,
+      table.sourceKey,
+      table.subjectKey,
+      table.observedAt,
+    ),
+  }),
+);
+
+type OperationalReceiptSnapshot = {
+  id: string;
+  sourceKey: string;
+  subjectKey: string;
+  status: "passed" | "degraded" | "failed";
+  summary: string;
+  observedAt: string;
+  freshUntil: string;
+  provenance: IngestOperationalReceipt["provenance"];
+};
+
+export const operationalStatusClaims = pgTable(
+  "operational_status_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    cardId: uuid("card_id").notNull().references(() => statusCards.id, { onDelete: "cascade" }),
+    state: text("state").$type<OperationalStatus>().notNull(),
+    reason: text("reason").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    receiptIds: jsonb("receipt_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    receiptSnapshot: jsonb("receipt_snapshot").$type<OperationalReceiptSnapshot[]>().notNull().default(sql`'[]'::jsonb`),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    freshUntil: timestamp("fresh_until", { withTimezone: true }),
+    changed: boolean("changed").notNull(),
+    summaryRequired: boolean("summary_required").notNull(),
+    summary: text("summary"),
+    exceptionIssueId: uuid("exception_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    cardCreatedIdx: index("operational_status_claims_card_created_idx").on(table.cardId, table.createdAt),
+  }),
+);
+
 export const statusCardUpdates = pgTable(
   "status_card_updates",
   {
@@ -77,6 +156,7 @@ export const statusCardUpdates = pgTable(
     kind: text("kind").$type<"compile" | "full" | "incremental">().notNull(),
     trigger: text("trigger").$type<"manual" | "interval" | "reactive" | "restore">().notNull(),
     generationIssueId: uuid("generation_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    operationalClaimId: uuid("operational_claim_id").references(() => operationalStatusClaims.id, { onDelete: "cascade" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     changes: jsonb("changes").$type<StatusCardUpdateChange[]>().notNull().default(sql`'[]'::jsonb`),
     inputTokens: integer("input_tokens").notNull().default(0),
@@ -93,5 +173,6 @@ export const statusCardUpdates = pgTable(
   (table) => ({
     cardStartedIdx: index("status_card_updates_card_started_idx").on(table.cardId, table.startedAt),
     generationIssueIdx: index("status_card_updates_generation_issue_idx").on(table.generationIssueId),
+    operationalClaimUq: uniqueIndex("status_card_updates_operational_claim_uq").on(table.operationalClaimId),
   }),
 );

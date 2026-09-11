@@ -383,6 +383,7 @@ async function scopeAllows(
         : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
   const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
+  const requestedEvidenceKey = typeof requestedScope.evidenceKey === "string" ? requestedScope.evidenceKey : null;
   let constrained = false;
 
   const projectIds = [
@@ -415,6 +416,12 @@ async function scopeAllows(
   if (targetUserIds.length > 0) {
     constrained = true;
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
+  }
+
+  const evidenceKeys = scopeValuesForKeys(grantScope, ["evidenceKey", "evidenceKeys"]);
+  if (evidenceKeys.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(evidenceKeys, requestedEvidenceKey)) return false;
   }
 
   const subtreeRootAgentIds = [
@@ -673,7 +680,9 @@ export function authorizationService(db: Db) {
 
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
-        requireStructuredScope: input.permissionKey === "tasks:assign_scope",
+        requireStructuredScope:
+          input.permissionKey === "tasks:assign_scope" ||
+          input.permissionKey === "status_cards:submit_observations",
       }))
     ) {
       return deny({
