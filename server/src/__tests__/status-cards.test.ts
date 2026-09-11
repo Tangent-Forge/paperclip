@@ -368,17 +368,26 @@ describeEmbeddedPostgres("status card routes", () => {
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(firstReceipt);
     expect(retriedReceipt.status).toBe(200);
-    expect(retriedReceipt.body).toMatchObject({ duplicate: true, evaluations: [] });
-    expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toEqual([]);
+    // Identical receiptId retries re-evaluate matching cards (recoverable replay).
+    // This is the third RED evaluation, so the consecutive-exception policy opens here.
+    expect(retriedReceipt.body).toMatchObject({
+      duplicate: true,
+      evaluations: [{
+        evaluation: { state: "RED" },
+        transition: { changed: false, summaryRequired: false, openException: true },
+        exception: { originKind: "status_card_exception", status: "todo" },
+      }],
+    });
+    const exceptionId = retriedReceipt.body.evaluations[0].exception.id as string;
+    expect(await db.select().from(issues).where(eq(issues.originKind, "status_card_exception"))).toHaveLength(1);
 
     const secondFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
       .send(receiptBody(randomUUID(), "failed", 3));
     expect(secondFailure.body.evaluations[0]).toMatchObject({
-      transition: { changed: false, summaryRequired: false, openException: true },
-      exception: { originKind: "status_card_exception", status: "todo" },
+      transition: { changed: false, summaryRequired: false, openException: false },
+      exception: null,
     });
-    const exceptionId = secondFailure.body.evaluations[0].exception.id as string;
 
     const duplicateFailure = await request(probeApp)
       .post(`/api/companies/${company.id}/operational-receipts`)
@@ -640,6 +649,191 @@ describeEmbeddedPostgres("status card routes", () => {
       summaryUpdateId: expect.any(String),
     });
     expect(wakes).toEqual([retry.body.evaluations[0].summarizerIssue.id]);
+  });
+
+  it("wakes the summarizer when operational create evaluates pre-existing RED evidence", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const observedAt = new Date(Date.now() - 30_000);
+    await db.insert(operationalReceipts).values({
+      id: randomUUID(),
+      companyId: company.id,
+      sourceKey: "api",
+      subjectKey: "health",
+      status: "failed",
+      summary: "pre-existing failed probe",
+      observedAt,
+      freshUntil: new Date(Date.now() + 300_000),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check", result: "failed", detail: {} },
+      createdByAgentId: observation.writer.id,
+      createdByUserId: null,
+      createdByRunId: observation.run.id,
+    });
+    const wakes: string[] = [];
+    const created = await request(createApp(
+      db,
+      localBoardActor(),
+      { wakeup: async (_agentId, options) => { wakes.push(String(options.payload?.issueId)); return { queued: true }; } },
+    )).post(`/api/companies/${company.id}/status-cards/operational`).send({
+      title: "API health",
+      interestPrompt: "Explain exceptions.",
+      agentId: summarizer.id,
+      operationalConfig: {
+        requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+        summarizerMode: "exceptions",
+        exceptionPolicy: { states: ["RED"], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+      },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({
+      operationalState: "RED",
+      generatingIssueId: expect.any(String),
+      pendingChangeCount: 1,
+    });
+    expect(wakes).toEqual([created.body.generatingIssueId]);
+  });
+
+  it("isolates multi-card ingest failures and recovers via identical receiptId replay", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const boardApp = createApp(db, localBoardActor());
+    const config = {
+      requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+      summarizerMode: "exceptions" as const,
+      exceptionPolicy: { states: ["RED" as const], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+    };
+    const first = await request(boardApp).post(`/api/companies/${company.id}/status-cards/operational`).send({
+      title: "Card A",
+      interestPrompt: "Explain exceptions.",
+      agentId: summarizer.id,
+      operationalConfig: config,
+    });
+    const second = await request(boardApp).post(`/api/companies/${company.id}/status-cards/operational`).send({
+      title: "Card B",
+      interestPrompt: "Explain exceptions.",
+      agentId: summarizer.id,
+      operationalConfig: config,
+    });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+
+    const receiptId = randomUUID();
+    const payload = {
+      receiptId,
+      sourceKey: "api",
+      subjectKey: "health",
+      summary: "failed probe",
+      observedAt: new Date(Date.now() - 2_000).toISOString(),
+      freshUntil: new Date(Date.now() + 300_000).toISOString(),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check" as const, result: "failed" as const, detail: {} },
+    };
+    // Simulate archive race after matching: card B becomes unevaluable mid-fan-out.
+    const firstAttempt = await operationalStatusCardService(db, {
+      beforeEvaluationLock: async (cardId) => {
+        if (cardId === second.body.id) {
+          await db.update(statusCards)
+            .set({ archivedAt: new Date(), updatedAt: new Date() })
+            .where(eq(statusCards.id, cardId));
+        }
+      },
+    }).ingest(company.id, payload, {
+      agentId: observation.writer.id,
+      userId: null,
+      runId: observation.run.id,
+      allowSummaryGenerationRuns: false,
+    });
+    expect(firstAttempt.duplicate).toBe(false);
+    expect(firstAttempt.evaluations).toHaveLength(1);
+    expect(firstAttempt.evaluations[0]!.card!.id).toBe(first.body.id);
+    expect(firstAttempt.evaluations[0]!.evaluation.state).toBe("RED");
+    expect(firstAttempt.cardEvaluationErrors).toHaveLength(1);
+    expect(String((firstAttempt.cardEvaluationErrors[0] as Error).message)).toMatch(/Archived/i);
+    expect(await db.select().from(operationalReceipts).where(eq(operationalReceipts.id, receiptId))).toHaveLength(1);
+
+    await db.update(statusCards)
+      .set({ archivedAt: null, updatedAt: new Date() })
+      .where(eq(statusCards.id, second.body.id));
+
+    const replay = await operationalStatusCardService(db).ingest(company.id, payload, {
+      agentId: observation.writer.id,
+      userId: null,
+      runId: observation.run.id,
+      allowSummaryGenerationRuns: false,
+    });
+    expect(replay.duplicate).toBe(true);
+    expect(replay.cardEvaluationErrors).toEqual([]);
+    expect(replay.evaluations).toHaveLength(2);
+    expect(replay.evaluations.map((row) => row.card!.id).sort()).toEqual(
+      [first.body.id, second.body.id].sort(),
+    );
+    const cardB = await db.select().from(statusCards).where(eq(statusCards.id, second.body.id)).then((rows) => rows[0]!);
+    expect(cardB.operationalState).toBe("RED");
+    expect(cardB.generatingIssueId).toBeTruthy();
+  });
+
+  it("recovers a failed wake via identical receiptId replay without a new receipt", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const observation = await seedObservationWriter(company.id, "api", "health");
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards/operational`)
+      .send({
+        title: "API health",
+        interestPrompt: "Explain exceptions.",
+        agentId: summarizer.id,
+        operationalConfig: {
+          requiredEvidence: [{ sourceKey: "api", subjectKey: "health", label: "API", writerAgentId: observation.writer.id }],
+          summarizerMode: "exceptions",
+          exceptionPolicy: { states: ["RED"], openAfterConsecutive: 10, resolveAfterConsecutive: 1 },
+        },
+      });
+    const receiptId = randomUUID();
+    const payload = {
+      receiptId,
+      sourceKey: "api",
+      subjectKey: "health",
+      summary: "failed probe",
+      observedAt: new Date(Date.now() - 2_000).toISOString(),
+      freshUntil: new Date(Date.now() + 300_000).toISOString(),
+      provenance: { probe: "api-health" },
+      observation: { kind: "check", result: "failed" as const, detail: {} },
+    };
+    const failedWake = await request(createApp(
+      db,
+      agentActor(company.id, observation.writer.id, observation.run.id),
+      { wakeup: async () => { throw new Error("queue unavailable"); } },
+    )).post(`/api/companies/${company.id}/operational-receipts`).send(payload);
+    expect(failedWake.status).toBe(500);
+
+    const wakes: string[] = [];
+    const replay = await request(createApp(
+      db,
+      agentActor(company.id, observation.writer.id, observation.run.id),
+      { wakeup: async (_agentId, options) => { wakes.push(String(options.payload?.issueId)); return { queued: true }; } },
+    )).post(`/api/companies/${company.id}/operational-receipts`).send(payload);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({
+      duplicate: true,
+      evaluations: [{
+        transition: { changed: false, summaryRequired: true },
+        summarizerIssue: { status: "todo" },
+        summaryUpdateId: expect.any(String),
+      }],
+    });
+    expect(wakes).toEqual([replay.body.evaluations[0].summarizerIssue.id]);
+    expect(await db.select().from(statusCards).where(eq(statusCards.id, created.body.id)).then((rows) => rows[0]!))
+      .toMatchObject({
+        generatingIssueId: replay.body.evaluations[0].summarizerIssue.id,
+        pendingChangeCount: 1,
+        failureReason: null,
+      });
   });
 
   it("keeps recurring-fingerprint history immutable and rejects superseded summaries atomically", async () => {

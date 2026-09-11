@@ -242,6 +242,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       userId: actor.actorType === "user" ? actor.actorId : null,
       runId: actor.runId ?? null,
     });
+    // P1-1: create may mint a summarizer issue when pre-existing evidence is RED/YELLOW.
+    // Wake the summarizer on the same path used by receipt ingest / evaluate routes.
+    await queueOperationalSummaries(req, [result]);
     await logMutation(req, companyId, "status_card.operational_created", result.card!.id, {
       operationalState: result.evaluation.state,
       claimId: result.claim.id,
@@ -265,7 +268,11 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       runId: actor.runId ?? null,
       allowSummaryGenerationRuns,
     });
+    // Queue wakes for every successful per-card evaluation before surfacing isolated failures.
     await queueOperationalSummaries(req, result.evaluations);
+    if (result.cardEvaluationErrors.length > 0) {
+      throw result.cardEvaluationErrors[0]!;
+    }
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -283,7 +290,11 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
         evaluatedCardIds: result.evaluations.map((evaluation) => evaluation.card!.id),
       },
     });
-    res.status(result.duplicate ? 200 : 201).json(result);
+    res.status(result.duplicate ? 200 : 201).json({
+      receipt: result.receipt,
+      duplicate: result.duplicate,
+      evaluations: result.evaluations,
+    });
   });
 
   router.get("/status-cards/:id", async (req, res) => {

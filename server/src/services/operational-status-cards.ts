@@ -523,10 +523,24 @@ export function operationalStatusCardService(
     )) {
       throw conflict("Receipt id was already ingested with different evidence");
     }
-    if (!inserted) return { receipt: persisted, duplicate: true, evaluations: [] };
-    const evaluations = [];
-    for (const candidate of matching) evaluations.push(await evaluate(candidate.id, now));
-    return { receipt: persisted, duplicate: false, evaluations };
+    // P1-2: receipt durability is separate from per-card evaluation. Evaluate every matching
+    // card independently so one archive/race failure cannot skip siblings, and re-run the same
+    // fan-out on identical duplicate receiptIds so wake-failure / partial-failure retries recover.
+    const evaluations: Awaited<ReturnType<typeof evaluate>>[] = [];
+    const cardEvaluationErrors: unknown[] = [];
+    for (const candidate of matching) {
+      try {
+        evaluations.push(await evaluate(candidate.id, now));
+      } catch (error) {
+        cardEvaluationErrors.push(error);
+      }
+    }
+    return {
+      receipt: persisted,
+      duplicate: !inserted,
+      evaluations,
+      cardEvaluationErrors,
+    };
   }
 
   async function recoverSummaryWakeFailure(input: {
